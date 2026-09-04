@@ -177,14 +177,79 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(trade["symbol"], "GBPUSD")
         self.assertEqual(trade["net_profit"], 200.0)
 
-        # Get chart data for this trade
+        # 1. Without candles synced, the server must NEVER invent fake candles
         res_chart = self.client.get(f"/api/sync/chart-data/{trade['id']}?timeframe=M15")
         self.assertEqual(res_chart.status_code, 200)
         chart_data = res_chart.json()
         self.assertIn("candles", chart_data)
         self.assertIn("markers", chart_data)
         self.assertIn("price_lines", chart_data)
-        self.assertGreater(len(chart_data["candles"]), 50)
+        self.assertEqual(len(chart_data["candles"]), 0)
+        self.assertFalse(chart_data["data_available"])
+        self.assertFalse(chart_data["complete_coverage"])
+        self.assertIn("No real", chart_data["message"])
+
+        # 2. Upload real broker M15 candles covering entry to exit
+        # Trade is 2026-09-04 08:30 to 11:15 UTC (open_ts ~ 1788510600)
+        from datetime import datetime, timezone
+        open_dt = datetime.fromisoformat("2026-09-04 08:30:00").replace(tzinfo=timezone.utc)
+        open_ts = int(open_dt.timestamp())
+        candles_payload = []
+        # 8 context bars before + 11 bars during trade + 8 context bars after = 27 bars
+        for idx in range(-8, 20):
+            bar_ts = open_ts + (idx * 900)
+            candles_payload.append({
+                "time": bar_ts,
+                "open": 1.2950,
+                "high": 1.2995,
+                "low": 1.2940,
+                "close": 1.2980,
+                "volume": 120.0
+            })
+        res_upload = self.client.post("/api/sync/candles", json={
+            "symbol": "GBPUSD",
+            "timeframe": "M15",
+            "candles": candles_payload
+        })
+        self.assertEqual(res_upload.status_code, 200)
+
+        # 3. Chart query with AUTO timeframe loads real M15 candles
+        res_chart_real = self.client.get(f"/api/sync/chart-data/{trade['id']}?timeframe=AUTO")
+        self.assertEqual(res_chart_real.status_code, 200)
+        chart_real = res_chart_real.json()
+        self.assertTrue(chart_real["data_available"])
+        self.assertTrue(chart_real["complete_coverage"])
+        self.assertEqual(chart_real["timeframe"], "M15")
+        self.assertGreaterEqual(len(chart_real["candles"]), 20)
+        self.assertEqual(len(chart_real["markers"]), 2)  # Entry and Exit
+
+        # 4. Requesting H1 aggregates real M15 candles into real H1 candles
+        res_chart_h1 = self.client.get(f"/api/sync/chart-data/{trade['id']}?timeframe=H1")
+        self.assertEqual(res_chart_h1.status_code, 200)
+        chart_h1 = res_chart_h1.json()
+        self.assertTrue(chart_h1["data_available"])
+        self.assertEqual(chart_h1["timeframe"], "H1")
+        self.assertGreater(len(chart_h1["candles"]), 0)
+        self.assertLess(len(chart_h1["candles"]), len(candles_payload))
+
+        # 5. Long trade (30 days) automatically selects H4 timeframe
+        res_long_trade = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "ticket": "swing_trade_30d",
+            "symbol": "EURUSD",
+            "direction": "BUY",
+            "volume": 0.5,
+            "open_time": "2026-08-01 08:00:00",
+            "close_time": "2026-08-31 08:00:00",
+            "open_price": 1.0800,
+            "close_price": 1.1000,
+            "net_profit": 1000.0
+        })
+        self.assertEqual(res_long_trade.status_code, 200)
+        long_trade = res_long_trade.json()
+        res_long_chart = self.client.get(f"/api/sync/chart-data/{long_trade['id']}?timeframe=AUTO")
+        self.assertEqual(res_long_chart.status_code, 200)
+        self.assertEqual(res_long_chart.json()["timeframe"], "H4")
 
     def test_partial_close_lifecycle(self):
         created = self.client.post("/api/trades", json={

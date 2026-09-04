@@ -211,6 +211,7 @@ class TradeResponse(TradeBase):
 
 # ================= MQL / BROKER SYNC SCHEMAS =================
 class MQLCandleBar(BaseModel):
+    timeframe: str = "M15"
     time: int  # UNIX seconds
     open: float
     high: float

@@ -33,8 +33,14 @@ namespace cAlgo.Robots
         [Parameter("Maximum Closed Trades", Group = "Sync", DefaultValue = 2000, MinValue = 1, MaxValue = 10000)]
         public int MaximumClosedTrades { get; set; }
 
-        [Parameter("M15 Candles per Symbol", Group = "Chart Data", DefaultValue = 160, MinValue = 0, MaxValue = 500)]
-        public int CandlesPerSymbol { get; set; }
+        [Parameter("Sync Real Candles for Chart", Group = "Chart Data", DefaultValue = true)]
+        public bool SyncCandles { get; set; }
+
+        [Parameter("Max Real Bars per Trade", Group = "Chart Data", DefaultValue = 500, MinValue = 50, MaxValue = 2000)]
+        public int MaxCandlesPerTrade { get; set; }
+
+        [Parameter("Max Recent Trades with Candles", Group = "Chart Data", DefaultValue = 10, MinValue = 1, MaxValue = 50)]
+        public int MaxTradesWithCandles { get; set; }
 
         private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
         {
@@ -185,52 +191,137 @@ namespace cAlgo.Robots
             };
         }
 
+        private struct ChartTimeframeInfo
+        {
+            public TimeFrame TimeFrame;
+            public string Name;
+            public int Seconds;
+        }
+
+        private static readonly ChartTimeframeInfo[] SupportedTimeframes = new[]
+        {
+            new ChartTimeframeInfo { TimeFrame = TimeFrame.Minute15, Name = "M15", Seconds = 900 },
+            new ChartTimeframeInfo { TimeFrame = TimeFrame.Hour,     Name = "H1",  Seconds = 3600 },
+            new ChartTimeframeInfo { TimeFrame = TimeFrame.Hour4,    Name = "H4",  Seconds = 14400 },
+            new ChartTimeframeInfo { TimeFrame = TimeFrame.Daily,    Name = "D1",  Seconds = 86400 }
+        };
+
+        private static ChartTimeframeInfo SelectTimeframe(DateTime openTime, DateTime closeTime, int maxBars)
+        {
+            double durationSeconds = Math.Max(0, (closeTime - openTime).TotalSeconds);
+            foreach (var tf in SupportedTimeframes)
+            {
+                double requiredBars = (durationSeconds / tf.Seconds) + 16;
+                if (requiredBars <= maxBars)
+                    return tf;
+            }
+            return SupportedTimeframes[SupportedTimeframes.Length - 1]; // D1 fallback
+        }
+
         private void AttachCandles(List<JournalTrade> closedTrades, List<JournalTrade> openTrades)
         {
-            if (CandlesPerSymbol <= 0)
+            if (!SyncCandles || MaxCandlesPerTrade <= 0)
                 return;
 
-            var symbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var trade in closedTrades.Concat(openTrades))
+            foreach (var openTrade in openTrades)
             {
-                if (!symbols.Add(trade.Symbol))
-                    continue;
+                if (DateTime.TryParse(openTrade.OpenTime, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var openTime))
+                {
+                    openTrade.Candles = GetCandlesForTrade(openTrade.Symbol, openTime, Server.TimeInUtc, MaxCandlesPerTrade);
+                }
+            }
 
-                var candles = GetM15Candles(trade.Symbol);
-                foreach (var matchingTrade in closedTrades.Concat(openTrades).Where(item => string.Equals(item.Symbol, trade.Symbol, StringComparison.OrdinalIgnoreCase)))
-                    matchingTrade.Candles = candles;
+            var recentClosed = closedTrades
+                .Where(t => !string.IsNullOrEmpty(t.CloseTime))
+                .OrderByDescending(t => t.CloseTime)
+                .Take(MaxTradesWithCandles)
+                .ToList();
+
+            foreach (var trade in recentClosed)
+            {
+                if (DateTime.TryParse(trade.OpenTime, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var openTime) &&
+                    DateTime.TryParse(trade.CloseTime, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var closeTime))
+                {
+                    trade.Candles = GetCandlesForTrade(trade.Symbol, openTime, closeTime, MaxCandlesPerTrade);
+                }
             }
         }
 
-        private List<JournalCandle> GetM15Candles(string symbolName)
+        private List<JournalCandle> GetCandlesForTrade(string symbolName, DateTime openTime, DateTime closeTime, int maxBars)
         {
             try
             {
-                var bars = MarketData.GetBars(TimeFrame.Minute15, symbolName);
-                while (bars.Count < CandlesPerSymbol && bars.LoadMoreHistory() > 0)
+                var tfInfo = SelectTimeframe(openTime, closeTime, maxBars);
+                var bars = MarketData.GetBars(tfInfo.TimeFrame, symbolName);
+                var fromTime = openTime.AddSeconds(-8 * tfInfo.Seconds);
+                var toTime = closeTime.AddSeconds(8 * tfInfo.Seconds);
+                if (toTime > Server.TimeInUtc)
+                    toTime = Server.TimeInUtc;
+
+                int loadAttempts = 0;
+                while (bars.Count > 0 && bars.OpenTimes[0] > fromTime && loadAttempts < 25 && bars.LoadMoreHistory() > 0)
                 {
-                    // Load enough local history for the requested chart context.
+                    loadAttempts++;
                 }
 
-                var startIndex = Math.Max(0, bars.Count - CandlesPerSymbol);
+                if (bars.Count == 0)
+                    return new List<JournalCandle>();
+
+                int startIndex = -1;
+                for (int i = 0; i < bars.Count; i++)
+                {
+                    if (bars.OpenTimes[i] >= fromTime)
+                    {
+                        startIndex = i;
+                        break;
+                    }
+                }
+                if (startIndex < 0)
+                    startIndex = (fromTime <= bars.OpenTimes[0]) ? 0 : -1;
+
+                if (startIndex < 0)
+                    return new List<JournalCandle>();
+
+                int endIndex = -1;
+                for (int i = bars.Count - 1; i >= 0; i--)
+                {
+                    if (bars.OpenTimes[i] <= toTime)
+                    {
+                        endIndex = i;
+                        break;
+                    }
+                }
+                if (endIndex < 0)
+                    endIndex = (toTime >= bars.OpenTimes[bars.Count - 1]) ? bars.Count - 1 : -1;
+
+                if (endIndex < 0 || endIndex < startIndex)
+                    return new List<JournalCandle>();
+
+                int count = endIndex - startIndex + 1;
+                if (count > maxBars)
+                {
+                    startIndex = Math.Max(0, endIndex - maxBars + 1);
+                }
+
                 var candles = new List<JournalCandle>();
-                for (var index = startIndex; index < bars.Count; index++)
+                for (int i = startIndex; i <= endIndex; i++)
                 {
                     candles.Add(new JournalCandle
                     {
-                        Time = ToUnixSeconds(bars.OpenTimes[index]),
-                        Open = bars.OpenPrices[index],
-                        High = bars.HighPrices[index],
-                        Low = bars.LowPrices[index],
-                        Close = bars.ClosePrices[index],
-                        Volume = bars.TickVolumes[index]
+                        Timeframe = tfInfo.Name,
+                        Time = ToUnixSeconds(bars.OpenTimes[i]),
+                        Open = bars.OpenPrices[i],
+                        High = bars.HighPrices[i],
+                        Low = bars.LowPrices[i],
+                        Close = bars.ClosePrices[i],
+                        Volume = bars.TickVolumes[i]
                     });
                 }
                 return candles;
             }
             catch (Exception exception)
             {
-                Print("Could not load M15 candles for {0}: {1}", symbolName, exception.Message);
+                Print("Could not load candles for {0}: {1}", symbolName, exception.Message);
                 return new List<JournalCandle>();
             }
         }
@@ -373,6 +464,9 @@ namespace cAlgo.Robots
 
     public class JournalCandle
     {
+        [JsonPropertyName("timeframe")]
+        public string Timeframe { get; set; } = "M15";
+
         [JsonPropertyName("time")]
         public long Time { get; set; }
 

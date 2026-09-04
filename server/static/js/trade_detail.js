@@ -5,7 +5,7 @@
 
 const TradeDetail = {
   currentTradeId: null,
-  currentTimeframe: 'M15',
+  currentTimeframe: 'AUTO',
   chartInstance: null,
   candleSeries: null,
   volumeSeries: null,
@@ -24,7 +24,7 @@ const TradeDetail = {
     }[character]));
   },
 
-  async open(tradeId, timeframe = 'M15') {
+  async open(tradeId, timeframe = 'AUTO') {
     this.currentTradeId = tradeId;
     this.currentTimeframe = timeframe;
 
@@ -34,6 +34,9 @@ const TradeDetail = {
     const chartContainer = document.getElementById('tvChartContainer');
     chartContainer.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#9ca3af;">Loading Chart Data...</div>';
 
+    const noticeEl = document.getElementById('tdChartNotice');
+    if (noticeEl) noticeEl.style.display = 'none';
+
     try {
       const [data, trade] = await Promise.all([
         API.getChartData(tradeId, this.currentTimeframe, 140),
@@ -42,7 +45,7 @@ const TradeDetail = {
       this.renderTradeInfo(trade);
       this.initChart(chartContainer, data);
     } catch (err) {
-      chartContainer.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ef4444;">Failed to load chart: ${err.message}</div>`;
+      chartContainer.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ef4444;">Failed to load chart: ${this.escapeHtml(err.message)}</div>`;
       App.showToast(`Error: ${err.message}`, 'error');
     }
   },
@@ -266,6 +269,53 @@ const TradeDetail = {
       return;
     }
 
+    // Update toolbar active state
+    const autoBtn = document.getElementById('tdBtnAuto');
+    if (autoBtn) {
+      if (this.currentTimeframe === 'AUTO' && data.timeframe) {
+        autoBtn.textContent = `Auto (${data.timeframe})`;
+      } else {
+        autoBtn.textContent = 'Auto';
+      }
+    }
+    document.querySelectorAll('.tf-btn').forEach(btn => {
+      btn.classList.toggle('btn-primary', btn.dataset.tf === this.currentTimeframe);
+      btn.classList.toggle('btn-secondary', btn.dataset.tf !== this.currentTimeframe);
+    });
+
+    const noticeEl = document.getElementById('tdChartNotice');
+    if (noticeEl) {
+      if (data.message && data.candles && data.candles.length > 0) {
+        noticeEl.style.display = 'block';
+        noticeEl.style.background = '#fef3c71a';
+        noticeEl.style.color = '#f59e0b';
+        noticeEl.style.border = '1px solid #f59e0b44';
+        noticeEl.innerHTML = `⚠️ ${this.escapeHtml(data.message)}`;
+      } else {
+        noticeEl.style.display = 'none';
+      }
+    }
+
+    if (!data.candles || data.candles.length === 0) {
+      if (this.chartInstance) {
+        try { this.chartInstance.remove(); } catch (e) {}
+        this.chartInstance = null;
+      }
+      container.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#9ca3af;padding:24px;text-align:center;">
+          <div style="font-size:36px;margin-bottom:12px;">📊</div>
+          <div style="font-weight:600;font-size:15px;color:#e2e8f0;margin-bottom:6px;">Keine echten Broker-Kerzen gespeichert</div>
+          <div style="font-size:13px;max-width:440px;line-height:1.5;color:#9ca3af;">${this.escapeHtml(data.message || 'Für diesen Trade sind noch keine echten Kerzen gespeichert. Bitte den aktualisierten EA / cBot synchronisieren.')}</div>
+        </div>
+      `;
+      return;
+    }
+
+    if (this.chartInstance) {
+      try { this.chartInstance.remove(); } catch (e) {}
+      this.chartInstance = null;
+    }
+
     const chartOptions = {
       width: container.clientWidth,
       height: container.clientHeight || 450,
@@ -370,6 +420,7 @@ const TradeDetail = {
     });
 
     const chartContainer = document.getElementById('tvChartContainer');
+    chartContainer.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#9ca3af;">Loading Chart Data...</div>';
     try {
       const data = await API.getChartData(this.currentTradeId, tf, 140);
       this.initChart(chartContainer, data);

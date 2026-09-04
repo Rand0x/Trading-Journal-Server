@@ -16,12 +16,29 @@ logger = logging.getLogger(__name__)
 def _save_candles(cursor, symbol: str, candles) -> int:
     saved = 0
     for candle in candles or []:
+        if isinstance(candle, dict):
+            tf = candle.get("timeframe", "M15") or "M15"
+            c_time = int(candle["time"])
+            c_open = float(candle["open"])
+            c_high = float(candle["high"])
+            c_low = float(candle["low"])
+            c_close = float(candle["close"])
+            c_vol = float(candle.get("volume", 0.0) or 0.0)
+        else:
+            tf = getattr(candle, "timeframe", "M15") or "M15"
+            c_time = int(candle.time)
+            c_open = float(candle.open)
+            c_high = float(candle.high)
+            c_low = float(candle.low)
+            c_close = float(candle.close)
+            c_vol = float(getattr(candle, "volume", 0.0) or 0.0)
+
         cursor.execute("""
             INSERT OR REPLACE INTO market_candles (symbol, timeframe, timestamp, open, high, low, close, volume)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         """, (
-            symbol.upper(), "M15", candle.time, candle.open, candle.high,
-            candle.low, candle.close, candle.volume or 0.0
+            symbol.upper(), tf.upper(), c_time, c_open, c_high,
+            c_low, c_close, c_vol
         ))
         saved += 1
     return saved
@@ -315,21 +332,7 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
 
             # 5. Process any candle bars attached to the trade
             if trade.candles:
-                for c in trade.candles:
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO market_candles (symbol, timeframe, timestamp, open, high, low, close, volume)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                    """, (
-                        trade.symbol.upper(),
-                        "M15",
-                        c.time,
-                        c.open,
-                        c.high,
-                        c.low,
-                        c.close,
-                        c.volume or 0.0
-                    ))
-                    candles_saved += 1
+                candles_saved += _save_candles(cursor, trade.symbol, trade.candles)
 
         # Also process open trades (status = OPEN)
         active_ctrader_tickets = set()
@@ -407,6 +410,9 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     now_str
                 ))
                 inserted_trades += 1
+
+            if trade.candles:
+                candles_saved += _save_candles(cursor, trade.symbol, trade.candles)
 
         # cTrader historical deals use distinct deal tickets from currently
         # open position tickets. Remove only stale cBot position snapshots once

@@ -14,8 +14,9 @@
 input string   InpServerUrl     = "http://192.168.1.100:8000/api/sync/mql"; // Journal Server URL
 input string   InpApiKey        = "";                                        // Journal API Key from Web UI
 input int      InpSyncInterval  = 60;                                        // Sync Interval (Seconds)
-input bool     InpSyncCandles   = true;                                      // Attach M15 Candles for Chart Replay
-input int      InpCandleBars    = 60;                                        // Number of Candlesticks per Trade
+input bool     InpSyncCandles   = true;                                      // Attach Real Candles for Chart Replay
+input int      InpCandleBars    = 500;                                       // Maximum real chart bars per trade
+input int      InpCandleTrades  = 10;                                        // Number of recent trades to attach candles to
 
 //--- Global variables
 datetime g_lastSyncTime = 0;
@@ -72,17 +73,57 @@ string JsonEscape(string text)
 //+------------------------------------------------------------------+
 //| Build Candle Bars JSON array for MT4                             |
 //+------------------------------------------------------------------+
-string GetCandlesJson(string symbol, int tf, datetime tradeTime, int count)
+int TimeframeSeconds(int tf)
 {
-   int shift = iBarShift(symbol, tf, tradeTime);
-   if(shift < 0) shift = 0;
-   
-   string json = "[";
-   int startBar = MathMin(shift + count/2, iBars(symbol, tf) - 1);
-   int endBar = MathMax(0, startBar - count);
-   int added = 0;
+   if(tf == PERIOD_H1) return(3600);
+   if(tf == PERIOD_H4) return(14400);
+   if(tf == PERIOD_D1) return(86400);
+   return(900); // M15
+}
 
-   for(int i = startBar; i >= endBar; i--)
+string TimeframeName(int tf)
+{
+   if(tf == PERIOD_H1) return("H1");
+   if(tf == PERIOD_H4) return("H4");
+   if(tf == PERIOD_D1) return("D1");
+   return("M15");
+}
+
+int SelectChartTimeframe(datetime openTime, datetime closeTime, int maxBars)
+{
+   int timeframes[4] = {PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
+   int duration = (int)MathMax(0, closeTime - openTime);
+   for(int index = 0; index < 4; index++)
+   {
+      int seconds = TimeframeSeconds(timeframes[index]);
+      if((duration / seconds) + 16 <= maxBars)
+         return(timeframes[index]);
+   }
+   return(PERIOD_D1);
+}
+
+string GetCandlesJson(string symbol, int tf, datetime openTime, datetime closeTime, int maxBars)
+{
+   int seconds = TimeframeSeconds(tf);
+   datetime fromTime = openTime - (8 * seconds);
+   datetime toTime = MathMin(TimeCurrent(), closeTime + (8 * seconds));
+   int oldestShift = iBarShift(symbol, tf, fromTime, false);
+   int newestShift = iBarShift(symbol, tf, toTime, false);
+   if(oldestShift < 0 || newestShift < 0) return("[]");
+   if(oldestShift < newestShift)
+   {
+      int tmp = oldestShift;
+      oldestShift = newestShift;
+      newestShift = tmp;
+   }
+   if(oldestShift - newestShift + 1 > maxBars)
+   {
+      oldestShift = newestShift + maxBars - 1;
+   }
+
+   string json = "[";
+   int added = 0;
+   for(int i = oldestShift; i >= newestShift; i--)
    {
       datetime t = iTime(symbol, tf, i);
       double o = iOpen(symbol, tf, i);
@@ -92,8 +133,8 @@ string GetCandlesJson(string symbol, int tf, datetime tradeTime, int count)
       long v = iVolume(symbol, tf, i);
 
       if(added > 0) json += ",";
-      json += StringFormat("{\"time\":%d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"volume\":%d}",
-                           (long)t, o, h, l, c, v);
+      json += StringFormat("{\"timeframe\":\"%s\",\"time\":%d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"volume\":%d}",
+                           TimeframeName(tf), (long)t, o, h, l, c, v);
       added++;
    }
    json += "]";
@@ -141,9 +182,10 @@ void SyncToServer()
       string comment = OrderComment();
 
       string candlesJson = "[]";
-      if(InpSyncCandles && addedTrades < 10)
+      if(InpSyncCandles && addedTrades < InpCandleTrades)
       {
-         candlesJson = GetCandlesJson(symbol, PERIOD_M15, closeTime, InpCandleBars);
+         int chartTf = SelectChartTimeframe(openTime, closeTime, InpCandleBars);
+         candlesJson = GetCandlesJson(symbol, chartTf, openTime, closeTime, InpCandleBars);
       }
 
       if(addedTrades > 0) closedTradesJson += ",";
@@ -180,9 +222,16 @@ void SyncToServer()
       int oType = OrderType();
       if(oType != OP_BUY && oType != OP_SELL) continue;
 
+      string openCandlesJson = "[]";
+      if(InpSyncCandles && openAdded < InpCandleTrades)
+      {
+         int openChartTf = SelectChartTimeframe(OrderOpenTime(), TimeCurrent(), InpCandleBars);
+         openCandlesJson = GetCandlesJson(OrderSymbol(), openChartTf, OrderOpenTime(), TimeCurrent(), InpCandleBars);
+      }
+
       if(openAdded > 0) openTradesJson += ",";
       openTradesJson += StringFormat(
-         "{\"ticket\":\"%d\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"profit\":%.2f}",
+         "{\"ticket\":\"%d\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"profit\":%.2f,\"candles\":%s}",
          OrderTicket(),
          OrderSymbol(),
          oType,
@@ -191,7 +240,8 @@ void SyncToServer()
          OrderOpenPrice(),
          OrderStopLoss(),
          OrderTakeProfit(),
-         OrderProfit()
+         OrderProfit(),
+         openCandlesJson
       );
       openAdded++;
    }

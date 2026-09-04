@@ -514,9 +514,10 @@
         <!-- Chart Controls Toolbar -->
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
           <div style="display:flex;gap:6px;">
+            <button id="tdBtnAuto" class="btn btn-primary btn-sm tf-btn" data-tf="AUTO" onclick="TradeDetail.switchTimeframe('AUTO')">Auto</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="M1" onclick="TradeDetail.switchTimeframe('M1')">1m</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="M5" onclick="TradeDetail.switchTimeframe('M5')">5m</button>
-            <button class="btn btn-primary btn-sm tf-btn" data-tf="M15" onclick="TradeDetail.switchTimeframe('M15')">15m</button>
+            <button class="btn btn-secondary btn-sm tf-btn" data-tf="M15" onclick="TradeDetail.switchTimeframe('M15')">15m</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="H1" onclick="TradeDetail.switchTimeframe('H1')">1h</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="H4" onclick="TradeDetail.switchTimeframe('H4')">4h</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="D1" onclick="TradeDetail.switchTimeframe('D1')">1D</button>
@@ -525,6 +526,8 @@
             TradingView Lightweight Charts • Entry/Exit Markers • SL/TP Levels
           </span>
         </div>
+
+        <div id="tdChartNotice" style="display:none;margin-bottom:10px;padding:8px 12px;border-radius:6px;font-size:12px;"></div>
 
         <!-- TradingView Lightweight Charts Container -->
         <div id="tvChartContainer" class="tv-chart-box"></div>

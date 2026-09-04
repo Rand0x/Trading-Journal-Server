@@ -143,7 +143,7 @@ async def import_statement_file(file: UploadFile = File(...), account_id: int = 
         raise HTTPException(status_code=500, detail=f"Error importing file: {str(e)}")
 
 @router.get("/chart-data/{trade_id}")
-def get_trade_chart_data(trade_id: int, timeframe: str = Query("M15"), bars: int = Query(120)):
+def get_trade_chart_data(trade_id: int, timeframe: str = Query("AUTO"), bars: int = Query(120)):
     """
     Provides full dataset for TradingView Lightweight Charts:
     - Candlestick bars (time, open, high, low, close)
