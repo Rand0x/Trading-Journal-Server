@@ -169,7 +169,7 @@ const Trades = {
     detailRow.innerHTML = `
       <td colspan="12">
         <div class="trade-expanded-content">
-          <span class="trade-expanded-loading">Trade-Details und Screenshots werden geladen ...</span>
+          <span class="trade-expanded-loading">Loading trade details and screenshots...</span>
         </div>
       </td>`;
     row.insertAdjacentElement('afterend', detailRow);
@@ -184,7 +184,7 @@ const Trades = {
     } catch (err) {
       if (this.expandedTradeId !== tradeId || this.expandedRow !== detailRow) return;
       detailRow.querySelector('.trade-expanded-content').innerHTML =
-        `<span class="trade-expanded-error">Details konnten nicht geladen werden: ${TradeDetail.escapeHtml(err.message)}</span>`;
+        `<span class="trade-expanded-error">Failed to load details: ${TradeDetail.escapeHtml(err.message)}</span>`;
     }
   },
 
@@ -207,16 +207,16 @@ const Trades = {
     const partials = Array.isArray(trade.partial_closes) ? trade.partial_closes : [];
     const screenshots = Array.isArray(trade.screenshots) ? trade.screenshots : [];
     const partialSummary = partials.length
-      ? `${partials.reduce((sum, item) => sum + Number(item.volume || 0), 0).toFixed(2)} lots in ${partials.length} Teilprofit(en)`
-      : 'Keine Teilprofite erfasst';
+      ? `${partials.reduce((sum, item) => sum + Number(item.volume || 0), 0).toFixed(2)} lots across ${partials.length} partial exit(s)`
+      : 'No partial exits recorded';
 
     const screenshotMarkup = screenshots.length
       ? `<div class="trade-expanded-screenshot-grid">${screenshots.map((screenshot, index) => `
-          <button type="button" class="trade-expanded-screenshot" data-screenshot-index="${index}" title="Screenshot im Karussell öffnen">
+          <button type="button" class="trade-expanded-screenshot" data-screenshot-index="${index}" title="Open screenshot in viewer">
             <img src="${escape(screenshot.image_url)}" alt="${escape(screenshot.caption || 'Trade Screenshot')}" loading="lazy">
             <span>${escape(screenshot.caption || 'TradingView')}</span>
           </button>`).join('')}</div>`
-      : '<div class="trade-expanded-empty">Noch keine Screenshots für diesen Trade.</div>';
+      : '<div class="trade-expanded-empty">No screenshots for this trade yet.</div>';
 
     const partialMarkup = partials.length
       ? `<div class="trade-expanded-partials">${partials.map(partial => `
@@ -234,22 +234,22 @@ const Trades = {
       <div class="trade-expanded-header">
         <div>
           <strong>${escape(trade.symbol)} · ${escape(trade.direction)}</strong>
-          <span>${escape(trade.ticket || 'Ohne Ticket')}</span>
+          <span>${escape(trade.ticket || 'No Ticket')}</span>
         </div>
-        <button type="button" class="btn btn-secondary btn-sm" data-open-trade-detail>📊 Vollständige Details</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-open-trade-detail>📊 Full Details</button>
       </div>
       <div class="trade-expanded-grid">
         <div><span>Open / Close</span><strong>${escape(trade.open_time || '—')} → ${escape(exitText)}</strong></div>
         <div><span>Net P&L / Status</span><strong class="${pnlDisplayClass}">${pnlText} · ${escape(trade.status || '—')}</strong></div>
         <div><span>Setup / Mistake</span><strong>${escape(trade.setup_name || '—')} / ${escape(trade.mistake_name || '—')}</strong></div>
-        <div><span>Beschriftung / Notiz</span><strong>${escape(trade.notes || 'Keine Notiz')}</strong></div>
+        <div><span>Notes</span><strong>${escape(trade.notes || 'No notes')}</strong></div>
       </div>
       <div class="trade-expanded-section">
-        <div class="trade-expanded-section-title">Teilprofite <span>${escape(partialSummary)}</span></div>
+        <div class="trade-expanded-section-title">Partial Exits <span>${escape(partialSummary)}</span></div>
         ${partialMarkup}
       </div>
       <div class="trade-expanded-section">
-        <div class="trade-expanded-section-title">Screenshots <span>${screenshots.length} Bild(er) · Klick zum Öffnen</span></div>
+        <div class="trade-expanded-section-title">Screenshots <span>${screenshots.length} image(s) · Click to view</span></div>
         ${screenshotMarkup}
       </div>`;
   },

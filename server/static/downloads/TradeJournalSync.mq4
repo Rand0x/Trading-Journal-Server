@@ -37,6 +37,20 @@ int OnInit()
    Print("Note: Ensure '", InpServerUrl, "' is added to MT4 Tools -> Options -> Expert Advisors -> Allow WebRequest!");
    
    EventSetTimer(InpSyncInterval);
+   
+   // Create on-chart manual sync button
+   ObjectCreate(0, "BtnJournalSync", OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, "BtnJournalSync", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, "BtnJournalSync", OBJPROP_XDISTANCE, 20);
+   ObjectSetInteger(0, "BtnJournalSync", OBJPROP_YDISTANCE, 30);
+   ObjectSetInteger(0, "BtnJournalSync", OBJPROP_XSIZE, 130);
+   ObjectSetInteger(0, "BtnJournalSync", OBJPROP_YSIZE, 28);
+   ObjectSetString(0, "BtnJournalSync", OBJPROP_TEXT, "Sync to Journal");
+   ObjectSetInteger(0, "BtnJournalSync", OBJPROP_BGCOLOR, C'30,58,138');
+   ObjectSetInteger(0, "BtnJournalSync", OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, "BtnJournalSync", OBJPROP_FONTSIZE, 9);
+   ChartRedraw();
+
    SyncToServer();
    return(INIT_SUCCEEDED);
 }
@@ -47,7 +61,23 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   ObjectDelete(0, "BtnJournalSync");
+   ChartRedraw();
    Print("TradeJournalSync MT4 Stopped.");
+}
+
+//+------------------------------------------------------------------+
+//| Chart event function for manual button clicks                    |
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   if(id == CHARTEVENT_OBJECT_CLICK && sparam == "BtnJournalSync")
+   {
+      Print("Manual sync triggered via chart button. Syncing to Journal...");
+      ObjectSetInteger(0, "BtnJournalSync", OBJPROP_STATE, false);
+      ChartRedraw();
+      SyncToServer();
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -75,6 +105,8 @@ string JsonEscape(string text)
 //+------------------------------------------------------------------+
 int TimeframeSeconds(int tf)
 {
+   if(tf == PERIOD_M1) return(60);
+   if(tf == PERIOD_M5) return(300);
    if(tf == PERIOD_H1) return(3600);
    if(tf == PERIOD_H4) return(14400);
    if(tf == PERIOD_D1) return(86400);
@@ -83,6 +115,8 @@ int TimeframeSeconds(int tf)
 
 string TimeframeName(int tf)
 {
+   if(tf == PERIOD_M1) return("M1");
+   if(tf == PERIOD_M5) return("M5");
    if(tf == PERIOD_H1) return("H1");
    if(tf == PERIOD_H4) return("H4");
    if(tf == PERIOD_D1) return("D1");
@@ -91,9 +125,9 @@ string TimeframeName(int tf)
 
 int SelectChartTimeframe(datetime openTime, datetime closeTime, int maxBars)
 {
-   int timeframes[4] = {PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
+   int timeframes[6] = {PERIOD_M1, PERIOD_M5, PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
    int duration = (int)MathMax(0, closeTime - openTime);
-   for(int index = 0; index < 4; index++)
+   for(int index = 0; index < 6; index++)
    {
       int seconds = TimeframeSeconds(timeframes[index]);
       if((duration / seconds) + 16 <= maxBars)

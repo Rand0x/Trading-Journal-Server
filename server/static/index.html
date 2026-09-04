@@ -185,6 +185,9 @@
             <span class="section-subtitle">Complete history of all executed trades</span>
           </div>
           <div style="display:flex;gap:10px;">
+            <button class="btn btn-secondary btn-sm" onclick="Trades.load()" title="Reload trades">
+              🔄 Refresh
+            </button>
             <button class="btn btn-secondary btn-sm" onclick="Trades.exportCSV()">
               📥 Export CSV
             </button>
@@ -516,7 +519,7 @@
       <div class="modal-body" style="padding:16px 24px;">
         <!-- Chart Controls Toolbar -->
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-          <div style="display:flex;gap:6px;">
+          <div style="display:flex;gap:6px;align-items:center;">
             <button id="tdBtnAuto" class="btn btn-primary btn-sm tf-btn" data-tf="AUTO" onclick="TradeDetail.switchTimeframe('AUTO')">Auto</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="M1" onclick="TradeDetail.switchTimeframe('M1')">1m</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="M5" onclick="TradeDetail.switchTimeframe('M5')">5m</button>
@@ -524,6 +527,7 @@
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="H1" onclick="TradeDetail.switchTimeframe('H1')">1h</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="H4" onclick="TradeDetail.switchTimeframe('H4')">4h</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="D1" onclick="TradeDetail.switchTimeframe('D1')">1D</button>
+            <button id="tdBtnSync" class="btn btn-secondary btn-sm" onclick="TradeDetail.syncAndReload()" title="Refresh chart candles from server" style="margin-left:8px;">🔄 Refresh / Sync</button>
           </div>
           <span style="font-size:12px;color:#9ca3af;">
             TradingView Lightweight Charts • Entry/Exit Markers • SL/TP Levels
@@ -571,10 +575,10 @@
         <div style="margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
             <div>
-              <span class="form-label" style="margin:0;">Partial Exits / Teilprofite</span>
+              <span class="form-label" style="margin:0;">Partial Exits</span>
               <div id="tdPartialSummary" style="font-size:11px;color:#6b7280;margin-top:2px;"></div>
             </div>
-            <span style="font-size:11px;color:#9ca3af;">cTrader-Teilabschlüsse werden unter der Position zusammengefasst.</span>
+            <span style="font-size:11px;color:#9ca3af;">cTrader partial closes are aggregated under the parent position.</span>
           </div>
           <div id="tdPartialClosesList" style="font-size:12px;color:#d1d5db;margin-bottom:10px;"></div>
           <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));">
@@ -606,23 +610,23 @@
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
             <div>
               <span class="form-label" style="margin:0;">Trade Screenshots</span>
-              <div style="font-size:11px;color:#6b7280;margin-top:2px;">TradingView-Bilder als Miniaturen speichern und per Klick im Slider ansehen.</div>
+              <div style="font-size:11px;color:#6b7280;margin-top:2px;">Save TradingView chart screenshots and view them in full size.</div>
             </div>
           </div>
           <div id="tdScreenshotsList" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px;"></div>
           <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));">
             <div class="form-group">
-              <label class="form-label">TradingView-Link</label>
+              <label class="form-label">TradingView Link</label>
               <input type="url" id="tdScreenshotSourceUrl" class="form-input" placeholder="https://www.tradingview.com/x/oo0a7Ei5/">
             </div>
             <div class="form-group">
-              <label class="form-label">Beschriftung (optional)</label>
-              <input type="text" id="tdScreenshotCaption" class="form-input" placeholder="z. B. Entry / TP1 / News">
+              <label class="form-label">Caption (optional)</label>
+              <input type="text" id="tdScreenshotCaption" class="form-input" placeholder="e.g. Entry / TP1 / News">
             </div>
           </div>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;">
             <span id="tdScreenshotStatus" style="font-size:12px;"></span>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="TradeDetail.addScreenshot()">+ Screenshot hinzufügen</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="TradeDetail.addScreenshot()">+ Add Screenshot</button>
           </div>
         </div>
 
@@ -693,7 +697,7 @@
         <div id="tdScreenshotLightboxCaption" style="min-height:20px;margin-top:10px;color:#e5e7eb;text-align:center;"></div>
         <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-top:6px;font-size:12px;color:#9ca3af;">
           <span id="tdScreenshotLightboxCounter"></span>
-          <a id="tdScreenshotLightboxSource" href="#" target="_blank" rel="noopener" style="color:#60a5fa;">Original-Link öffnen</a>
+          <a id="tdScreenshotLightboxSource" href="#" target="_blank" rel="noopener" style="color:#60a5fa;">Open original link</a>
         </div>
       </div>
     </div>

@@ -73,6 +73,22 @@ namespace cAlgo.Robots
                 PendingOrders.Modified += args => SyncAccount();
                 Positions.Opened += args => SyncAccount();
                 Positions.Closed += args => SyncAccount();
+
+                var syncButton = new Button
+                {
+                    Text = "Sync to Journal",
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(10, 10, 0, 0),
+                    BackgroundColor = Color.FromHex("#1e3a8a"),
+                    ForegroundColor = Color.White
+                };
+                syncButton.Click += args =>
+                {
+                    Print("Manual sync triggered via chart button.");
+                    SyncAccount();
+                };
+                Chart.AddControl(syncButton);
             }
             catch (Exception ex)
             {
@@ -266,6 +282,8 @@ namespace cAlgo.Robots
 
         private static readonly ChartTimeframeInfo[] SupportedTimeframes = new[]
         {
+            new ChartTimeframeInfo { TimeFrame = TimeFrame.Minute,   Name = "M1",  Seconds = 60 },
+            new ChartTimeframeInfo { TimeFrame = TimeFrame.Minute5,  Name = "M5",  Seconds = 300 },
             new ChartTimeframeInfo { TimeFrame = TimeFrame.Minute15, Name = "M15", Seconds = 900 },
             new ChartTimeframeInfo { TimeFrame = TimeFrame.Hour,     Name = "H1",  Seconds = 3600 },
             new ChartTimeframeInfo { TimeFrame = TimeFrame.Hour4,    Name = "H4",  Seconds = 14400 },

@@ -42,6 +42,7 @@ const TradeDetail = {
         API.getChartData(tradeId, this.currentTimeframe, 140),
         API.getTrade(tradeId)
       ]);
+      this.currentTrade = trade;
       this.renderTradeInfo(trade);
       this.initChart(chartContainer, data);
     } catch (err) {
@@ -193,15 +194,15 @@ const TradeDetail = {
     if (!container) return;
 
     if (!this.screenshots.length) {
-      container.innerHTML = '<span style="font-size:12px;color:#6b7280;">Noch keine Screenshots für diesen Trade.</span>';
+      container.innerHTML = '<span style="font-size:12px;color:#6b7280;">No screenshots for this trade yet.</span>';
       return;
     }
 
     container.innerHTML = this.screenshots.map((screenshot, index) => `
-      <div style="position:relative;width:132px;cursor:pointer;" onclick="TradeDetail.openScreenshotViewer(${index})" title="Screenshot öffnen">
+      <div style="position:relative;width:132px;cursor:pointer;" onclick="TradeDetail.openScreenshotViewer(${index})" title="Open screenshot">
         <img src="${this.escapeHtml(screenshot.image_url)}" alt="${this.escapeHtml(screenshot.caption || 'Trade screenshot')}" loading="lazy" style="display:block;width:132px;height:88px;object-fit:cover;border-radius:6px;border:1px solid #263247;background:#090d16;">
         <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:4px 2px 0;font-size:11px;color:#cbd5e1;">${this.escapeHtml(screenshot.caption || 'TradingView')}</div>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="event.stopPropagation();TradeDetail.deleteScreenshot(${screenshot.id})" style="position:absolute;top:4px;right:4px;padding:1px 6px;color:#ef4444;background:#090d16dd;" aria-label="Screenshot löschen">×</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="event.stopPropagation();TradeDetail.deleteScreenshot(${screenshot.id})" style="position:absolute;top:4px;right:4px;padding:1px 6px;color:#ef4444;background:#090d16dd;" aria-label="Delete screenshot">×</button>
       </div>
     `).join('');
   },
@@ -216,7 +217,7 @@ const TradeDetail = {
     const caption = captionInput.value.trim();
 
     if (!source_url) {
-      statusEl.innerHTML = '<span style="color:#ef4444;">Bitte zuerst den TradingView-Link einfügen.</span>';
+      statusEl.innerHTML = '<span style="color:#ef4444;">Please enter a TradingView link first.</span>';
       return;
     }
 
@@ -225,7 +226,7 @@ const TradeDetail = {
         source_url,
         caption
       });
-      App.showToast('Screenshot hinzugefügt.', 'success');
+      App.showToast('Screenshot added.', 'success');
       sourceInput.value = '';
       captionInput.value = '';
       statusEl.textContent = '';
@@ -237,14 +238,14 @@ const TradeDetail = {
   },
 
   async deleteScreenshot(screenshotId) {
-    if (!confirm('Diesen Screenshot wirklich löschen?')) return;
+    if (!confirm('Are you sure you want to delete this screenshot?')) return;
     try {
       await API.deleteTradeScreenshot(this.currentTradeId, screenshotId);
-      App.showToast('Screenshot gelöscht.', 'success');
+      App.showToast('Screenshot deleted.', 'success');
       await this.open(this.currentTradeId, this.currentTimeframe);
       Trades.load();
     } catch (err) {
-      App.showToast(`Screenshot konnte nicht gelöscht werden: ${err.message}`, 'error');
+      App.showToast(`Failed to delete screenshot: ${err.message}`, 'error');
     }
   },
 
@@ -343,8 +344,9 @@ const TradeDetail = {
       container.innerHTML = `
         <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#9ca3af;padding:24px;text-align:center;">
           <div style="font-size:36px;margin-bottom:12px;">📊</div>
-          <div style="font-weight:600;font-size:15px;color:#e2e8f0;margin-bottom:6px;">Keine echten Broker-Kerzen gespeichert</div>
-          <div style="font-size:13px;max-width:440px;line-height:1.5;color:#9ca3af;">${this.escapeHtml(data.message || 'Für diesen Trade sind noch keine echten Kerzen gespeichert. Bitte den aktualisierten EA / cBot synchronisieren.')}</div>
+          <div style="font-weight:600;font-size:15px;color:#e2e8f0;margin-bottom:6px;">No Real Broker Candles Stored</div>
+          <div style="font-size:13px;max-width:440px;line-height:1.5;color:#9ca3af;">${this.escapeHtml(data.message || 'No real broker candles have been stored for this trade yet. Please run a sync in the updated EA or cBot.')}</div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="TradeDetail.syncAndReload()" style="margin-top:14px;">🔄 Refresh / Check Sync</button>
         </div>
       `;
       return;
@@ -522,6 +524,58 @@ const TradeDetail = {
       Dashboard.load();
     } catch (err) {
       App.showToast(`Failed to delete partial exit: ${err.message}`, 'error');
+    }
+  },
+
+  async syncAndReload() {
+    if (!this.currentTradeId) return;
+    const btn = document.getElementById('tdBtnSync');
+    const origText = btn ? btn.innerHTML : '';
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '🔄 Syncing...';
+    }
+
+    try {
+      // If the trade belongs to a cTrader Open API account, attempt an active cloud sync
+      const trade = this.currentTrade || await API.getTrade(this.currentTradeId);
+      if (trade && trade.account_id) {
+        try {
+          const accounts = await API.getAccounts();
+          const acc = accounts.find(a => a.id === trade.account_id);
+          if (acc && acc.platform === 'cTrader' && acc.ctrader_account_id) {
+            await API.syncCtrader({ account_id: acc.id });
+          }
+        } catch (syncErr) {
+          console.warn('Active sync attempt skipped:', syncErr);
+        }
+      }
+
+      // Re-fetch chart data and trade details
+      const [data, updatedTrade] = await Promise.all([
+        API.getChartData(this.currentTradeId, this.currentTimeframe, 140),
+        API.getTrade(this.currentTradeId)
+      ]);
+      this.currentTrade = updatedTrade;
+      this.renderTradeInfo(updatedTrade);
+      const chartContainer = document.getElementById('tvChartContainer');
+      this.initChart(chartContainer, data);
+
+      if (data.candles && data.candles.length > 0) {
+        App.showToast('Chart candles loaded successfully.', 'success');
+      } else {
+        App.showToast(
+          'No broker candles received yet. To sync candles, run or click "Sync to Journal" in your MetaTrader EA or cBot.',
+          'info'
+        );
+      }
+    } catch (err) {
+      App.showToast(`Refresh failed: ${err.message}`, 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = origText;
+      }
     }
   }
 };
