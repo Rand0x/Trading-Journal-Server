@@ -15,6 +15,8 @@ class TestDatabase(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+        if "DB_DIR" in os.environ:
+            del os.environ["DB_DIR"]
 
     def test_database_initialization(self):
         with self.get_connection() as conn:

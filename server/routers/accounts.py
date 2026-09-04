@@ -40,9 +40,10 @@ def create_account(account: AccountCreate):
             INSERT INTO accounts (
                 name, broker, platform, account_number, currency,
                 initial_balance, current_balance, equity, margin, free_margin, leverage,
-                api_key, ctrader_client_id, ctrader_client_secret, ctrader_access_token, ctrader_account_id,
+                api_key, server_name, password, metaapi_token, auto_sync_enabled, sync_interval_minutes,
+                ctrader_client_id, ctrader_client_secret, ctrader_access_token, ctrader_account_id,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """, (
             account.name, account.broker or "", account.platform, account.account_number or "",
             account.currency or "USD", account.initial_balance or 10000.0,
@@ -50,6 +51,8 @@ def create_account(account: AccountCreate):
             account.equity or account.initial_balance or 10000.0,
             account.margin or 0.0, account.free_margin or account.initial_balance or 10000.0,
             account.leverage or 100, api_key,
+            account.server_name or "", account.password or "", account.metaapi_token or "",
+            1 if account.auto_sync_enabled else 0, account.sync_interval_minutes or 5,
             account.ctrader_client_id or "", account.ctrader_client_secret or "",
             account.ctrader_access_token or "", account.ctrader_account_id or "",
             now_str, now_str

@@ -59,6 +59,11 @@ def init_db():
             free_margin REAL DEFAULT 10000.0,
             leverage INTEGER DEFAULT 100,
             api_key TEXT UNIQUE,
+            server_name TEXT DEFAULT '', -- MT4/MT5 Broker Server (e.g. 'MetaQuotes-Demo', 'ICMarketsSC-Demo')
+            password TEXT DEFAULT '',    -- Read-only / Investor Password or Master Password
+            metaapi_token TEXT DEFAULT '', -- Optional MetaApi Cloud Token for 24/7 cloud sync
+            auto_sync_enabled INTEGER DEFAULT 1,
+            sync_interval_minutes INTEGER DEFAULT 5,
             ctrader_client_id TEXT DEFAULT '',
             ctrader_client_secret TEXT DEFAULT '',
             ctrader_access_token TEXT DEFAULT '',
@@ -68,6 +73,20 @@ def init_db():
             updated_at TEXT NOT NULL
         );
         """)
+
+        # Migration helper: Ensure newly added columns exist in existing database
+        cursor.execute("PRAGMA table_info(accounts);")
+        existing_cols = [r["name"] for r in cursor.fetchall()]
+        new_cols = [
+            ("server_name", "TEXT DEFAULT ''"),
+            ("password", "TEXT DEFAULT ''"),
+            ("metaapi_token", "TEXT DEFAULT ''"),
+            ("auto_sync_enabled", "INTEGER DEFAULT 1"),
+            ("sync_interval_minutes", "INTEGER DEFAULT 5")
+        ]
+        for col_name, col_type in new_cols:
+            if col_name not in existing_cols:
+                cursor.execute(f"ALTER TABLE accounts ADD COLUMN {col_name} {col_type};")
 
         # Equity History (Tracks balance/equity over time for growth curves)
         cursor.execute("""

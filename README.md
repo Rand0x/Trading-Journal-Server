@@ -90,37 +90,28 @@ docker compose logs -f
 
 ## 🔌 Connecting MetaTrader 4, MetaTrader 5 & cTrader
 
-### A. MetaTrader 5 (MT5) Setup
+### A. Direct MetaTrader 4 & 5 Login (No Client Script / Terminal Needed)
+**Your personal computer does NOT need to stay on or have MetaTrader installed.** The Raspberry Pi journal server connects directly to your broker server in the background!
+
 1. In the Web UI, go to the **Accounts & Sync** tab.
-2. Click **Download MT5 EA (`TradeJournalSync.mq5`)** or download it from:
-   `http://<server-ip>:8000/static/downloads/TradeJournalSync.mq5`
-3. In MetaTrader 5:
-   - Go to **File ➔ Open Data Folder**.
-   - Navigate to `MQL5/Experts/` and place `TradeJournalSync.mq5` inside.
-   - In MetaEditor, press **Compile** (or restart MetaTrader 5).
-4. Go to **Tools ➔ Options ➔ Expert Advisors**:
-   - Check **Allow WebRequest for listed URL**.
-   - Add your server URL: `http://<YOUR_RASPBERRY_PI_IP>:8000`
-5. Drag `TradeJournalSync` onto any chart:
-   - Set `InpServerUrl` = `http://<YOUR_RASPBERRY_PI_IP>:8000/api/sync/mql`
-   - Set `InpApiKey` = *(Copy from the Accounts tab in the Web UI)*
-   - Set `InpSyncCandles` = `true`
-6. The EA will immediately synchronize your closed trades, current balance, equity, open positions, and M15 candlestick bars for chart replay!
+2. Click **+ Add Trading Account** or select an existing account in the **Direct MetaTrader 4 & 5 Login** section.
+3. Enter your account credentials:
+   - **Platform**: `MetaTrader 5 (MT5)` or `MetaTrader 4 (MT4)`
+   - **Account ID / Login**: Your trading account login number (e.g., `50123984`)
+   - **Password**: Your **Investor (Read-Only) Password** or Master Password *(Note: Using an Investor Password is 100% read-only safe — orders cannot be placed or modified)*
+   - **Broker Server Name**: Your broker's server name (e.g., `MetaQuotes-Demo`, `ICMarketsSC-Demo`, `FTMO-Server`)
+   - **MetaApi Token** *(Optional)*: If you use MetaApi cloud infrastructure for 24/7 high-speed cloud synchronization
+4. Click **⚡ Connect & Sync Now (Direct Login)**.
+5. The Raspberry Pi server directly logs into the broker server, synchronizes:
+   - Account Balance, Equity, Margin, Free Margin
+   - All closed trades (tickets, entry & exit times, entry & exit prices, lot size, commissions, swaps, net profit)
+   - Real-time open positions
+   - M15 candlestick market data for TradingView chart replay!
+6. **24/7 Background Auto-Sync**: The server automatically polls and updates your trading data in the background every 5 minutes. You can trade completely from your mobile phone while your Raspberry Pi automatically records and analyzes every trade!
 
 ---
 
-### B. MetaTrader 4 (MT4) Setup
-1. In the Web UI, download `TradeJournalSync.mq4`.
-2. In MetaTrader 4:
-   - Go to **File ➔ Open Data Folder ➔ MQL4/Experts/** and paste the file.
-   - Compile in MetaEditor or restart MT4.
-3. Go to **Tools ➔ Options ➔ Expert Advisors**:
-   - Check **Allow WebRequest for listed URL** and add `http://<YOUR_RASPBERRY_PI_IP>:8000`.
-4. Attach `TradeJournalSync` to any chart and enter your API Key.
-
----
-
-### C. cTrader Open API Setup
+### B. cTrader Open API Setup (Direct Cloud Login)
 1. Log in to your **Spotware / cTrader Open API** developer portal ([openapi.ctrader.com](https://openapi.ctrader.com)).
 2. Create an Application to receive your **Client ID** and **Client Secret**.
 3. Generate an **Access Token** for your trading account.
@@ -131,13 +122,16 @@ docker compose logs -f
 
 ---
 
-### D. Universal File Import
-If you prefer not running an EA:
+### C. Universal File Import
+If you have past trade statement exports:
 1. Export a report from MT4 (Detailed Statement HTML), MT5 (Report HTML or CSV), cTrader (Deals CSV), or TradeZella (CSV).
 2. Go to **Accounts & Sync ➔ Universal Statement Importer**.
 3. Select the target account and drop the file onto the dropzone. All trades will be parsed and imported with automatic duplicate protection!
 
 ---
+
+### D. Optional MetaTrader EA (Alternative)
+For traders who prefer running an EA inside their MT4 or MT5 client terminal, ready-to-use Expert Advisors (`TradeJournalSync.mq5` and `TradeJournalSync.mq4`) are also provided in the Web UI. Whitelist your Raspberry Pi URL in MT4/MT5 WebRequest settings and attach the EA to any chart.
 
 ## 🧪 Running Locally & Testing (Without Docker)
 

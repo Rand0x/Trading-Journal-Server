@@ -10,9 +10,10 @@ Handles all external connectivity:
 import logging
 from typing import Optional
 from fastapi import APIRouter, Header, HTTPException, UploadFile, File, Form, Query
-from server.models import MQLSyncPayload, CTraderSyncRequest, CandleBatch
+from server.models import MQLSyncPayload, CTraderSyncRequest, MTDirectSyncRequest, CandleBatch
 from server.connectors.mql_receiver import process_mql_payload
 from server.connectors.ctrader_api import sync_ctrader_account
+from server.connectors.mt_direct_connector import sync_mt_direct_account, sync_all_active_accounts
 from server.connectors.statement_parser import parse_and_import_statement
 from server.connectors.market_data import get_chart_data_for_trade
 from server.database import get_connection
@@ -64,6 +65,34 @@ def trigger_ctrader_sync(req: CTraderSyncRequest):
     if res.get("status") == "error":
         raise HTTPException(status_code=400, detail=res.get("error", "cTrader sync failed"))
     return res
+
+@router.post("/mt-direct")
+def trigger_mt_direct_sync(req: MTDirectSyncRequest):
+    """
+    Direct Server-Side MetaTrader 4 / MetaTrader 5 Login.
+    Directly connects using Account ID (Login), Password, and Server Name.
+    No client PC or MT terminal needed!
+    """
+    try:
+        res = sync_mt_direct_account(
+            account_id=req.account_id,
+            account_number=req.account_number,
+            password=req.password,
+            server_name=req.server_name,
+            platform=req.platform,
+            metaapi_token=req.metaapi_token
+        )
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in direct MT sync: {e}")
+        raise HTTPException(status_code=500, detail=f"Direct sync failed: {str(e)}")
+
+@router.post("/auto-sync-all")
+def trigger_auto_sync_all():
+    """Triggers background synchronization for all active accounts."""
+    return sync_all_active_accounts()
 
 @router.post("/import")
 async def import_statement_file(file: UploadFile = File(...), account_id: int = Form(...)):

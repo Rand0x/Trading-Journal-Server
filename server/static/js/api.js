@@ -80,6 +80,9 @@ const API = {
   syncCTrader(data) {
     return this.request('/api/sync/ctrader', { method: 'POST', body: JSON.stringify(data) });
   },
+  syncMTDirect(data) {
+    return this.request('/api/sync/mt-direct', { method: 'POST', body: JSON.stringify(data) });
+  },
   async importStatement(formData) {
     const res = await fetch('/api/sync/import', {
       method: 'POST',

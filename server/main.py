@@ -11,8 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
+import asyncio
 from server.database import init_db
 from server.routers import accounts, trades, dashboard, analytics, playbooks, mistakes, sync
+from server.connectors.mt_direct_connector import sync_all_active_accounts
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,13 +22,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TradingJournal")
 
+async def background_auto_sync_loop():
+    """Periodically syncs all active MT4, MT5, and cTrader accounts in background."""
+    while True:
+        try:
+            await asyncio.sleep(300) # Check every 5 minutes
+            logger.info("Executing periodic background auto-sync for trading accounts...")
+            sync_all_active_accounts()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Background auto-sync task encountered error: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Trading Journal Server for Raspberry Pi...")
     init_db()
     logger.info("Database initialized.")
+    # Launch background auto-sync loop
+    sync_task = asyncio.create_task(background_auto_sync_loop())
     yield
     logger.info("Shutting down Trading Journal Server...")
+    sync_task.cancel()
 
 app = FastAPI(
     title="Trading Journal Server (Raspi)",

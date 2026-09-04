@@ -19,6 +19,11 @@ class AccountBase(BaseModel):
     margin: Optional[float] = 0.0
     free_margin: Optional[float] = 10000.0
     leverage: Optional[int] = 100
+    server_name: Optional[str] = ""
+    password: Optional[str] = ""
+    metaapi_token: Optional[str] = ""
+    auto_sync_enabled: Optional[bool] = True
+    sync_interval_minutes: Optional[int] = 5
     ctrader_client_id: Optional[str] = ""
     ctrader_client_secret: Optional[str] = ""
     ctrader_access_token: Optional[str] = ""
@@ -38,6 +43,11 @@ class AccountUpdate(BaseModel):
     margin: Optional[float] = None
     free_margin: Optional[float] = None
     leverage: Optional[int] = None
+    server_name: Optional[str] = None
+    password: Optional[str] = None
+    metaapi_token: Optional[str] = None
+    auto_sync_enabled: Optional[bool] = None
+    sync_interval_minutes: Optional[int] = None
     ctrader_client_id: Optional[str] = None
     ctrader_client_secret: Optional[str] = None
     ctrader_access_token: Optional[str] = None
@@ -206,3 +216,12 @@ class CTraderSyncRequest(BaseModel):
     client_secret: Optional[str] = None
     access_token: Optional[str] = None
     ctrader_account_id: Optional[str] = None
+
+# ================= MT4/MT5 DIRECT LOGIN SYNC SCHEMA =================
+class MTDirectSyncRequest(BaseModel):
+    account_id: int
+    account_number: Optional[str] = None
+    password: Optional[str] = None
+    server_name: Optional[str] = None
+    platform: Optional[str] = None  # 'MT4' or 'MT5'
+    metaapi_token: Optional[str] = None

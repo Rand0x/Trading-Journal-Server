@@ -1,12 +1,33 @@
 """Integration tests for FastAPI endpoints."""
 import unittest
+from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 from server.main import app
+from server.database import get_connection, init_db
 
 class TestAPI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        init_db()
         cls.client = TestClient(app)
+        
+        # Ensure a test account exists
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, api_key FROM accounts LIMIT 1;")
+            row = cursor.fetchone()
+            if row:
+                cls.account_id = row["id"]
+                cls.api_key = row["api_key"]
+            else:
+                now_str = datetime.now(timezone.utc).isoformat()
+                cursor.execute("""
+                    INSERT INTO accounts (name, platform, account_number, password, server_name, api_key, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """, ("Test Account", "MT5", "10052026", "InvestorPass123!", "MetaQuotes-Demo", "key_test_api_123", now_str, now_str))
+                conn.commit()
+                cls.account_id = cursor.lastrowid
+                cls.api_key = "key_test_api_123"
 
     def test_health_check(self):
         res = self.client.get("/api/health")
@@ -31,9 +52,9 @@ class TestAPI(unittest.TestCase):
         self.assertIn("equity_curve", data)
 
     def test_create_and_get_trade(self):
-        # Create a new trade
+        # Create a new trade using valid account_id
         payload = {
-            "account_id": 1,
+            "account_id": self.account_id,
             "symbol": "GBPUSD",
             "direction": "BUY",
             "volume": 0.5,
@@ -64,10 +85,6 @@ class TestAPI(unittest.TestCase):
         self.assertGreater(len(chart_data["candles"]), 50)
 
     def test_mql_sync_endpoint(self):
-        # Fetch an account API key
-        acc_res = self.client.get("/api/accounts")
-        api_key = acc_res.json()[0]["api_key"]
-
         sync_payload = {
             "account_number": "999888",
             "broker": "ICMarkets",
@@ -99,11 +116,34 @@ class TestAPI(unittest.TestCase):
             "open_trades": []
         }
 
-        res = self.client.post("/api/sync/mql", json=sync_payload, headers={"X-API-Key": api_key})
+        res = self.client.post("/api/sync/mql", json=sync_payload, headers={"X-API-Key": self.api_key})
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertEqual(data["status"], "success")
         self.assertGreaterEqual(data["inserted_trades"] + data["updated_trades"], 1)
+
+    def test_mt_direct_login(self):
+        # Test direct server login with Account ID + Password + Server Name (No client terminal)
+        direct_payload = {
+            "account_id": self.account_id,
+            "account_number": "10052026",
+            "password": "InvestorPassword123!",
+            "server_name": "MetaQuotes-Demo",
+            "platform": "MT5"
+        }
+        res = self.client.post("/api/sync/mt-direct", json=direct_payload)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["account_number"], "10052026")
+        self.assertEqual(data["server"], "MetaQuotes-Demo")
+        self.assertGreater(data["balance"], 0)
+
+    def test_auto_sync_all_endpoint(self):
+        res = self.client.post("/api/sync/auto-sync-all")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("synced_count", data)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 /**
- * Accounts & Broker Synchronization Module
- * Manages MT4 / MT5 Expert Advisor setup, cTrader Open API sync, and Statement imports.
+ * Accounts & Direct Broker Synchronization Module
+ * Direct Server-Side Login to MetaTrader 4, MetaTrader 5, and cTrader.
+ * No client terminal or local EA needed!
  */
 
 const Accounts = {
@@ -27,15 +28,24 @@ const Accounts = {
       const isProfitable = (a.equity || a.current_balance) >= a.initial_balance;
       const profitDiff = (a.equity || a.current_balance) - a.initial_balance;
 
+      const isMT = a.platform === 'MT4' || a.platform === 'MT5';
+      const isCTrader = a.platform === 'cTrader';
+
       card.innerHTML = `
         <div class="playbook-card-header">
           <div>
             <span class="playbook-card-title">${a.name}</span>
-            <span style="font-size:12px;color:#9ca3af;display:block;">${a.broker || 'Broker'} • ${a.account_number || 'N/A'}</span>
+            <span style="font-size:12px;color:#9ca3af;display:block;">
+              ${a.broker || 'Broker'} • ID: <strong style="color:#60a5fa;">${a.account_number || 'N/A'}</strong>
+              ${a.server_name ? ` • Server: <em>${a.server_name}</em>` : ''}
+            </span>
           </div>
-          <span class="badge" style="background:#3b82f622;color:#60a5fa;border:1px solid #3b82f655;">
-            ${a.platform}
-          </span>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span class="badge" style="background:#3b82f622;color:#60a5fa;border:1px solid #3b82f655;">
+              ${a.platform}
+            </span>
+            ${a.auto_sync_enabled ? '<span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98155;" title="24/7 Cloud Auto-Sync enabled">Auto-Sync</span>' : ''}
+          </div>
         </div>
 
         <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:10px;margin-top:4px;">
@@ -56,16 +66,19 @@ const Accounts = {
           </span>
         </div>
 
-        <div style="background:#0f172a;padding:8px 12px;border-radius:6px;font-size:11px;display:flex;align-items:center;justify-content:space-between;border:1px solid #1e293b;">
-          <span style="color:#6b7280;">API KEY:</span>
-          <code style="color:#60a5fa;font-size:11px;">${a.api_key ? a.api_key.substring(0, 14) + '...' : 'None'}</code>
-          <button class="btn btn-secondary btn-sm" onclick="Accounts.copyApiKey('${a.api_key}')" title="Copy full API Key">
-            Copy
-          </button>
+        <div style="display:flex;align-items:center;justify-content:space-between;background:#0f172a;padding:8px 12px;border-radius:6px;border:1px solid #1e293b;">
+          <div style="font-size:11px;color:#9ca3af;">
+            <span>Last Synced: <strong>${a.last_synced_at ? a.last_synced_at.substring(0, 16).replace('T', ' ') : 'Never'}</strong></span>
+          </div>
+          ${(isMT || isCTrader) ? `
+            <button class="btn btn-primary btn-sm" onclick="Accounts.triggerDirectSyncForAccount(${a.id})" title="Log in from server and fetch trades immediately">
+              ⚡ Sync Now
+            </button>
+          ` : ''}
         </div>
 
         <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#6b7280;border-top:1px solid #1f2937;padding-top:10px;">
-          <span>Last Sync: ${a.last_synced_at ? a.last_synced_at.substring(0, 16).replace('T', ' ') : 'Never'}</span>
+          <span>Direct Server Login (No client terminal needed)</span>
           <button class="btn btn-secondary btn-sm" onclick="Accounts.deleteAccount(${a.id})" style="color:#ef4444;" title="Delete Account">
             Delete
           </button>
@@ -76,7 +89,12 @@ const Accounts = {
   },
 
   updateGlobalAccountSelect(accounts = []) {
-    const selects = [document.getElementById('globalAccountSelect'), document.getElementById('importAccountSelect'), document.getElementById('ctraderAccountSelect')];
+    const selects = [
+      document.getElementById('globalAccountSelect'),
+      document.getElementById('importAccountSelect'),
+      document.getElementById('ctraderAccountSelect'),
+      document.getElementById('mtDirectAccountSelect')
+    ];
     selects.forEach(sel => {
       if (!sel) return;
       const cur = sel.value;
@@ -84,19 +102,10 @@ const Accounts = {
       accounts.forEach(a => {
         const opt = document.createElement('option');
         opt.value = a.id;
-        opt.textContent = `${a.name} (${a.platform})`;
+        opt.textContent = `${a.name} (${a.platform}) - #${a.account_number || a.id}`;
         if (cur && cur === String(a.id)) opt.selected = true;
         sel.appendChild(opt);
       });
-    });
-  },
-
-  copyApiKey(key) {
-    if (!key) return;
-    navigator.clipboard.writeText(key).then(() => {
-      App.showToast('API Key copied to clipboard!', 'success');
-    }).catch(() => {
-      prompt('Copy API Key:', key);
     });
   },
 
@@ -112,17 +121,39 @@ const Accounts = {
   async saveAccount(e) {
     e.preventDefault();
     const name = document.getElementById('accName').value.trim();
-    const broker = document.getElementById('accBroker').value.trim();
     const platform = document.getElementById('accPlatform').value;
     const account_number = document.getElementById('accNumber').value.trim();
+    const password = document.getElementById('accPassword').value.trim();
+    const server_name = document.getElementById('accServer').value.trim();
+    const broker = document.getElementById('accBroker').value.trim();
     const currency = document.getElementById('accCurrency').value.trim() || 'USD';
     const initial_balance = parseFloat(document.getElementById('accInitialBal').value || 10000);
+    const metaapi_token = document.getElementById('accMetaApiToken') ? document.getElementById('accMetaApiToken').value.trim() : '';
 
     try {
-      await API.createAccount({ name, broker, platform, account_number, currency, initial_balance });
-      App.showToast('Account added successfully!', 'success');
+      const created = await API.createAccount({
+        name,
+        platform,
+        account_number,
+        password,
+        server_name,
+        broker: broker || server_name,
+        currency,
+        initial_balance,
+        metaapi_token,
+        auto_sync_enabled: true,
+        sync_interval_minutes: 5
+      });
+
+      App.showToast(`Account "${created.name}" created! Performing initial server login...`, 'success');
       this.closeAddAccountModal();
-      this.load();
+
+      // Automatically trigger initial server sync if credentials are provided
+      if ((platform === 'MT4' || platform === 'MT5') && account_number && password && server_name) {
+        await this.triggerDirectSyncForAccount(created.id);
+      } else {
+        await this.load();
+      }
     } catch (err) {
       App.showToast(`Error: ${err.message}`, 'error');
     }
@@ -137,6 +168,51 @@ const Accounts = {
       Dashboard.load();
     } catch (err) {
       App.showToast(`Error: ${err.message}`, 'error');
+    }
+  },
+
+  async triggerDirectSyncForAccount(accountId) {
+    App.showToast('Connecting to broker server from Raspberry Pi...', 'info');
+    try {
+      const res = await API.syncMTDirect({ account_id: accountId });
+      App.showToast(res.message || 'Direct sync completed successfully!', 'success');
+      await this.load();
+      await Dashboard.load();
+      if (App.currentView === 'trades') Trades.load();
+    } catch (err) {
+      App.showToast(`Direct login error: ${err.message}`, 'error');
+    }
+  },
+
+  async triggerMTDirectSyncForm(e) {
+    e.preventDefault();
+    const account_id = parseInt(document.getElementById('mtDirectAccountSelect').value);
+    const account_number = document.getElementById('mtDirectLogin').value.trim();
+    const password = document.getElementById('mtDirectPassword').value.trim();
+    const server_name = document.getElementById('mtDirectServer').value.trim();
+    const platform = document.getElementById('mtDirectPlatform').value;
+    const metaapi_token = document.getElementById('mtDirectMetaApiToken').value.trim();
+
+    const statusEl = document.getElementById('mtDirectSyncStatus');
+    statusEl.innerHTML = '<span style="color:#60a5fa;">Logging in to broker server directly from Raspberry Pi...</span>';
+
+    try {
+      const res = await API.syncMTDirect({
+        account_id,
+        account_number,
+        password,
+        server_name,
+        platform,
+        metaapi_token
+      });
+      statusEl.innerHTML = `<span style="color:#10b981;">✓ ${res.message} Balance: $${res.balance.toLocaleString()}</span>`;
+      App.showToast('Direct login and sync successful!', 'success');
+      await this.load();
+      await Dashboard.load();
+      if (App.currentView === 'trades') Trades.load();
+    } catch (err) {
+      statusEl.innerHTML = `<span style="color:#ef4444;">✗ Login failed: ${err.message}</span>`;
+      App.showToast(`Direct login error: ${err.message}`, 'error');
     }
   },
 
