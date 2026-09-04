@@ -38,22 +38,26 @@ def get_dashboard_summary(
 
         where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
-        # Fetch initial balance
+        # Fetch initial balance and currency
         initial_balance = 10000.0
+        currency = "USD"
         if account_id:
-            cursor.execute("SELECT initial_balance FROM accounts WHERE id = ?;", (account_id,))
+            cursor.execute("SELECT initial_balance, currency FROM accounts WHERE id = ?;", (account_id,))
             acc = cursor.fetchone()
             if acc:
                 initial_balance = float(acc["initial_balance"])
+                currency = acc["currency"] or "USD"
         else:
-            cursor.execute("SELECT SUM(initial_balance) FROM accounts;")
+            cursor.execute("SELECT SUM(initial_balance), COUNT(DISTINCT currency), MIN(currency) FROM accounts;")
             row = cursor.fetchone()
             if row and row[0]:
                 initial_balance = float(row[0])
+            if row and row[1] == 1 and row[2]:
+                currency = row[2]
 
         # Fetch closed trades
         cursor.execute(f"""
-            SELECT t.*, a.name as account_name
+            SELECT t.*, a.name as account_name, a.currency as account_currency
             FROM trades t
             LEFT JOIN accounts a ON t.account_id = a.id
             {where_str}
@@ -70,5 +74,6 @@ def get_dashboard_summary(
         "calendar": calendar,
         "equity_curve": equity_curve,
         "initial_balance": initial_balance,
+        "currency": currency,
         "trades_count": len(trades)
     }

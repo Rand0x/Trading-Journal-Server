@@ -11,20 +11,23 @@ const Dashboard = {
     try {
       const params = App.getFilterParams();
       this.dashboardData = await API.getDashboard(params);
-      this.renderKPIs(this.dashboardData.metrics);
-      this.renderCalendar(this.dashboardData.calendar);
-      this.renderEquityCurve(this.dashboardData.equity_curve);
-      this.renderDailyPnlBars(this.dashboardData.calendar);
+      const cur = this.dashboardData.currency || App.getActiveCurrency();
+      this.currentCurrency = cur;
+      this.renderKPIs(this.dashboardData.metrics, cur);
+      this.renderCalendar(this.dashboardData.calendar, cur);
+      this.renderEquityCurve(this.dashboardData.equity_curve, cur);
+      this.renderDailyPnlBars(this.dashboardData.calendar, cur);
     } catch (err) {
       console.error('Failed to load dashboard:', err);
       App.showToast(`Error loading dashboard: ${err.message}`, 'error');
     }
   },
 
-  renderKPIs(m) {
+  renderKPIs(m, currency) {
+    const cur = currency || this.currentCurrency || App.getActiveCurrency();
     const pnl = m.net_profit || 0;
     const pnlEl = document.getElementById('dashNetPnl');
-    pnlEl.textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+    pnlEl.textContent = App.formatMoney(pnl, cur, { showSign: true });
     pnlEl.className = `metric-value ${pnl >= 0 ? 'color-green' : 'color-red'}`;
 
     document.getElementById('dashWinRate').textContent = `${m.win_rate || 0}%`;
@@ -36,17 +39,18 @@ const Dashboard = {
     pfEl.className = `metric-value ${pf >= 1.5 ? 'color-green' : (pf >= 1.0 ? 'color-blue' : 'color-red')}`;
 
     document.getElementById('dashTotalTrades').textContent = m.total_trades || 0;
-    document.getElementById('dashAvgWin').textContent = `+$${(m.avg_win || 0).toFixed(2)}`;
-    document.getElementById('dashAvgLoss').textContent = `-$${(m.avg_loss || 0).toFixed(2)}`;
+    document.getElementById('dashAvgWin').textContent = App.formatMoney(m.avg_win || 0, cur, { showSign: true });
+    document.getElementById('dashAvgLoss').textContent = App.formatMoney(-(m.avg_loss || 0), cur);
     document.getElementById('dashWinLossRatio').textContent = `${(m.win_loss_ratio || 0).toFixed(2)}:1`;
 
-    document.getElementById('dashExpectancy').textContent = `$${(m.expectancy || 0).toFixed(2)}`;
+    document.getElementById('dashExpectancy').textContent = App.formatMoney(m.expectancy || 0, cur);
     document.getElementById('dashSharpe').textContent = (m.sharpe_ratio || 0).toFixed(2);
-    document.getElementById('dashDrawdown').textContent = `-$${(m.max_drawdown_amount || 0).toFixed(2)} (${(m.max_drawdown_pct || 0).toFixed(1)}%)`;
+    document.getElementById('dashDrawdown').textContent = `-${App.formatMoney(m.max_drawdown_amount || 0, cur)} (${(m.max_drawdown_pct || 0).toFixed(1)}%)`;
     document.getElementById('dashStreaks').textContent = `W: ${m.max_win_streak || 0} / L: ${m.max_loss_streak || 0}`;
   },
 
-  renderCalendar(calendarData = {}) {
+  renderCalendar(calendarData = {}, currency) {
+    const cur = currency || this.currentCurrency || App.getActiveCurrency();
     const grid = document.getElementById('calendarDaysGrid');
     if (!grid) return;
     grid.innerHTML = '';
@@ -87,12 +91,12 @@ const Dashboard = {
         const pnl = dayData.net_profit;
         if (pnl > 0.01) {
           statusClass = 'profit';
-          pnlText = `<div class="day-pnl color-green">+$${pnl.toFixed(2)}</div>`;
+          pnlText = `<div class="day-pnl color-green">${App.formatMoney(pnl, cur, { showSign: true })}</div>`;
         } else if (pnl < -0.01) {
           statusClass = 'loss';
-          pnlText = `<div class="day-pnl color-red">-$${Math.abs(pnl).toFixed(2)}</div>`;
+          pnlText = `<div class="day-pnl color-red">${App.formatMoney(pnl, cur)}</div>`;
         } else {
-          pnlText = `<div class="day-pnl color-muted">$0.00</div>`;
+          pnlText = `<div class="day-pnl color-muted">${App.formatMoney(0, cur)}</div>`;
         }
         tradeCountBadge = `<span class="day-badge">${dayData.trades_count} tr</span>`;
       }
@@ -119,20 +123,22 @@ const Dashboard = {
 
   calendarPrevMonth() {
     this.currentCalendarDate.setMonth(this.currentCalendarDate.getMonth() - 1);
-    this.renderCalendar(this.dashboardData ? this.dashboardData.calendar : {});
+    this.renderCalendar(this.dashboardData ? this.dashboardData.calendar : {}, this.currentCurrency);
   },
 
   calendarNextMonth() {
     this.currentCalendarDate.setMonth(this.currentCalendarDate.getMonth() + 1);
-    this.renderCalendar(this.dashboardData ? this.dashboardData.calendar : {});
+    this.renderCalendar(this.dashboardData ? this.dashboardData.calendar : {}, this.currentCurrency);
   },
 
   calendarToday() {
     this.currentCalendarDate = new Date();
-    this.renderCalendar(this.dashboardData ? this.dashboardData.calendar : {});
+    this.renderCalendar(this.dashboardData ? this.dashboardData.calendar : {}, this.currentCurrency);
   },
 
-  renderEquityCurve(points = []) {
+  renderEquityCurve(points = [], currency) {
+    const cur = currency || this.currentCurrency || App.getActiveCurrency();
+    const sym = App.getCurrencySymbol(cur);
     const container = document.getElementById('equityCurveCanvasContainer');
     if (!container) return;
     container.innerHTML = '';
@@ -175,7 +181,7 @@ const Dashboard = {
       ctx.fillStyle = '#6b7280';
       ctx.font = '10px -apple-system, sans-serif';
       ctx.textAlign = 'right';
-      ctx.fillText(`$${Math.round(val).toLocaleString()}`, padding.left - 8, y + 3);
+      ctx.fillText(`${sym}${Math.round(val).toLocaleString()}`, padding.left - 8, y + 3);
     }
 
     // Plot line

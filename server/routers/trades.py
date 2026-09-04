@@ -194,7 +194,8 @@ def get_trades(
 
         # Fetch records
         query = f"""
-            SELECT t.*, a.name as account_name, p.name as setup_name, m.name as mistake_name,
+            SELECT t.*, a.name as account_name, a.currency as account_currency,
+                   p.name as setup_name, m.name as mistake_name,
                    (SELECT COUNT(*) FROM trade_partial_closes pc WHERE pc.trade_id = t.id) AS partial_close_count,
                    (SELECT COUNT(*) FROM trade_screenshots ts WHERE ts.trade_id = t.id) AS screenshot_count
             FROM trades t

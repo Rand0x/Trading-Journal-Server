@@ -65,9 +65,12 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
                         const MqlTradeRequest& request,
                         const MqlTradeResult& result)
 {
-   if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
+   if(trans.type == TRADE_TRANSACTION_DEAL_ADD ||
+      trans.type == TRADE_TRANSACTION_ORDER_ADD ||
+      trans.type == TRADE_TRANSACTION_ORDER_DELETE ||
+      trans.type == TRADE_TRANSACTION_ORDER_UPDATE)
    {
-      Print("Trade deal detected! Triggering instant sync...");
+      Print("Trade/Order transaction detected! Triggering instant sync...");
       SyncToServer();
    }
 }
@@ -279,10 +282,49 @@ void SyncToServer()
    }
    openTradesJson += "]";
 
+   // Pending orders (Limit / Stop)
+   string pendingOrdersJson = "[";
+   int totalOrders = OrdersTotal();
+   int addedPending = 0;
+   for(int i = 0; i < totalOrders; i++)
+   {
+      ulong oTicket = OrderGetTicket(i);
+      if(oTicket <= 0) continue;
+      ENUM_ORDER_TYPE oType = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      if(oType != ORDER_TYPE_BUY_LIMIT && oType != ORDER_TYPE_SELL_LIMIT &&
+         oType != ORDER_TYPE_BUY_STOP && oType != ORDER_TYPE_SELL_STOP) continue;
+
+      int oDir = (oType == ORDER_TYPE_BUY_LIMIT || oType == ORDER_TYPE_BUY_STOP) ? 0 : 1;
+      string oSymbol = OrderGetString(ORDER_SYMBOL);
+      double oVolume = OrderGetDouble(ORDER_VOLUME_INITIAL);
+      double oPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+      double oSL = OrderGetDouble(ORDER_SL);
+      double oTP = OrderGetDouble(ORDER_TP);
+      datetime oTime = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
+      string oComment = OrderGetString(ORDER_COMMENT);
+
+      if(addedPending > 0) pendingOrdersJson += ",";
+      pendingOrdersJson += StringFormat(
+         "{\"ticket\":\"mt5-order-%s\",\"order_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"comment\":\"%s\",\"status\":\"PENDING\"}",
+         IntegerToString(oTicket),
+         IntegerToString(oTicket),
+         oSymbol,
+         oDir,
+         oVolume,
+         TimeToString(oTime > 0 ? oTime : TimeCurrent(), TIME_DATE|TIME_SECONDS),
+         oPrice,
+         oSL,
+         oTP,
+         JsonEscape(oComment)
+      );
+      addedPending++;
+   }
+   pendingOrdersJson += "]";
+
    // Construct root payload
    string payload = StringFormat(
-      "{\"account_number\":\"%d\",\"broker\":\"%s\",\"platform\":\"MT5\",\"currency\":\"%s\",\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,\"free_margin\":%.2f,\"leverage\":%d,\"closed_trades\":%s,\"open_trades\":%s}",
-      login, JsonEscape(broker), currency, balance, equity, margin, freeMargin, leverage, closedTradesJson, openTradesJson
+      "{\"account_number\":\"%d\",\"broker\":\"%s\",\"platform\":\"MT5\",\"currency\":\"%s\",\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,\"free_margin\":%.2f,\"leverage\":%d,\"closed_trades\":%s,\"open_trades\":%s,\"pending_orders\":%s}",
+      login, JsonEscape(broker), currency, balance, equity, margin, freeMargin, leverage, closedTradesJson, openTradesJson, pendingOrdersJson
    );
 
    // Prepare HTTP Request

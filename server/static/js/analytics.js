@@ -8,18 +8,21 @@ const Analytics = {
     try {
       const params = App.getFilterParams();
       const data = await API.getAnalyticsOverview(params);
-      this.renderDayOfWeek(data.by_day_of_week);
-      this.renderHourOfDay(data.by_hour);
-      this.renderSymbols(data.by_symbol);
-      this.renderSetups(data.by_setup);
-      this.renderMistakes(data.by_mistake);
+      const cur = data.currency || App.getActiveCurrency();
+      this.currentCurrency = cur;
+      this.renderDayOfWeek(data.by_day_of_week, cur);
+      this.renderHourOfDay(data.by_hour, cur);
+      this.renderSymbols(data.by_symbol, cur);
+      this.renderSetups(data.by_setup, cur);
+      this.renderMistakes(data.by_mistake, cur);
     } catch (err) {
       console.error('Failed to load analytics:', err);
       App.showToast(`Analytics error: ${err.message}`, 'error');
     }
   },
 
-  renderDayOfWeek(days = []) {
+  renderDayOfWeek(days = [], currency) {
+    const cur = currency || this.currentCurrency || App.getActiveCurrency();
     const container = document.getElementById('analyticsDayOfWeekContainer');
     const tableBody = document.getElementById('analyticsDayOfWeekTableBody');
     if (!container || !tableBody) return;
@@ -34,16 +37,17 @@ const Analytics = {
         <td>${d.wins}</td>
         <td>${d.losses}</td>
         <td style="font-weight:700;color:#60a5fa;">${d.win_rate}%</td>
-        <td style="font-weight:700;" class="${pnlClass}">${d.net_profit >= 0 ? '+' : ''}$${d.net_profit.toFixed(2)}</td>
+        <td style="font-weight:700;" class="${pnlClass}">${App.formatMoney(d.net_profit, cur, { showSign: true })}</td>
       `;
       tableBody.appendChild(tr);
     });
 
     // Render bar chart in canvas
-    this.drawBarChart(container, days.map(d => ({ label: d.day.substring(0, 3), value: d.net_profit })));
+    this.drawBarChart(container, days.map(d => ({ label: d.day.substring(0, 3), value: d.net_profit })), cur);
   },
 
-  renderHourOfDay(hours = []) {
+  renderHourOfDay(hours = [], currency) {
+    const cur = currency || this.currentCurrency || App.getActiveCurrency();
     const container = document.getElementById('analyticsHourContainer');
     if (!container) return;
 
@@ -52,10 +56,11 @@ const Analytics = {
       label: h.hour.substring(0, 2),
       value: h.net_profit
     }));
-    this.drawBarChart(container, items);
+    this.drawBarChart(container, items, cur);
   },
 
-  renderSymbols(symbols = []) {
+  renderSymbols(symbols = [], currency) {
+    const cur = currency || this.currentCurrency || App.getActiveCurrency();
     const tbody = document.getElementById('analyticsSymbolsTableBody');
     if (!tbody) return;
     tbody.innerHTML = '';
@@ -73,16 +78,17 @@ const Analytics = {
         <td style="font-weight:700;color:#60a5fa;">${s.symbol}</td>
         <td>${s.trades}</td>
         <td style="font-weight:700;color:#10b981;">${s.win_rate}%</td>
-        <td style="font-weight:700;" class="${pnlClass}">${s.net_profit >= 0 ? '+' : ''}$${s.net_profit.toFixed(2)}</td>
+        <td style="font-weight:700;" class="${pnlClass}">${App.formatMoney(s.net_profit, cur, { showSign: true })}</td>
         <td>${pfDisplay}</td>
         <td>${s.volume} lots</td>
-        <td class="${s.avg_trade >= 0 ? 'color-green' : 'color-red'}">$${s.avg_trade.toFixed(2)}</td>
+        <td class="${s.avg_trade >= 0 ? 'color-green' : 'color-red'}">${App.formatMoney(s.avg_trade, cur)}</td>
       `;
       tbody.appendChild(tr);
     });
   },
 
-  renderSetups(setups = []) {
+  renderSetups(setups = [], currency) {
+    const cur = currency || this.currentCurrency || App.getActiveCurrency();
     const tbody = document.getElementById('analyticsSetupsTableBody');
     if (!tbody) return;
     tbody.innerHTML = '';
@@ -100,14 +106,15 @@ const Analytics = {
         <td style="font-weight:600;color:#fff;">${s.setup_name}</td>
         <td>${s.trades}</td>
         <td style="font-weight:700;color:#10b981;">${s.win_rate}%</td>
-        <td style="font-weight:700;" class="${pnlClass}">${s.net_profit >= 0 ? '+' : ''}$${s.net_profit.toFixed(2)}</td>
+        <td style="font-weight:700;" class="${pnlClass}">${App.formatMoney(s.net_profit, cur, { showSign: true })}</td>
         <td>${pfDisplay}</td>
       `;
       tbody.appendChild(tr);
     });
   },
 
-  renderMistakes(mistakes = []) {
+  renderMistakes(mistakes = [], currency) {
+    const cur = currency || this.currentCurrency || App.getActiveCurrency();
     const tbody = document.getElementById('analyticsMistakesTableBody');
     if (!tbody) return;
     tbody.innerHTML = '';
@@ -122,15 +129,17 @@ const Analytics = {
       tr.innerHTML = `
         <td style="font-weight:600;color:#f87171;">${m.mistake_name}</td>
         <td>${m.count}</td>
-        <td style="font-weight:700;color:#ef4444;">-$${m.total_loss.toFixed(2)}</td>
-        <td style="color:#fca5a5;">-$${m.worst_loss.toFixed(2)}</td>
-        <td style="color:#fca5a5;">-$${m.avg_loss.toFixed(2)}</td>
+        <td style="font-weight:700;color:#ef4444;">-${App.formatMoney(m.total_loss, cur)}</td>
+        <td style="color:#fca5a5;">-${App.formatMoney(m.worst_loss, cur)}</td>
+        <td style="color:#fca5a5;">-${App.formatMoney(m.avg_loss, cur)}</td>
       `;
       tbody.appendChild(tr);
     });
   },
 
-  drawBarChart(container, items = []) {
+  drawBarChart(container, items = [], currency) {
+    const cur = currency || this.currentCurrency || App.getActiveCurrency();
+    const sym = App.getCurrencySymbol(cur);
     container.innerHTML = '';
     if (items.length === 0) return;
 
@@ -163,8 +172,8 @@ const Analytics = {
     ctx.fillStyle = '#6b7280';
     ctx.font = '10px -apple-system, sans-serif';
     ctx.textAlign = 'right';
-    ctx.fillText(`+$${Math.round(maxAbs)}`, padding.left - 6, padding.top + 8);
-    ctx.fillText(`-$${Math.round(maxAbs)}`, padding.left - 6, height - padding.bottom);
+    ctx.fillText(`+${sym}${Math.round(maxAbs)}`, padding.left - 6, padding.top + 8);
+    ctx.fillText(`-${sym}${Math.round(maxAbs)}`, padding.left - 6, height - padding.bottom);
 
     const step = chartW / items.length;
     const barWidth = Math.max(3, Math.min(24, step - 4));

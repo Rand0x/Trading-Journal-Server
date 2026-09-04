@@ -549,5 +549,258 @@ class TestAPI(unittest.TestCase):
         data = res.json()
         self.assertIn("synced_count", data)
 
+    def test_account_creation_and_currency_endpoints(self):
+        # 1. Create GBP account
+        gbp_res = self.client.post("/api/accounts", json={
+            "name": "GBP Test Account",
+            "platform": "cTrader",
+            "account_number": "gbp-9999",
+            "server_name": "Pepperstone",
+            "currency": "gbp",
+            "initial_balance": 5000
+        })
+        self.assertEqual(gbp_res.status_code, 200)
+        gbp_data = gbp_res.json()
+        self.assertEqual(gbp_data["currency"], "GBP")
+        gbp_acc_id = gbp_data["id"]
+        gbp_api_key = gbp_data["api_key"]
+
+        # 2. Create trade in GBP account
+        trade_res = self.client.post("/api/trades", json={
+            "account_id": gbp_acc_id,
+            "ticket": "gbp-trade-1",
+            "symbol": "GBPUSD",
+            "direction": "BUY",
+            "volume": 0.1,
+            "open_time": "2026-09-04 10:00:00",
+            "open_price": 1.3000,
+            "close_time": "2026-09-04 11:00:00",
+            "close_price": 1.3050,
+            "net_profit": 50.0,
+            "commission": -2.0,
+            "swap": 0.0,
+            "status": "WIN"
+        })
+        self.assertEqual(trade_res.status_code, 200)
+
+        # 3. Verify /api/trades returns account_currency
+        trades_response = self.client.get(f"/api/trades?account_id={gbp_acc_id}").json()
+        trades_list = trades_response["trades"]
+        self.assertGreater(len(trades_list), 0)
+        self.assertEqual(trades_list[0]["account_currency"], "GBP")
+
+        # 4. Verify /api/dashboard returns currency
+        dash_res = self.client.get(f"/api/dashboard?account_id={gbp_acc_id}")
+        self.assertEqual(dash_res.status_code, 200)
+        self.assertEqual(dash_res.json()["currency"], "GBP")
+
+        # 5. Verify /api/analytics/overview returns currency
+        analytics_res = self.client.get(f"/api/analytics/overview?account_id={gbp_acc_id}")
+        self.assertEqual(analytics_res.status_code, 200)
+        self.assertEqual(analytics_res.json()["currency"], "GBP")
+
+        # 6. Verify sync payload without currency does not overwrite existing GBP
+        sync_res = self.client.post("/api/sync/ctrader-push", json={
+            "source": "ctrader-cbot",
+            "platform": "cTrader",
+            "account_number": "gbp-9999",
+            "balance": 5050.0,
+            "equity": 5050.0,
+            "open_trades": [],
+            "closed_trades": []
+        }, headers={"X-API-Key": gbp_api_key})
+        self.assertEqual(sync_res.status_code, 200, msg=f"Error: {sync_res.text}")
+
+        # Re-fetch account and confirm currency is still GBP
+        acc_check = self.client.get("/api/accounts").json()
+        acc = next(a for a in acc_check if a["id"] == gbp_acc_id)
+        self.assertEqual(acc["currency"], "GBP")
+
+    def test_pending_limit_order_workflow(self):
+        # 1. Create dedicated account
+        acc_res = self.client.post("/api/accounts", json={
+            "name": "Limit Order Account",
+            "platform": "cTrader",
+            "account_number": "limit-acc-1",
+            "server_name": "ICMarkets",
+            "currency": "USD",
+            "initial_balance": 10000
+        })
+        self.assertEqual(acc_res.status_code, 200)
+        acc_data = acc_res.json()
+        acc_id = acc_data["id"]
+        api_key = acc_data["api_key"]
+
+        # 2. Ingest pending limit order via cTrader sync push
+        sync_res = self.client.post("/api/sync/ctrader-push", json={
+            "source": "ctrader-cbot",
+            "platform": "cTrader",
+            "account_number": "limit-acc-1",
+            "balance": 10000.0,
+            "equity": 10000.0,
+            "open_trades": [],
+            "closed_trades": [],
+            "pending_orders": [
+                {
+                    "ticket": "ct-ord-777",
+                    "order_id": "777",
+                    "order_type": "Limit",
+                    "symbol": "EURUSD",
+                    "type": 0,
+                    "lots": 0.5,
+                    "open_price": 1.0825,
+                    "stop_loss": 1.0800,
+                    "take_profit": 1.0900,
+                    "open_time": "2026-09-04 12:00:00",
+                    "status": "PENDING"
+                }
+            ]
+        }, headers={"X-API-Key": api_key})
+        self.assertEqual(sync_res.status_code, 200, msg=f"Error: {sync_res.text}")
+
+        # 3. Verify pending order exists with status PENDING
+        trades_res = self.client.get(f"/api/trades?account_id={acc_id}&status=PENDING").json()
+        self.assertEqual(len(trades_res["trades"]), 1)
+        pending_trade = trades_res["trades"][0]
+        trade_id = pending_trade["id"]
+        self.assertEqual(pending_trade["status"], "PENDING")
+        self.assertEqual(pending_trade["open_price"], 1.0825)
+        self.assertEqual(pending_trade["order_id"], "777")
+
+        # Verify it doesn't affect dashboard closed trades or win rate
+        dash_res = self.client.get(f"/api/dashboard?account_id={acc_id}").json()
+        self.assertEqual(dash_res["metrics"]["total_trades"], 0)
+
+        # 4. User annotates the pending order with trade plan and screenshot
+        update_res = self.client.put(f"/api/trades/{trade_id}", json={
+            "notes": "Plan: Buy on 4H OB retest at 1.0825",
+            "emotions": "Patient",
+            "rating": 5
+        })
+        self.assertEqual(update_res.status_code, 200)
+
+        screenshot_res = self.client.post(f"/api/trades/{trade_id}/screenshots", json={
+            "source_url": "https://www.tradingview.com/x/pendingLimitTest/",
+            "caption": "Order idea before execution"
+        })
+        self.assertEqual(screenshot_res.status_code, 200)
+
+        # 5. Order fills into active position! Sync again with position linked to order_id "777"
+        sync_res_filled = self.client.post("/api/sync/ctrader-push", json={
+            "source": "ctrader-cbot",
+            "platform": "cTrader",
+            "account_number": "limit-acc-1",
+            "balance": 10000.0,
+            "equity": 10015.0,
+            "open_trades": [
+                {
+                    "ticket": "ct-pos-999",
+                    "order_id": "777",
+                    "symbol": "EURUSD",
+                    "type": 0,
+                    "lots": 0.5,
+                    "open_price": 1.0825,
+                    "stop_loss": 1.0800,
+                    "take_profit": 1.0900,
+                    "open_time": "2026-09-04 12:30:00",
+                    "profit": 15.0
+                }
+            ],
+            "closed_trades": [],
+            "pending_orders": []
+        }, headers={"X-API-Key": api_key})
+        self.assertEqual(sync_res_filled.status_code, 200)
+
+        # 6. Verify trade transitioned to OPEN and kept notes and screenshots intact!
+        trade_after_fill = self.client.get(f"/api/trades/{trade_id}").json()
+        self.assertEqual(trade_after_fill["status"], "OPEN")
+        self.assertEqual(trade_after_fill["notes"], "Plan: Buy on 4H OB retest at 1.0825")
+        self.assertEqual(len(trade_after_fill["screenshots"]), 1)
+        self.assertEqual(trade_after_fill["screenshots"][0]["caption"], "Order idea before execution")
+
+        # 7. Order closes with profit (WIN)
+        sync_res_closed = self.client.post("/api/sync/ctrader-push", json={
+            "source": "ctrader-cbot",
+            "platform": "cTrader",
+            "account_number": "limit-acc-1",
+            "balance": 10075.0,
+            "equity": 10075.0,
+            "open_trades": [],
+            "closed_trades": [
+                {
+                    "ticket": "ct-pos-999",
+                    "order_id": "777",
+                    "symbol": "EURUSD",
+                    "type": 0,
+                    "lots": 0.5,
+                    "open_price": 1.0825,
+                    "close_price": 1.0900,
+                    "stop_loss": 1.0800,
+                    "take_profit": 1.0900,
+                    "open_time": "2026-09-04 12:30:00",
+                    "close_time": "2026-09-04 14:00:00",
+                    "profit": 75.0,
+                    "commission": -2.0,
+                    "swap": 0.0
+                }
+            ],
+            "pending_orders": []
+        }, headers={"X-API-Key": api_key})
+        self.assertEqual(sync_res_closed.status_code, 200)
+
+        trade_closed = self.client.get(f"/api/trades/{trade_id}").json()
+        self.assertEqual(trade_closed["status"], "WIN")
+        self.assertEqual(trade_closed["net_profit"], 75.0)
+        self.assertEqual(trade_closed["notes"], "Plan: Buy on 4H OB retest at 1.0825")
+        self.assertEqual(len(trade_closed["screenshots"]), 1)
+
+        # 8. Test cancellation: Place a pending order then cancel it
+        sync_res_pend2 = self.client.post("/api/sync/ctrader-push", json={
+            "source": "ctrader-cbot",
+            "platform": "cTrader",
+            "account_number": "limit-acc-1",
+            "balance": 10075.0,
+            "equity": 10075.0,
+            "open_trades": [],
+            "closed_trades": [],
+            "pending_orders": [
+                {
+                    "ticket": "ct-ord-888",
+                    "order_id": "888",
+                    "order_type": "Limit",
+                    "symbol": "GBPUSD",
+                    "type": 1,
+                    "lots": 0.2,
+                    "open_price": 1.3200,
+                    "open_time": "2026-09-04 15:00:00",
+                    "status": "PENDING"
+                }
+            ]
+        }, headers={"X-API-Key": api_key})
+        self.assertEqual(sync_res_pend2.status_code, 200)
+
+        t2_res = self.client.get(f"/api/trades?account_id={acc_id}&search=GBPUSD").json()
+        self.assertEqual(len(t2_res["trades"]), 1)
+        t2_id = t2_res["trades"][0]["id"]
+        self.assertEqual(t2_res["trades"][0]["status"], "PENDING")
+
+        # Now cancel in broker (cBot sends empty pending_orders and no position for 888)
+        sync_res_cancel = self.client.post("/api/sync/ctrader-push", json={
+            "source": "ctrader-cbot",
+            "platform": "cTrader",
+            "account_number": "limit-acc-1",
+            "balance": 10075.0,
+            "equity": 10075.0,
+            "open_trades": [],
+            "closed_trades": [],
+            "pending_orders": []
+        }, headers={"X-API-Key": api_key})
+        self.assertEqual(sync_res_cancel.status_code, 200)
+
+        t2_cancelled = self.client.get(f"/api/trades/{t2_id}").json()
+        self.assertEqual(t2_cancelled["status"], "CANCELLED")
+
+
 if __name__ == "__main__":
     unittest.main()
+

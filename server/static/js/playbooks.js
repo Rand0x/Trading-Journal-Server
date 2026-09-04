@@ -44,7 +44,7 @@ const Playbooks = {
           </div>
           <div style="text-align:right;">
             <span style="font-size:11px;color:#6b7280;display:block;">NET P&L</span>
-            <span style="font-size:14px;font-weight:700;" class="${pnlClass}">${(p.total_pnl || 0) >= 0 ? '+' : ''}$${(p.total_pnl || 0).toFixed(2)}</span>
+            <span style="font-size:14px;font-weight:700;" class="${pnlClass}">${App.formatMoney(p.total_pnl || 0, null, { showSign: true })}</span>
           </div>
           <div style="display:flex;gap:6px;">
             <button class="btn btn-secondary btn-sm" onclick="Playbooks.openEditPlaybook(${p.id})" title="Edit Playbook">
@@ -85,7 +85,7 @@ const Playbooks = {
           </div>
           <div style="text-align:right;">
             <span style="font-size:11px;color:#6b7280;display:block;">TOTAL COST</span>
-            <span style="font-size:14px;font-weight:700;color:#ef4444;">-$${(m.total_loss || 0).toFixed(2)}</span>
+            <span style="font-size:14px;font-weight:700;color:#ef4444;">-${App.formatMoney(m.total_loss || 0)}</span>
           </div>
           <button class="btn btn-secondary btn-sm" onclick="Playbooks.deleteMistake(${m.id})" style="color:#ef4444;" title="Delete Mistake">
             🗑️

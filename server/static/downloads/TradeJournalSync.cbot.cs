@@ -47,6 +47,8 @@ namespace cAlgo.Robots
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
         };
 
+        private readonly Dictionary<int, long> _positionToOrderMap = new Dictionary<int, long>();
+
         protected override void OnStart()
         {
             if (!Uri.TryCreate(JournalServerUrl, UriKind.Absolute, out _))
@@ -62,8 +64,36 @@ namespace cAlgo.Robots
             }
 
             Print("Trade Journal cBot started. This cBot only reads account data and sends it to the journal.");
+
+            try
+            {
+                PendingOrders.Filled += OnPendingOrderFilled;
+                PendingOrders.Created += args => SyncAccount();
+                PendingOrders.Cancelled += args => SyncAccount();
+                PendingOrders.Modified += args => SyncAccount();
+                Positions.Opened += args => SyncAccount();
+                Positions.Closed += args => SyncAccount();
+            }
+            catch (Exception ex)
+            {
+                Print("Event subscription notice: {0}", ex.Message);
+            }
+
             SyncAccount();
             Timer.Start(TimeSpan.FromMinutes(SyncIntervalMinutes));
+        }
+
+        private void OnPendingOrderFilled(PendingOrderFilledEventArgs args)
+        {
+            try
+            {
+                if (args.Position != null && args.PendingOrder != null)
+                {
+                    _positionToOrderMap[args.Position.Id] = args.PendingOrder.Id;
+                }
+            }
+            catch {}
+            SyncAccount();
         }
 
         protected override void OnTimer()
@@ -114,6 +144,7 @@ namespace cAlgo.Robots
                 .OrderBy(trade => trade.CloseTime)
                 .ToList();
 
+            var pendingOrders = PendingOrders.Select(ToPendingOrder).ToList();
             var openTrades = Positions.Select(ToOpenTrade).ToList();
             AttachCandles(closedTrades, openTrades);
 
@@ -129,7 +160,8 @@ namespace cAlgo.Robots
                 FreeMargin = Account.FreeMargin,
                 Leverage = Math.Max(1, (int)Math.Round(Account.PreciseLeverage)),
                 ClosedTrades = closedTrades,
-                OpenTrades = openTrades
+                OpenTrades = openTrades,
+                PendingOrders = pendingOrders
             };
         }
 
@@ -137,10 +169,17 @@ namespace cAlgo.Robots
         {
             var firstTrade = trades.First();
             var totalLots = trades.Sum(trade => trade.Quantity);
+            long? orderId = null;
+            if (_positionToOrderMap.TryGetValue(firstTrade.PositionId, out var mappedOrderId))
+            {
+                orderId = mappedOrderId;
+            }
+
             return new JournalTrade
             {
                 Ticket = "ctrader-position-" + firstTrade.PositionId.ToString(CultureInfo.InvariantCulture),
                 PositionId = firstTrade.PositionId.ToString(CultureInfo.InvariantCulture),
+                OrderId = orderId.HasValue ? orderId.Value.ToString(CultureInfo.InvariantCulture) : null,
                 Symbol = firstTrade.SymbolName,
                 Type = firstTrade.TradeType == TradeType.Buy ? 0 : 1,
                 Lots = totalLots,
@@ -173,10 +212,17 @@ namespace cAlgo.Robots
 
         private JournalTrade ToOpenTrade(Position position)
         {
+            long? orderId = null;
+            if (_positionToOrderMap.TryGetValue(position.Id, out var mappedOrderId))
+            {
+                orderId = mappedOrderId;
+            }
+
             return new JournalTrade
             {
                 Ticket = "ctrader-position-" + position.Id.ToString(CultureInfo.InvariantCulture),
                 PositionId = position.Id.ToString(CultureInfo.InvariantCulture),
+                OrderId = orderId.HasValue ? orderId.Value.ToString(CultureInfo.InvariantCulture) : null,
                 Symbol = position.SymbolName,
                 Type = position.TradeType == TradeType.Buy ? 0 : 1,
                 Lots = position.Quantity,
@@ -187,7 +233,27 @@ namespace cAlgo.Robots
                 Commission = position.Commissions,
                 Swap = position.Swap,
                 Profit = position.NetProfit,
-                Comment = CombineNote(position.Label, position.Comment)
+                Comment = CombineNote(position.Label, position.Comment),
+                Status = "OPEN"
+            };
+        }
+
+        private JournalTrade ToPendingOrder(PendingOrder order)
+        {
+            return new JournalTrade
+            {
+                Ticket = "ctrader-order-" + order.Id.ToString(CultureInfo.InvariantCulture),
+                OrderId = order.Id.ToString(CultureInfo.InvariantCulture),
+                OrderType = order.OrderType.ToString(),
+                Symbol = order.SymbolName,
+                Type = order.TradeType == TradeType.Buy ? 0 : 1,
+                Lots = order.Quantity,
+                OpenTime = ToIsoTime(Server.TimeInUtc),
+                OpenPrice = order.TargetPrice,
+                StopLoss = order.StopLoss,
+                TakeProfit = order.TakeProfit,
+                Comment = CombineNote(order.Label, order.Comment),
+                Status = "PENDING"
             };
         }
 
@@ -379,6 +445,9 @@ namespace cAlgo.Robots
 
         [JsonPropertyName("open_trades")]
         public List<JournalTrade> OpenTrades { get; set; }
+
+        [JsonPropertyName("pending_orders")]
+        public List<JournalTrade> PendingOrders { get; set; } = new List<JournalTrade>();
     }
 
     public class JournalTrade
@@ -388,6 +457,15 @@ namespace cAlgo.Robots
 
         [JsonPropertyName("position_id")]
         public string PositionId { get; set; }
+
+        [JsonPropertyName("order_id")]
+        public string OrderId { get; set; }
+
+        [JsonPropertyName("order_type")]
+        public string OrderType { get; set; }
+
+        [JsonPropertyName("status")]
+        public string Status { get; set; }
 
         [JsonPropertyName("symbol")]
         public string Symbol { get; set; }

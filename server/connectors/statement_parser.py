@@ -8,10 +8,26 @@ import io
 import re
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from server.database import get_connection
 
 logger = logging.getLogger(__name__)
+
+def _detect_statement_currency(file_content: str, filename: str) -> Optional[str]:
+    """Extract currency from statement file headers if present."""
+    match = re.search(r"Currency:\s*(?:<b>)?\s*([A-Za-z]{3})\b", file_content, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+
+    match = re.search(r"(?:Net|Gross|Profit|Balance)\s+([A-Za-z]{3})\b", file_content, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+
+    match = re.search(r"\b(?:Profit|Balance|Equity|Deposit)\s*\(([A-Za-z]{3})\)", file_content, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+
+    return None
 
 def parse_and_import_statement(file_content: str, filename: str, account_id: int) -> Dict[str, Any]:
     """
@@ -42,9 +58,15 @@ def parse_and_import_statement(file_content: str, filename: str, account_id: int
     imported = 0
     skipped = 0
     now_str = datetime.now(timezone.utc).isoformat()
+    detected_currency = _detect_statement_currency(file_content, filename)
 
     with get_connection() as conn:
         cursor = conn.cursor()
+        if detected_currency:
+            cursor.execute(
+                "UPDATE accounts SET currency = ?, updated_at = ? WHERE id = ?;",
+                (detected_currency, now_str, account_id)
+            )
         for t in trades:
             ticket = t.get("ticket") or f"import_{datetime.now().timestamp()}_{imported}"
             direction = t.get("direction", "BUY").upper()

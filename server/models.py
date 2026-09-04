@@ -3,12 +3,12 @@ Pydantic Models and Data Transfer Schemas
 Clean type validation without external AI or heavy dependencies.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any, Literal
 
 Platform = Literal["MT4", "MT5", "cTrader", "Manual"]
 Direction = Literal["BUY", "SELL"]
-TradeStatus = Literal["OPEN", "CLOSED", "WIN", "LOSS", "BE"]
+TradeStatus = Literal["OPEN", "CLOSED", "WIN", "LOSS", "BE", "PENDING", "CANCELLED"]
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
 
 # ================= ACCOUNT SCHEMAS =================
@@ -33,6 +33,14 @@ class AccountBase(BaseModel):
     ctrader_account_id: Optional[str] = ""
     ctrader_is_live: Optional[bool] = False
 
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, v):
+        if v is None:
+            return "USD"
+        val = str(v).strip().upper()
+        return val or "USD"
+
 class AccountCreate(AccountBase):
     pass
 
@@ -41,6 +49,14 @@ class AccountUpdate(BaseModel):
     broker: Optional[str] = None
     account_number: Optional[str] = None
     currency: Optional[str] = None
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_update_currency(cls, v):
+        if v is None:
+            return None
+        val = str(v).strip().upper()
+        return val or None
     initial_balance: Optional[float] = Field(default=None, ge=0)
     current_balance: Optional[float] = Field(default=None, ge=0)
     equity: Optional[float] = Field(default=None, ge=0)
@@ -208,6 +224,7 @@ class TradeResponse(TradeBase):
     setup_name: Optional[str] = None
     mistake_name: Optional[str] = None
     account_name: Optional[str] = None
+    account_currency: Optional[str] = None
 
 # ================= MQL / BROKER SYNC SCHEMAS =================
 class MQLCandleBar(BaseModel):
@@ -222,6 +239,9 @@ class MQLCandleBar(BaseModel):
 class MQLTradeItem(BaseModel):
     ticket: str
     position_id: Optional[str] = None
+    order_id: Optional[str] = None
+    order_type: Optional[str] = None
+    status: Optional[str] = None
     symbol: str
     type: int = Field(ge=0, le=1)  # 0 = BUY, 1 = SELL
     lots: float = Field(gt=0)
@@ -243,7 +263,7 @@ class MQLSyncPayload(BaseModel):
     account_number: str
     broker: Optional[str] = ""
     platform: Optional[str] = "MT5"  # 'MT4' or 'MT5'
-    currency: Optional[str] = "USD"
+    currency: Optional[str] = None
     balance: float = Field(ge=0)
     equity: float = Field(ge=0)
     margin: Optional[float] = 0.0
@@ -251,6 +271,15 @@ class MQLSyncPayload(BaseModel):
     leverage: Optional[int] = Field(default=100, ge=1)
     closed_trades: Optional[List[MQLTradeItem]] = Field(default_factory=list)
     open_trades: Optional[List[MQLTradeItem]] = Field(default_factory=list)
+    pending_orders: Optional[List[MQLTradeItem]] = Field(default_factory=list)
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_mql_currency(cls, v):
+        if v is None:
+            return None
+        val = str(v).strip().upper()
+        return val or None
 
 # ================= CANDLE SCHEMAS =================
 class CandleItem(BaseModel):

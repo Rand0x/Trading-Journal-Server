@@ -214,17 +214,21 @@ def _select_auto_timeframe(open_ts: int, close_ts: int) -> str:
 
 
 def _build_markers(trade, candles: List[Dict[str, Any]], open_ts: int, close_ts: int):
+    status = trade["status"] if "status" in trade.keys() else ""
+    is_pending = status == "PENDING"
     is_buy = trade["direction"].upper() in ("BUY", "LONG")
-    markers = [
-        {
-            "time": _find_closest_candle_time(candles, open_ts),
-            "position": "belowBar" if is_buy else "aboveBar",
-            "color": "#10b981" if is_buy else "#ef4444",
-            "shape": "arrowUp" if is_buy else "arrowDown",
-            "text": f"{'BUY' if is_buy else 'SELL'} {trade['volume']} @ {trade['open_price']}",
-            "size": 2,
-        }
-    ]
+    markers = []
+    if not is_pending:
+        markers.append(
+            {
+                "time": _find_closest_candle_time(candles, open_ts),
+                "position": "belowBar" if is_buy else "aboveBar",
+                "color": "#10b981" if is_buy else "#ef4444",
+                "shape": "arrowUp" if is_buy else "arrowDown",
+                "text": f"{'BUY' if is_buy else 'SELL'} {trade['volume']} @ {trade['open_price']}",
+                "size": 2,
+            }
+        )
     if trade["close_time"] and trade["close_price"]:
         pnl = float(trade["net_profit"] or 0.0)
         markers.append(
@@ -241,14 +245,16 @@ def _build_markers(trade, candles: List[Dict[str, Any]], open_ts: int, close_ts:
 
 
 def _price_lines(trade) -> List[Dict[str, Any]]:
+    status = trade["status"] if "status" in trade.keys() else ""
+    is_pending = status == "PENDING"
     lines = [
         {
             "price": float(trade["open_price"]),
-            "color": "#3b82f6",
+            "color": "#f59e0b" if is_pending else "#3b82f6",
             "lineWidth": 2,
             "lineStyle": 2,
             "axisLabelVisible": True,
-            "title": f"ENTRY: {trade['open_price']}",
+            "title": f"LIMIT: {trade['open_price']}" if is_pending else f"ENTRY: {trade['open_price']}",
         }
     ]
     if trade["stop_loss"] and float(trade["stop_loss"]) > 0:

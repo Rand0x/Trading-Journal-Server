@@ -58,11 +58,14 @@ const Accounts = {
           <div>
             <span class="playbook-card-title">${a.name}</span>
             <span style="font-size:12px;color:#9ca3af;display:block;">
-              ${a.broker || 'Broker'} • ID: <strong style="color:#60a5fa;">${a.account_number || 'N/A'}</strong>
+              ${a.currency || 'USD'} • ${a.broker || 'Broker'} • ID: <strong style="color:#60a5fa;">${a.account_number || 'N/A'}</strong>
               ${a.server_name ? ` • Server: <em>${a.server_name}</em>` : ''}
             </span>
           </div>
           <div style="display:flex;gap:6px;align-items:center;">
+            <span class="badge" style="background:#6366f122;color:#a5b4fc;border:1px solid #6366f155;font-weight:700;">
+              ${a.currency || 'USD'}
+            </span>
             <span class="badge" style="background:#3b82f622;color:#60a5fa;border:1px solid #3b82f655;">
               ${a.platform}
             </span>
@@ -75,18 +78,18 @@ const Accounts = {
         <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:10px;margin-top:4px;">
           <div style="background:#0a0e17;padding:10px;border-radius:6px;">
             <span style="font-size:11px;color:#6b7280;display:block;">BALANCE</span>
-            <span style="font-size:16px;font-weight:700;color:#fff;">$${(a.current_balance || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+            <span style="font-size:16px;font-weight:700;color:#fff;">${App.formatMoney(a.current_balance, a.currency)}</span>
           </div>
           <div style="background:#0a0e17;padding:10px;border-radius:6px;">
             <span style="font-size:11px;color:#6b7280;display:block;">EQUITY</span>
-            <span style="font-size:16px;font-weight:700;color:#fff;">$${(a.equity || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+            <span style="font-size:16px;font-weight:700;color:#fff;">${App.formatMoney(a.equity, a.currency)}</span>
           </div>
         </div>
 
         <div style="font-size:12px;display:flex;justify-content:space-between;color:#9ca3af;">
-          <span>Initial: $${(a.initial_balance || 0).toLocaleString()}</span>
+          <span>Initial: ${App.formatMoney(a.initial_balance, a.currency, { decimals: 0 })}</span>
           <span style="font-weight:700;" class="${isProfitable ? 'color-green' : 'color-red'}">
-            ${isProfitable ? '+' : ''}$${profitDiff.toFixed(2)} (${((profitDiff / (a.initial_balance || 1)) * 100).toFixed(1)}%)
+            ${App.formatMoney(profitDiff, a.currency, { showSign: true })} (${((profitDiff / (a.initial_balance || 1)) * 100).toFixed(1)}%)
           </span>
         </div>
 

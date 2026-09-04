@@ -12,6 +12,66 @@ const App = {
   playbooks: [],
   mistakes: [],
 
+  getCurrencySymbol(currency) {
+    const c = (currency || 'USD').toUpperCase().trim();
+    switch (c) {
+      case 'USD': return '$';
+      case 'EUR': return '€';
+      case 'GBP': return '£';
+      case 'JPY': return '¥';
+      case 'CHF': return 'CHF ';
+      case 'AUD': return 'A$';
+      case 'CAD': return 'C$';
+      default: return c ? `${c} ` : '$';
+    }
+  },
+
+  getActiveAccount() {
+    if (!this.activeAccountId) return null;
+    return (this.accounts || []).find(a => a.id === this.activeAccountId) || null;
+  },
+
+  getActiveCurrency() {
+    const acc = this.getActiveAccount();
+    if (acc && acc.currency) {
+      return acc.currency.toUpperCase().trim();
+    }
+    if (this.accounts && this.accounts.length > 0) {
+      const currencies = [...new Set(this.accounts.map(a => (a.currency || 'USD').toUpperCase().trim()))];
+      if (currencies.length === 1) {
+        return currencies[0];
+      }
+    }
+    return 'USD';
+  },
+
+  getActiveCurrencySymbol() {
+    return this.getCurrencySymbol(this.getActiveCurrency());
+  },
+
+  formatMoney(amount, currency = null, options = {}) {
+    const val = Number(amount || 0);
+    const cur = currency || this.getActiveCurrency();
+    const sym = this.getCurrencySymbol(cur);
+    const decimals = options.decimals !== undefined ? options.decimals : 2;
+    const absVal = Math.abs(val);
+    const numStr = absVal.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    });
+
+    if (options.absolute) {
+      return `${sym}${numStr}`;
+    }
+    if (val < -0.0001) {
+      return `-${sym}${numStr}`;
+    }
+    if (options.showSign && val > 0.0001) {
+      return `+${sym}${numStr}`;
+    }
+    return `${sym}${numStr}`;
+  },
+
   async init() {
     console.log('Initializing Trading Journal...');
     this.setupEventListeners();

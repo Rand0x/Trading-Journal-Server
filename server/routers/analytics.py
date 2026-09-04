@@ -55,8 +55,23 @@ def get_analytics_overview(
 ):
     trades, playbooks, mistakes = _fetch_filtered_trades(account_id, date_from, date_to)
     
+    currency = "USD"
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        if account_id:
+            cursor.execute("SELECT currency FROM accounts WHERE id = ?;", (account_id,))
+            row = cursor.fetchone()
+            if row and row["currency"]:
+                currency = row["currency"]
+        else:
+            cursor.execute("SELECT COUNT(DISTINCT currency), MIN(currency) FROM accounts;")
+            row = cursor.fetchone()
+            if row and row[0] == 1 and row[1]:
+                currency = row[1]
+
     return {
         "metrics": calculate_trade_metrics(trades),
+        "currency": currency,
         "by_day_of_week": get_performance_by_day_of_week(trades),
         "by_hour": get_performance_by_hour(trades),
         "by_symbol": get_performance_by_symbol(trades),

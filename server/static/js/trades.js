@@ -73,15 +73,42 @@ const Trades = {
       tr.dataset.tradeId = t.id;
       tr.setAttribute('aria-expanded', 'false');
       tr.title = 'Klicken, um die Trade-Details auszuklappen';
+      const tradeCurrency = t.account_currency || App.getActiveCurrency();
       const pnl = parseFloat(t.net_profit || 0);
       const isWin = pnl > 0.001;
       const isLoss = pnl < -0.001;
 
-      const pnlFormatted = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+      const pnlFormatted = App.formatMoney(pnl, tradeCurrency, { showSign: true });
       const pnlClass = isWin ? 'color-green' : (isLoss ? 'color-red' : 'color-muted');
 
       const dirClass = t.direction === 'BUY' ? 'badge-buy' : 'badge-sell';
-      const statusClass = t.status === 'WIN' ? 'badge-win' : (t.status === 'LOSS' ? 'badge-loss' : 'badge-be');
+      let statusClass = 'badge-be';
+      let statusLabel = t.status || 'CLOSED';
+      let exitDisplay = t.close_price || 'Open';
+      let pnlDisplay = pnlFormatted;
+      let pnlDisplayClass = pnlClass;
+
+      if (t.status === 'PENDING') {
+        statusClass = 'badge-pending';
+        statusLabel = 'LIMIT';
+        exitDisplay = '<span style="color:#f59e0b;font-weight:600;">Waiting for fill</span>';
+        pnlDisplay = '—';
+        pnlDisplayClass = 'color-muted';
+      } else if (t.status === 'CANCELLED') {
+        statusClass = 'badge-cancelled';
+        statusLabel = 'CANCELLED';
+        exitDisplay = '<span style="color:#9ca3af;">Cancelled</span>';
+        pnlDisplay = '—';
+        pnlDisplayClass = 'color-muted';
+      } else if (t.status === 'OPEN') {
+        statusClass = 'badge-open';
+        statusLabel = 'OPEN';
+        exitDisplay = '<span style="color:#60a5fa;">Open</span>';
+      } else if (t.status === 'WIN') {
+        statusClass = 'badge-win';
+      } else if (t.status === 'LOSS') {
+        statusClass = 'badge-loss';
+      }
 
       const setupBadge = t.setup_name ? `<span class="badge badge-setup">${t.setup_name}</span>` : '<span style="color:#4b5563;">—</span>';
       const mistakeBadge = t.mistake_name ? `<span class="badge badge-mistake">${t.mistake_name}</span>` : '<span style="color:#4b5563;">—</span>';
@@ -96,13 +123,13 @@ const Trades = {
         <td><span class="badge ${dirClass}">${t.direction}</span></td>
         <td>${t.volume}</td>
         <td>${t.open_price}</td>
-        <td>${t.close_price || 'Open'}</td>
+        <td>${exitDisplay}</td>
         <td style="font-size:12px;color:#9ca3af;">
           ${t.stop_loss ? `SL: ${t.stop_loss}` : ''} 
           ${t.take_profit ? `<br>TP: ${t.take_profit}` : ''}
         </td>
-        <td style="font-weight:700;" class="${pnlClass}">${pnlFormatted}</td>
-        <td><span class="badge ${statusClass}">${t.status}</span></td>
+        <td style="font-weight:700;" class="${pnlDisplayClass}">${pnlDisplay}</td>
+        <td><span class="badge ${statusClass}">${statusLabel}</span></td>
         <td>${setupBadge}</td>
         <td>${mistakeBadge}</td>
         <td style="text-align:right;">
@@ -174,6 +201,7 @@ const Trades = {
 
   renderExpandedTrade(trade) {
     const escape = value => TradeDetail.escapeHtml(value);
+    const tradeCurrency = trade.account_currency || App.getActiveCurrency();
     const pnl = Number(trade.net_profit || 0);
     const pnlClass = pnl >= 0 ? 'color-green' : 'color-red';
     const partials = Array.isArray(trade.partial_closes) ? trade.partial_closes : [];
@@ -193,8 +221,14 @@ const Trades = {
     const partialMarkup = partials.length
       ? `<div class="trade-expanded-partials">${partials.map(partial => `
           <div><span>${escape(partial.close_time)} · ${Number(partial.volume).toFixed(2)} lots @ ${Number(partial.close_price)}</span>
-          <strong class="${Number(partial.net_profit || 0) >= 0 ? 'color-green' : 'color-red'}">${Number(partial.net_profit || 0) >= 0 ? '+' : ''}$${Number(partial.net_profit || 0).toFixed(2)}</strong></div>`).join('')}</div>`
+          <strong class="${Number(partial.net_profit || 0) >= 0 ? 'color-green' : 'color-red'}">${App.formatMoney(partial.net_profit || 0, tradeCurrency, { showSign: true })}</strong></div>`).join('')}</div>`
       : '';
+
+    const isPending = trade.status === 'PENDING';
+    const isCancelled = trade.status === 'CANCELLED';
+    const exitText = isPending ? 'Waiting for fill' : (isCancelled ? 'Cancelled' : (trade.close_time || 'Open'));
+    const pnlText = (isPending || isCancelled) ? '—' : App.formatMoney(pnl, tradeCurrency, { showSign: true });
+    const pnlDisplayClass = (isPending || isCancelled) ? 'color-muted' : pnlClass;
 
     return `
       <div class="trade-expanded-header">
@@ -205,8 +239,8 @@ const Trades = {
         <button type="button" class="btn btn-secondary btn-sm" data-open-trade-detail>📊 Vollständige Details</button>
       </div>
       <div class="trade-expanded-grid">
-        <div><span>Open / Close</span><strong>${escape(trade.open_time || '—')} → ${escape(trade.close_time || 'Open')}</strong></div>
-        <div><span>Net P&L / Status</span><strong class="${pnlClass}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} · ${escape(trade.status || '—')}</strong></div>
+        <div><span>Open / Close</span><strong>${escape(trade.open_time || '—')} → ${escape(exitText)}</strong></div>
+        <div><span>Net P&L / Status</span><strong class="${pnlDisplayClass}">${pnlText} · ${escape(trade.status || '—')}</strong></div>
         <div><span>Setup / Mistake</span><strong>${escape(trade.setup_name || '—')} / ${escape(trade.mistake_name || '—')}</strong></div>
         <div><span>Beschriftung / Notiz</span><strong>${escape(trade.notes || 'Keine Notiz')}</strong></div>
       </div>
@@ -263,6 +297,10 @@ const Trades = {
     document.getElementById('tradeForm').reset();
     this.activeEditingId = null;
 
+    if (document.getElementById('tfStatus')) {
+      document.getElementById('tfStatus').value = 'AUTO';
+    }
+
     // Set default timestamps
     const now = new Date();
     const nowStr = now.toISOString().substring(0, 16);
@@ -315,6 +353,9 @@ const Trades = {
       document.getElementById('tfAccount').value = trade.account_id;
       document.getElementById('tfSymbol').value = trade.symbol;
       document.getElementById('tfDirection').value = trade.direction;
+      if (document.getElementById('tfStatus')) {
+        document.getElementById('tfStatus').value = trade.status || 'AUTO';
+      }
       document.getElementById('tfVolume').value = trade.volume;
       document.getElementById('tfOpenPrice').value = trade.open_price;
       document.getElementById('tfClosePrice').value = trade.close_price || '';
@@ -343,6 +384,7 @@ const Trades = {
     const account_id = parseInt(document.getElementById('tfAccount').value);
     const symbol = document.getElementById('tfSymbol').value.toUpperCase().trim();
     const direction = document.getElementById('tfDirection').value;
+    const selectedStatus = document.getElementById('tfStatus') ? document.getElementById('tfStatus').value : 'AUTO';
     const volume = parseFloat(document.getElementById('tfVolume').value);
     const open_price = parseFloat(document.getElementById('tfOpenPrice').value);
     const close_price = document.getElementById('tfClosePrice').value ? parseFloat(document.getElementById('tfClosePrice').value) : null;
@@ -351,8 +393,19 @@ const Trades = {
     const net_profit = parseFloat(document.getElementById('tfNetProfit').value || 0);
     const commission = parseFloat(document.getElementById('tfCommission').value || 0);
     const swap = parseFloat(document.getElementById('tfSwap').value || 0);
+
+    let status = selectedStatus;
+    if (selectedStatus === 'AUTO') {
+      if (!close_price && !document.getElementById('tfCloseTime').value) {
+        status = 'OPEN';
+      } else {
+        status = net_profit > 0.001 ? 'WIN' : (net_profit < -0.001 ? 'LOSS' : 'BE');
+      }
+    }
+
     const open_time = document.getElementById('tfOpenTime').value.replace('T', ' ');
-    const close_time = document.getElementById('tfCloseTime').value ? document.getElementById('tfCloseTime').value.replace('T', ' ') : open_time;
+    const close_time_val = document.getElementById('tfCloseTime').value;
+    const close_time = close_time_val ? close_time_val.replace('T', ' ') : (['PENDING', 'OPEN'].includes(status) ? null : open_time);
     const setup_id = document.getElementById('tfSetup').value ? parseInt(document.getElementById('tfSetup').value) : null;
     const mistake_id = document.getElementById('tfMistake').value ? parseInt(document.getElementById('tfMistake').value) : null;
     const notes = document.getElementById('tfNotes').value;
@@ -361,7 +414,7 @@ const Trades = {
       account_id, symbol, direction, volume, open_price, close_price,
       stop_loss, take_profit, net_profit, commission, swap,
       open_time, close_time, setup_id, mistake_id, notes,
-      status: net_profit > 0.001 ? 'WIN' : (net_profit < -0.001 ? 'LOSS' : 'BE')
+      status: status
     };
 
     try {

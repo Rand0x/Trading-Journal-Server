@@ -23,6 +23,8 @@ APPLICATION_AUTH_REQ = 2100
 APPLICATION_AUTH_RES = 2101
 ACCOUNT_AUTH_REQ = 2102
 ACCOUNT_AUTH_RES = 2103
+ASSET_LIST_REQ = 2112
+ASSET_LIST_RES = 2113
 SYMBOLS_LIST_REQ = 2114
 SYMBOLS_LIST_RES = 2115
 TRADER_REQ = 2121
@@ -117,6 +119,20 @@ class CTraderConnector:
                 {"ctidTraderAccountId": account_id, "includeArchivedSymbols": False},
                 SYMBOLS_LIST_RES,
             )
+            assets = {}
+            try:
+                assets_response = await self._request(
+                    socket,
+                    ASSET_LIST_REQ,
+                    {"ctidTraderAccountId": account_id},
+                    ASSET_LIST_RES,
+                )
+                for a in (assets_response.get("asset") or []):
+                    if "assetId" in a:
+                        assets[int(a["assetId"])] = a.get("name", "")
+            except Exception as exc:
+                logger.warning("Could not fetch cTrader assets list: %s", exc)
+
             reconcile_response = await self._request(
                 socket,
                 RECONCILE_REQ,
@@ -139,15 +155,24 @@ class CTraderConnector:
             )
 
         trader = trader_response.get("trader") or {}
+        deposit_asset_id = trader.get("depositAssetId")
+        currency = assets.get(int(deposit_asset_id)) if deposit_asset_id is not None else None
+        if not currency and "depositCurrency" in trader:
+            currency = trader.get("depositCurrency")
+        if currency:
+            currency = str(currency).strip().upper()
+
         money_digits = int(trader.get("moneyDigits", 2))
         divisor = 10 ** money_digits
         return {
             "trader": trader,
+            "currency": currency,
             "money_digits": money_digits,
             "balance": float(trader.get("balance", 0)) / divisor,
             "equity": float(trader.get("balance", 0)) / divisor,
             "leverage": max(1, round(float(trader.get("leverageInCents", 10000)) / 100)),
             "positions": (reconcile_response.get("position") or []),
+            "orders": (reconcile_response.get("order") or []),
             "symbols": {
                 str(symbol.get("symbolId")): symbol.get("symbolName", "")
                 for symbol in (symbols_response.get("symbol") or [])
@@ -199,22 +224,42 @@ class CTraderConnector:
             if not cursor.fetchone():
                 raise ValueError(f"Account {local_account_id} not found.")
 
-            cursor.execute(
-                """
-                UPDATE accounts
-                SET current_balance = ?, equity = ?, leverage = ?,
-                    last_synced_at = ?, updated_at = ?
-                WHERE id = ?;
-                """,
-                (
-                    balance,
-                    equity,
-                    remote.get("leverage", 100),
-                    now_str,
-                    now_str,
-                    local_account_id,
-                ),
-            )
+            currency = remote.get("currency")
+            if currency:
+                cursor.execute(
+                    """
+                    UPDATE accounts
+                    SET current_balance = ?, equity = ?, leverage = ?,
+                        currency = ?, last_synced_at = ?, updated_at = ?
+                    WHERE id = ?;
+                    """,
+                    (
+                        balance,
+                        equity,
+                        remote.get("leverage", 100),
+                        currency,
+                        now_str,
+                        now_str,
+                        local_account_id,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE accounts
+                    SET current_balance = ?, equity = ?, leverage = ?,
+                        last_synced_at = ?, updated_at = ?
+                    WHERE id = ?;
+                    """,
+                    (
+                        balance,
+                        equity,
+                        remote.get("leverage", 100),
+                        now_str,
+                        now_str,
+                        local_account_id,
+                    ),
+                )
 
             symbols = remote.get("symbols", {})
             for deal in remote.get("deals", []):
@@ -280,6 +325,89 @@ class CTraderConnector:
                     ),
                 )
                 inserted += 1
+
+            # Process pending limit/stop orders
+            active_pending_tickets = set()
+            for order in remote.get("orders", []):
+                order_id = str(order.get("orderId") or "").strip()
+                symbol = str(symbols.get(str(order.get("symbolId")), "")).upper().strip()
+                if not order_id or not symbol:
+                    continue
+
+                order_type = int(order.get("orderType", 1))
+                # 2: LIMIT, 3: STOP, 6: STOP_LIMIT
+                if order_type not in (2, 3, 6):
+                    continue
+
+                ticket = f"ctrader-order-{order_id}"
+                active_pending_tickets.add(ticket)
+
+                direction = "BUY" if int(order.get("tradeSide", 2)) == 1 else "SELL"
+                volume = float(order.get("volume", 0)) / 100.0
+                limit_price = float(order.get("limitPrice") or order.get("stopPrice") or 0.0)
+                sl = float(order.get("stopLoss", 0)) if order.get("stopLoss") else None
+                tp = float(order.get("takeProfit", 0)) if order.get("takeProfit") else None
+                order_time = datetime.now(timezone.utc).isoformat()
+                if order.get("utcLastUpdateTimestamp"):
+                    order_time = datetime.fromtimestamp(float(order["utcLastUpdateTimestamp"]) / 1000, tz=timezone.utc).isoformat()
+
+                cursor.execute(
+                    "SELECT id, status FROM trades WHERE account_id = ? AND ticket = ?;",
+                    (local_account_id, ticket),
+                )
+                existing_p = cursor.fetchone()
+                if existing_p:
+                    if existing_p["status"] == "PENDING":
+                        cursor.execute(
+                            """
+                            UPDATE trades
+                            SET symbol = ?, direction = ?, volume = ?, open_price = ?,
+                                stop_loss = ?, take_profit = ?, updated_at = ?
+                            WHERE id = ?;
+                            """,
+                            (symbol, direction, volume, limit_price, sl, tp, now_str, existing_p["id"])
+                        )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO trades (
+                            account_id, ticket, symbol, direction, volume,
+                            open_time, open_price, stop_loss, take_profit,
+                            commission, swap, gross_profit, net_profit, status,
+                            notes, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, 0.0, 0.0, 'PENDING', ?, ?, ?);
+                        """,
+                        (
+                            local_account_id, ticket, symbol, direction, volume,
+                            order_time, limit_price, sl, tp, "Limit order via cTrader Open API",
+                            now_str, now_str
+                        )
+                    )
+                    inserted += 1
+
+            # Cancel pending orders no longer active
+            if active_pending_tickets:
+                placeholders = ", ".join("?" for _ in active_pending_tickets)
+                cursor.execute(
+                    f"""
+                    UPDATE trades
+                    SET status = 'CANCELLED', updated_at = ?
+                    WHERE account_id = ? AND status = 'PENDING'
+                      AND ticket LIKE 'ctrader-order-%'
+                      AND ticket NOT IN ({placeholders});
+                    """,
+                    (now_str, local_account_id, *active_pending_tickets),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE trades
+                    SET status = 'CANCELLED', updated_at = ?
+                    WHERE account_id = ? AND status = 'PENDING'
+                      AND ticket LIKE 'ctrader-order-%';
+                    """,
+                    (now_str, local_account_id),
+                )
 
             cursor.execute(
                 """

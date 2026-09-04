@@ -62,6 +62,7 @@ const TradeDetail = {
   },
 
   renderTradeInfo(trade) {
+    const tradeCurrency = trade.account_currency || App.getActiveCurrency();
     document.getElementById('tdSymbol').textContent = trade.symbol;
     
     const dirBadge = document.getElementById('tdDirection');
@@ -70,18 +71,56 @@ const TradeDetail = {
 
     const pnl = parseFloat(trade.net_profit || 0);
     const pnlEl = document.getElementById('tdPnl');
-    pnlEl.textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
-    pnlEl.className = `metric-value ${pnl >= 0 ? 'color-green' : 'color-red'}`;
+
+    const statusBadge = document.getElementById('tdStatusBadge');
+    if (statusBadge) {
+      if (trade.status === 'PENDING') {
+        statusBadge.textContent = 'PENDING LIMIT';
+        statusBadge.className = 'badge badge-pending';
+      } else if (trade.status === 'CANCELLED') {
+        statusBadge.textContent = 'CANCELLED';
+        statusBadge.className = 'badge badge-cancelled';
+      } else if (trade.status === 'OPEN') {
+        statusBadge.textContent = 'OPEN';
+        statusBadge.className = 'badge badge-open';
+      } else if (trade.status) {
+        statusBadge.textContent = trade.status;
+        statusBadge.className = `badge badge-${trade.status.toLowerCase()}`;
+      } else {
+        statusBadge.textContent = '';
+        statusBadge.className = 'badge';
+      }
+    }
+
+    const entryLabel = document.getElementById('tdEntryLabel');
+    if (entryLabel) {
+      entryLabel.textContent = (trade.status === 'PENDING') ? 'LIMIT PRICE' : 'ENTRY';
+    }
+
+    if (trade.status === 'PENDING') {
+      pnlEl.textContent = '—';
+      pnlEl.className = 'metric-value color-muted';
+      document.getElementById('tdExitPrice').textContent = 'Waiting for fill';
+      document.getElementById('tdCloseTime').textContent = '—';
+    } else if (trade.status === 'CANCELLED') {
+      pnlEl.textContent = '—';
+      pnlEl.className = 'metric-value color-muted';
+      document.getElementById('tdExitPrice').textContent = 'Cancelled';
+      document.getElementById('tdCloseTime').textContent = trade.close_time || 'Cancelled';
+    } else {
+      pnlEl.textContent = App.formatMoney(pnl, tradeCurrency, { showSign: true });
+      pnlEl.className = `metric-value ${pnl >= 0 ? 'color-green' : 'color-red'}`;
+      document.getElementById('tdExitPrice').textContent = trade.close_price || 'Active';
+      document.getElementById('tdCloseTime').textContent = trade.close_time || 'Open';
+    }
 
     document.getElementById('tdVolume').textContent = `${trade.volume} lots`;
     document.getElementById('tdEntryPrice').textContent = trade.open_price;
-    document.getElementById('tdExitPrice').textContent = trade.close_price || 'Active';
     document.getElementById('tdSL').textContent = trade.stop_loss ? trade.stop_loss : 'None';
     document.getElementById('tdTP').textContent = trade.take_profit ? trade.take_profit : 'None';
-    document.getElementById('tdCommission').textContent = `$${parseFloat(trade.commission || 0).toFixed(2)}`;
-    document.getElementById('tdSwap').textContent = `$${parseFloat(trade.swap || 0).toFixed(2)}`;
+    document.getElementById('tdCommission').textContent = App.formatMoney(trade.commission || 0, tradeCurrency);
+    document.getElementById('tdSwap').textContent = App.formatMoney(trade.swap || 0, tradeCurrency);
     document.getElementById('tdOpenTime').textContent = trade.open_time;
-    document.getElementById('tdCloseTime').textContent = trade.close_time || 'Open';
 
     const partials = Array.isArray(trade.partial_closes) ? trade.partial_closes : [];
     const partialList = document.getElementById('tdPartialClosesList');
@@ -103,7 +142,7 @@ const TradeDetail = {
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;margin-bottom:5px;background:#0a0e17;border-radius:5px;">
             <span>${this.escapeHtml(partial.close_time)} • ${Number(partial.volume).toFixed(2)} lots @ ${Number(partial.close_price)} </span>
             <span style="display:flex;align-items:center;gap:8px;white-space:nowrap;">
-              <strong style="color:${pnlColor};">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</strong>
+              <strong style="color:${pnlColor};">${App.formatMoney(pnl, tradeCurrency, { showSign: true })}</strong>
               <button type="button" class="btn btn-secondary btn-sm" onclick="TradeDetail.deletePartialClose(${partial.id})" style="color:#ef4444;padding:3px 7px;">×</button>
             </span>
           </div>`;

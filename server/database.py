@@ -167,11 +167,24 @@ def init_db():
             rating INTEGER DEFAULT 5, -- 1-5 execution rating
             tags TEXT DEFAULT '', -- Comma-separated or JSON string
             timeframe TEXT DEFAULT 'M15',
+            order_id TEXT DEFAULT '',
+            order_type TEXT DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(account_id, ticket) ON CONFLICT IGNORE
         );
         """)
+
+        # Migration helper: Ensure newly added columns exist in trades
+        cursor.execute("PRAGMA table_info(trades);")
+        existing_trade_cols = [r["name"] for r in cursor.fetchall()]
+        new_trade_cols = [
+            ("order_id", "TEXT DEFAULT ''"),
+            ("order_type", "TEXT DEFAULT ''"),
+        ]
+        for col_name, col_type in new_trade_cols:
+            if col_name not in existing_trade_cols:
+                cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type};")
 
         # Partial exits / scale-outs belonging to one journal trade. The
         # parent trade keeps the original position and aggregate P&L while

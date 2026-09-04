@@ -218,7 +218,7 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
             payload.broker or "",
             payload.platform or "MT5",
             payload.account_number or "",
-            payload.currency or "USD",
+            (payload.currency or "").strip().upper(),
             now_str,
             now_str,
             account_id
@@ -243,6 +243,53 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                 INSERT INTO equity_history (account_id, timestamp, balance, equity, margin)
                 VALUES (?, ?, ?, ?, ?);
             """, (account_id, now_str, payload.balance, payload.equity, payload.margin or 0.0))
+
+        # 3.5 Process pending orders (status = PENDING)
+        active_pending_tickets = set()
+        for p_order in (payload.pending_orders or []):
+            p_ticket = p_order.ticket or (f"ctrader-order-{p_order.order_id}" if p_order.order_id else "")
+            if not p_ticket:
+                continue
+            active_pending_tickets.add(p_ticket)
+            direction = "BUY" if p_order.type == 0 else "SELL"
+
+            cursor.execute("SELECT id, status FROM trades WHERE account_id = ? AND ticket = ?;", (account_id, p_ticket))
+            existing_pending = cursor.fetchone()
+            if existing_pending:
+                if existing_pending["status"] == "PENDING":
+                    cursor.execute("""
+                        UPDATE trades
+                        SET symbol = ?, direction = ?, volume = ?, open_price = ?,
+                            stop_loss = ?, take_profit = ?, updated_at = ?
+                        WHERE id = ?;
+                    """, (
+                        p_order.symbol.upper(), direction, p_order.lots, p_order.open_price,
+                        p_order.stop_loss, p_order.take_profit, now_str, existing_pending["id"]
+                    ))
+            else:
+                cursor.execute("""
+                    INSERT INTO trades (
+                        account_id, ticket, symbol, direction, volume,
+                        open_time, open_price, stop_loss, take_profit,
+                        commission, swap, gross_profit, net_profit, status,
+                        notes, order_id, order_type, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, 0.0, 0.0, 'PENDING', ?, ?, ?, ?, ?);
+                """, (
+                    account_id,
+                    p_ticket,
+                    p_order.symbol.upper(),
+                    direction,
+                    p_order.lots,
+                    p_order.open_time,
+                    p_order.open_price,
+                    p_order.stop_loss,
+                    p_order.take_profit,
+                    p_order.comment or "",
+                    str(p_order.order_id or ""),
+                    str(p_order.order_type or "Limit"),
+                    now_str,
+                    now_str
+                ))
 
         # 4. Upsert closed trades
         inserted_trades = 0
@@ -269,6 +316,29 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
             # Check if trade already exists
             cursor.execute("SELECT id FROM trades WHERE account_id = ? AND ticket = ?;", (account_id, trade.ticket))
             existing = cursor.fetchone()
+
+            if not existing and trade.order_id:
+                cursor.execute("""
+                    SELECT id FROM trades
+                    WHERE account_id = ? AND status = 'PENDING'
+                      AND (order_id = ? OR ticket = ? OR ticket = ? OR ticket = ?);
+                """, (account_id, str(trade.order_id), f"ctrader-order-{trade.order_id}", f"mt5-order-{trade.order_id}", str(trade.order_id)))
+                pending_match = cursor.fetchone()
+                if pending_match:
+                    cursor.execute("""
+                        UPDATE trades
+                        SET ticket = ?, order_id = ?, symbol = ?, direction = ?, volume = ?, open_time = ?, close_time = ?,
+                            open_price = ?, close_price = ?, stop_loss = COALESCE(?, stop_loss),
+                            take_profit = COALESCE(?, take_profit), commission = ?, swap = ?,
+                            gross_profit = ?, net_profit = ?, status = ?, updated_at = ?
+                        WHERE id = ?;
+                    """, (
+                        trade.ticket, str(trade.order_id), trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.close_time,
+                        trade.open_price, trade.close_price, trade.stop_loss, trade.take_profit,
+                        trade.commission or 0.0, trade.swap or 0.0, gross_pnl, pnl, status, now_str, pending_match["id"]
+                    ))
+                    existing = pending_match
+                    updated_trades += 1
 
             if existing:
                 cursor.execute("""
@@ -370,12 +440,38 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
 
             cursor.execute("SELECT id FROM trades WHERE account_id = ? AND ticket = ?;", (account_id, trade.ticket))
             existing = cursor.fetchone()
+
+            if not existing and trade.order_id:
+                cursor.execute("""
+                    SELECT id FROM trades
+                    WHERE account_id = ? AND status = 'PENDING'
+                      AND (order_id = ? OR ticket = ? OR ticket = ? OR ticket = ?);
+                """, (account_id, str(trade.order_id), f"ctrader-order-{trade.order_id}", f"mt5-order-{trade.order_id}", str(trade.order_id)))
+                pending_match = cursor.fetchone()
+                if pending_match:
+                    cursor.execute("""
+                        UPDATE trades
+                        SET ticket = ?, order_id = ?, symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?,
+                            stop_loss = COALESCE(?, stop_loss), take_profit = COALESCE(?, take_profit),
+                            commission = ?, swap = ?, gross_profit = ?, net_profit = ?, status = 'OPEN', updated_at = ?
+                        WHERE id = ?;
+                    """, (
+                        trade.ticket, str(trade.order_id), trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_price,
+                        trade.stop_loss, trade.take_profit, trade.commission or 0.0, trade.swap or 0.0,
+                        (trade.profit or 0.0) - (trade.commission or 0.0) - (trade.swap or 0.0),
+                        trade.profit or 0.0, now_str, pending_match["id"]
+                    ))
+                    updated_trades += 1
+                    continue
+
             if existing:
                 cursor.execute("""
                     UPDATE trades
                     SET symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?,
                         stop_loss = ?, take_profit = ?, commission = ?, swap = ?,
-                        gross_profit = ?, net_profit = ?, status = 'OPEN', notes = ?, updated_at = ?
+                        gross_profit = ?, net_profit = ?, status = 'OPEN',
+                        notes = CASE WHEN notes IS NOT NULL AND notes != '' THEN notes ELSE ? END,
+                        updated_at = ?
                     WHERE id = ?;
                 """, (
                     trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_price,
@@ -413,6 +509,32 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
 
             if trade.candles:
                 candles_saved += _save_candles(cursor, trade.symbol, trade.candles)
+
+        # Update any pending orders that were cancelled or expired in the broker
+        if payload.pending_orders is not None and payload.source in ("ctrader-cbot", "mql"):
+            prefix_pattern = 'ctrader-order-%' if payload.source == "ctrader-cbot" else 'mt5-order-%'
+            if active_pending_tickets:
+                placeholders = ", ".join("?" for _ in active_pending_tickets)
+                cursor.execute(
+                    f"""
+                    UPDATE trades
+                    SET status = 'CANCELLED', updated_at = ?
+                    WHERE account_id = ? AND status = 'PENDING'
+                      AND (ticket LIKE ? OR order_id != '')
+                      AND ticket NOT IN ({placeholders});
+                    """,
+                    (now_str, account_id, prefix_pattern, *active_pending_tickets),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE trades
+                    SET status = 'CANCELLED', updated_at = ?
+                    WHERE account_id = ? AND status = 'PENDING'
+                      AND (ticket LIKE ? OR order_id != '');
+                    """,
+                    (now_str, account_id, prefix_pattern),
+                )
 
         # cTrader historical deals use distinct deal tickets from currently
         # open position tickets. Remove only stale cBot position snapshots once
