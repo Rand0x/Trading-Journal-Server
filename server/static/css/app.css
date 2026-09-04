@@ -1,6 +1,6 @@
 /* ==========================================================================
    TradeZella-Inspired Trading Journal Theme
-   Optimized for high performance and lightweight rendering on Raspberry Pi 3
+   High-performance, lightweight rendering
    ========================================================================== */
 
 :root {
@@ -164,18 +164,6 @@ body {
   border-top: 1px solid var(--border);
   font-size: 12px;
   color: var(--text-dim);
-}
-
-.raspi-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(16, 185, 129, 0.1);
-  color: var(--green);
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
 }
 
 /* Main Content Area */
@@ -555,6 +543,166 @@ body {
   background-color: var(--bg-card-hover);
 }
 
+.data-table tr.trade-data-row {
+  cursor: pointer;
+}
+
+.data-table tr.trade-data-row.is-expanded td {
+  background-color: var(--bg-card-hover);
+}
+
+.data-table tr.trade-expanded-row td {
+  padding: 0;
+  white-space: normal;
+  background-color: #0a0e17;
+}
+
+.trade-expanded-content {
+  padding: 16px 20px 18px;
+  border-bottom: 1px solid #263247;
+  box-shadow: inset 3px 0 0 #3b82f6;
+}
+
+.trade-expanded-header,
+.trade-expanded-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trade-expanded-header strong {
+  color: #f8fafc;
+  font-size: 14px;
+}
+
+.trade-expanded-header span,
+.trade-expanded-section-title span {
+  display: block;
+  color: #6b7280;
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+.trade-expanded-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.trade-expanded-grid > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+}
+
+.trade-expanded-grid span {
+  display: block;
+  color: #6b7280;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.trade-expanded-grid strong {
+  display: block;
+  overflow: hidden;
+  color: #d1d5db;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 4px;
+}
+
+.trade-expanded-section {
+  margin-top: 14px;
+}
+
+.trade-expanded-section-title {
+  justify-content: flex-start;
+  color: #e5e7eb;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.trade-expanded-section-title span {
+  display: inline;
+  margin-top: 0;
+  font-weight: 400;
+}
+
+.trade-expanded-partials {
+  margin-top: 7px;
+}
+
+.trade-expanded-partials > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: #111827;
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.trade-expanded-partials > div + div {
+  margin-top: 4px;
+}
+
+.trade-expanded-screenshot-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.trade-expanded-screenshot {
+  width: 132px;
+  padding: 0 0 5px;
+  overflow: hidden;
+  border: 1px solid #263247;
+  border-radius: 6px;
+  background: #111827;
+  color: #cbd5e1;
+  cursor: pointer;
+  text-align: left;
+}
+
+.trade-expanded-screenshot:hover {
+  border-color: #60a5fa;
+}
+
+.trade-expanded-screenshot img {
+  display: block;
+  width: 130px;
+  height: 86px;
+  object-fit: cover;
+  background: #090d16;
+}
+
+.trade-expanded-screenshot span {
+  display: block;
+  overflow: hidden;
+  padding: 4px 6px 0;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trade-expanded-empty,
+.trade-expanded-loading,
+.trade-expanded-error {
+  display: block;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.trade-expanded-error {
+  color: #ef4444;
+}
+
 /* Badges */
 .badge {
   display: inline-flex;
@@ -642,6 +790,54 @@ body {
 
 .modal-content.modal-lg {
   max-width: 1100px;
+}
+
+.trade-screenshot-lightbox {
+  padding: 0;
+  background: rgba(0, 0, 0, 0.94);
+}
+
+.trade-screenshot-lightbox-content {
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  background: #05070c;
+}
+
+.trade-screenshot-lightbox-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 24px 18px;
+  overflow: hidden;
+}
+
+.trade-screenshot-stage {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  min-height: 0;
+  padding: 10px;
+  background: #090d16;
+  border-radius: 8px;
+}
+
+.trade-screenshot-lightbox-image {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+  border-radius: 5px;
 }
 
 .modal-header {

@@ -13,7 +13,7 @@ const App = {
   mistakes: [],
 
   async init() {
-    console.log('Initializing Trading Journal (Raspi)...');
+    console.log('Initializing Trading Journal...');
     this.setupEventListeners();
     await Accounts.load();
     await Playbooks.load();

@@ -1,11 +1,10 @@
-# Multi-architecture Dockerfile for Raspberry Pi 3 Model B (1 GB RAM)
+# Multi-architecture Dockerfile for the Trading Journal Server
 # Compatible with linux/arm/v7 (32-bit), linux/arm64 (64-bit), and linux/amd64
 FROM python:3.12-slim
 
 # Prevent Python from writing .pyc files & buffer stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    MALLOC_ARENA_MAX=2 \
     DB_DIR=/app/data \
     PORT=8000
 
@@ -39,5 +38,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
-# Start Uvicorn with single worker and memory limits suited for 1 GB Pi 3
+# Start Uvicorn with one worker; scale with a reverse proxy if needed.
 CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--limit-concurrency", "50", "--backlog", "128"]

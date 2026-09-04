@@ -1,20 +1,21 @@
 """
 Main Application Entry Point for Trading Journal Server
-Optimized for Raspberry Pi 3 Model B (1 GB RAM).
 """
 
+import base64
 import os
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 import asyncio
 from server.database import init_db
 from server.routers import accounts, trades, dashboard, analytics, playbooks, mistakes, sync
-from server.connectors.mt_direct_connector import sync_all_active_accounts
+from server.connectors.ctrader_api import sync_all_active_ctrader_accounts
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,13 +23,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TradingJournal")
 
+_UNPROTECTED_PATHS = {"/api/health", "/api/sync/mql", "/api/sync/ctrader-push"}
+
+
+def get_access_credentials():
+    """Return optional HTTP Basic Auth credentials from the environment."""
+    username = os.getenv("JOURNAL_USERNAME", "")
+    password = os.getenv("JOURNAL_PASSWORD", "")
+    if bool(username) != bool(password):
+        raise RuntimeError(
+            "Set both JOURNAL_USERNAME and JOURNAL_PASSWORD, or set neither."
+        )
+    return (username, password) if username else None
+
+
+def is_authorized(authorization_header: str | None, credentials: tuple[str, str]) -> bool:
+    """Validate a Basic Auth header without logging credentials."""
+    if not authorization_header or not authorization_header.startswith("Basic "):
+        return False
+    try:
+        supplied = base64.b64decode(
+            authorization_header.removeprefix("Basic "), validate=True
+        ).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    expected = f"{credentials[0]}:{credentials[1]}"
+    return secrets.compare_digest(supplied, expected)
+
 async def background_auto_sync_loop():
-    """Periodically syncs all active MT4, MT5, and cTrader accounts in background."""
+    """Periodically syncs configured cTrader accounts in background."""
     while True:
         try:
             await asyncio.sleep(300) # Check every 5 minutes
-            logger.info("Executing periodic background auto-sync for trading accounts...")
-            sync_all_active_accounts()
+            logger.info("Executing periodic background cTrader auto-sync...")
+            # Broker connectors use blocking network clients. Keep them off
+            # the asyncio event loop so health checks and the UI stay responsive.
+            await asyncio.to_thread(sync_all_active_ctrader_accounts)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -36,7 +66,8 @@ async def background_auto_sync_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting Trading Journal Server for Raspberry Pi...")
+    get_access_credentials()  # Fail fast on an incomplete authentication setup.
+    logger.info("Starting Trading Journal Server...")
     init_db()
     logger.info("Database initialized.")
     # Launch background auto-sync loop
@@ -44,22 +75,51 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down Trading Journal Server...")
     sync_task.cancel()
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        pass
 
 app = FastAPI(
-    title="Trading Journal Server (Raspi)",
+    title="Trading Journal Server",
     description="TradeZella-style trading journal with TradingView Lightweight Charts, MT4/MT5/cTrader connectors.",
     version="1.0.0",
     lifespan=lifespan
 )
 
-# Enable CORS for local network access
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# The bundled web interface is served from the same origin. Cross-origin
+# requests remain disabled unless explicitly configured for a trusted origin.
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+@app.middleware("http")
+async def require_optional_basic_auth(request, call_next):
+    """Protect the UI and management API when access credentials are set.
+
+    EA and cBot push endpoints retain their separate per-account Journal API
+    Key authentication, so desktop trading terminals do not need Basic Auth.
+    """
+    credentials = get_access_credentials()
+    if credentials and request.url.path not in _UNPROTECTED_PATHS:
+        if not is_authorized(request.headers.get("authorization"), credentials):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required"},
+                headers={"WWW-Authenticate": 'Basic realm="Trading Journal"'},
+            )
+    return await call_next(request)
 
 # Include API routers
 app.include_router(accounts.router)
@@ -80,7 +140,6 @@ def health_check():
     return {
         "status": "healthy",
         "service": "trading-journal-server",
-        "platform": "Raspberry Pi 3 Model B (1 GB RAM Optimized)",
         "ai_enabled": False
     }
 
@@ -92,5 +151,5 @@ def serve_spa():
 
 if __name__ == "__main__":
     import uvicorn
-    # Single worker process with low concurrency limit to keep RAM strictly below 60MB on Pi
+    # One worker is suitable for the bundled SQLite deployment.
     uvicorn.run("server.main:app", host="0.0.0.0", port=8000, reload=False, workers=1)

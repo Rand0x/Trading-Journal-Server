@@ -6,12 +6,16 @@ services:
     container_name: trading-journal
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # Local-only by default. Set HOST_BIND_ADDRESS=0.0.0.0 only when
+      # trusted devices on the local network must reach the journal.
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:8000:8000"
     environment:
       - PORT=8000
       - DB_DIR=/app/data
       - PYTHONUNBUFFERED=1
-      - MALLOC_ARENA_MAX=2
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - JOURNAL_USERNAME=${JOURNAL_USERNAME:-}
+      - JOURNAL_PASSWORD=${JOURNAL_PASSWORD:-}
     volumes:
       - ./data:/app/data
     healthcheck:
@@ -20,10 +24,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
-    # Memory limits strictly tuned for Raspberry Pi 3 Model B (1 GB RAM total)
-    deploy:
-      resources:
-        limits:
-          memory: 350M
-        reservations:
-          memory: 80M

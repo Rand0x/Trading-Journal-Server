@@ -10,10 +10,10 @@ Handles all external connectivity:
 import logging
 from typing import Optional
 from fastapi import APIRouter, Header, HTTPException, UploadFile, File, Form, Query
-from server.models import MQLSyncPayload, CTraderSyncRequest, MTDirectSyncRequest, CandleBatch
+from server.models import MQLSyncPayload, CTraderSyncRequest, CandleBatch
 from server.connectors.mql_receiver import process_mql_payload
 from server.connectors.ctrader_api import sync_ctrader_account
-from server.connectors.mt_direct_connector import sync_mt_direct_account, sync_all_active_accounts
+from server.connectors.ctrader_api import sync_all_active_ctrader_accounts
 from server.connectors.statement_parser import parse_and_import_statement
 from server.connectors.market_data import get_chart_data_for_trade
 from server.database import get_connection
@@ -41,6 +41,22 @@ def receive_mql_sync(payload: MQLSyncPayload, x_api_key: Optional[str] = Header(
         logger.error(f"Error processing MQL sync: {e}")
         raise HTTPException(status_code=500, detail=f"Internal sync error: {str(e)}")
 
+@router.post("/ctrader-push")
+def receive_ctrader_cbot_sync(payload: MQLSyncPayload, x_api_key: Optional[str] = Header(None)):
+    """Receive a read-only account snapshot from the bundled cTrader cBot."""
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+    if payload.source != "ctrader-cbot" or (payload.platform or "").lower() != "ctrader":
+        raise HTTPException(status_code=422, detail="Expected a cTrader cBot sync payload")
+
+    try:
+        return process_mql_payload(api_key=x_api_key, payload=payload)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error processing cTrader cBot sync: {e}")
+        raise HTTPException(status_code=500, detail="Internal cTrader cBot sync error")
+
 @router.post("/ctrader")
 def trigger_ctrader_sync(req: CTraderSyncRequest):
     """
@@ -48,7 +64,12 @@ def trigger_ctrader_sync(req: CTraderSyncRequest):
     Fetches balance, equity, and closed deals.
     """
     # If credentials passed in body, update account first
-    if req.client_id or req.access_token:
+    if any(value is not None for value in (
+        req.client_id,
+        req.client_secret,
+        req.access_token,
+        req.ctrader_account_id,
+    )):
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -56,9 +77,28 @@ def trigger_ctrader_sync(req: CTraderSyncRequest):
                 SET ctrader_client_id = COALESCE(?, ctrader_client_id),
                     ctrader_client_secret = COALESCE(?, ctrader_client_secret),
                     ctrader_access_token = COALESCE(?, ctrader_access_token),
-                    ctrader_account_id = COALESCE(?, ctrader_account_id)
+                    ctrader_account_id = COALESCE(?, ctrader_account_id),
+                    ctrader_is_live = ?
                 WHERE id = ?;
-            """, (req.client_id, req.client_secret, req.access_token, req.ctrader_account_id, req.account_id))
+            """, (
+                req.client_id,
+                req.client_secret,
+                req.access_token,
+                req.ctrader_account_id,
+                1 if req.is_live else 0,
+                req.account_id,
+            ))
+            conn.commit()
+
+    if req.is_live:
+        # The request can select the live endpoint for a one-off sync. Persist
+        # it only when credentials were supplied above; stored auto-sync uses
+        # the account setting.
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE accounts SET ctrader_is_live = ? WHERE id = ?;",
+                (1, req.account_id),
+            )
             conn.commit()
 
     res = sync_ctrader_account(req.account_id)
@@ -66,33 +106,10 @@ def trigger_ctrader_sync(req: CTraderSyncRequest):
         raise HTTPException(status_code=400, detail=res.get("error", "cTrader sync failed"))
     return res
 
-@router.post("/mt-direct")
-def trigger_mt_direct_sync(req: MTDirectSyncRequest):
-    """
-    Direct Server-Side MetaTrader 4 / MetaTrader 5 Login.
-    Directly connects using Account ID (Login), Password, and Server Name.
-    No client PC or MT terminal needed!
-    """
-    try:
-        res = sync_mt_direct_account(
-            account_id=req.account_id,
-            account_number=req.account_number,
-            password=req.password,
-            server_name=req.server_name,
-            platform=req.platform,
-            metaapi_token=req.metaapi_token
-        )
-        return res
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error in direct MT sync: {e}")
-        raise HTTPException(status_code=500, detail=f"Direct sync failed: {str(e)}")
-
 @router.post("/auto-sync-all")
 def trigger_auto_sync_all():
-    """Triggers background synchronization for all active accounts."""
-    return sync_all_active_accounts()
+    """Triggers background synchronization for configured cTrader accounts."""
+    return sync_all_active_ctrader_accounts()
 
 @router.post("/import")
 async def import_statement_file(file: UploadFile = File(...), account_id: int = Form(...)):

@@ -3,6 +3,8 @@
  */
 
 const Playbooks = {
+  activePlaybookId: null,
+
   async load() {
     try {
       const [playbooks, mistakes] = await Promise.all([
@@ -32,9 +34,6 @@ const Playbooks = {
       card.innerHTML = `
         <div class="playbook-card-header">
           <span class="playbook-card-title">${p.name}</span>
-          <span class="badge" style="background:${p.color || '#3b82f6'}22;color:${p.color || '#3b82f6'};border:1px solid ${p.color || '#3b82f6'}55;">
-            Target ${p.target_rr || 2.0}R
-          </span>
         </div>
         <p style="font-size:13px;color:#9ca3af;">${p.description || 'No description provided.'}</p>
         ${p.rules ? `<div style="background:#0a0e17;padding:10px;border-radius:6px;font-size:12px;white-space:pre-line;color:#cbd5e1;">${p.rules}</div>` : ''}
@@ -47,9 +46,14 @@ const Playbooks = {
             <span style="font-size:11px;color:#6b7280;display:block;">NET P&L</span>
             <span style="font-size:14px;font-weight:700;" class="${pnlClass}">${(p.total_pnl || 0) >= 0 ? '+' : ''}$${(p.total_pnl || 0).toFixed(2)}</span>
           </div>
-          <button class="btn btn-secondary btn-sm" onclick="Playbooks.deletePlaybook(${p.id})" style="color:#ef4444;" title="Delete Playbook">
-            🗑️
-          </button>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-secondary btn-sm" onclick="Playbooks.openEditPlaybook(${p.id})" title="Edit Playbook">
+              ✏️
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="Playbooks.deletePlaybook(${p.id})" style="color:#ef4444;" title="Delete Playbook">
+              🗑️
+            </button>
+          </div>
         </div>
       `;
       container.appendChild(card);
@@ -93,7 +97,26 @@ const Playbooks = {
   },
 
   openAddPlaybookModal() {
+    this.activePlaybookId = null;
     document.getElementById('playbookForm').reset();
+    document.getElementById('playbookModalTitle').textContent = 'New Playbook Setup';
+    document.getElementById('playbookSubmitButton').textContent = 'Save Playbook';
+    document.getElementById('addPlaybookModal').classList.add('active');
+  },
+
+  openEditPlaybook(id) {
+    const playbook = (App.playbooks || []).find(item => item.id === id);
+    if (!playbook) {
+      App.showToast('Playbook not found. Please reload the page.', 'error');
+      return;
+    }
+
+    this.activePlaybookId = id;
+    document.getElementById('pbName').value = playbook.name || '';
+    document.getElementById('pbDesc').value = playbook.description || '';
+    document.getElementById('pbRules').value = playbook.rules || '';
+    document.getElementById('playbookModalTitle').textContent = 'Edit Playbook Setup';
+    document.getElementById('playbookSubmitButton').textContent = 'Save Changes';
     document.getElementById('addPlaybookModal').classList.add('active');
   },
 
@@ -105,12 +128,18 @@ const Playbooks = {
     e.preventDefault();
     const name = document.getElementById('pbName').value.trim();
     const description = document.getElementById('pbDesc').value.trim();
-    const target_rr = parseFloat(document.getElementById('pbTargetRR').value || 2.0);
     const rules = document.getElementById('pbRules').value.trim();
 
     try {
-      await API.createPlaybook({ name, description, target_rr, rules });
-      App.showToast('Playbook created!', 'success');
+      const payload = { name, description, rules };
+      if (this.activePlaybookId) {
+        await API.updatePlaybook(this.activePlaybookId, payload);
+        App.showToast('Playbook updated!', 'success');
+      } else {
+        await API.createPlaybook(payload);
+        App.showToast('Playbook created!', 'success');
+      }
+      this.activePlaybookId = null;
       this.closePlaybookModal();
       this.load();
     } catch (err) {

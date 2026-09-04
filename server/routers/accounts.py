@@ -3,7 +3,7 @@ Accounts Router
 Manages trading accounts (MT4, MT5, cTrader, Manual) and API Keys.
 """
 
-import uuid
+import secrets
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
@@ -11,6 +11,11 @@ from server.database import get_connection
 from server.models import AccountCreate, AccountUpdate, AccountResponse
 
 router = APIRouter(prefix="/api/accounts", tags=["Accounts"])
+
+
+def generate_journal_api_key() -> str:
+    """Generate a high-entropy key for EA and cBot sync requests."""
+    return f"key_{secrets.token_urlsafe(32)}"
 
 @router.get("", response_model=List[AccountResponse])
 def get_accounts():
@@ -33,28 +38,32 @@ def get_account(account_id: int):
 @router.post("", response_model=AccountResponse)
 def create_account(account: AccountCreate):
     now_str = datetime.now(timezone.utc).isoformat()
-    api_key = f"key_{uuid.uuid4().hex[:16]}"
+    api_key = generate_journal_api_key()
+    initial_balance = account.initial_balance if account.initial_balance is not None else 10000.0
+    current_balance = account.current_balance if account.current_balance is not None else initial_balance
+    equity = account.equity if account.equity is not None else initial_balance
+    free_margin = account.free_margin if account.free_margin is not None else initial_balance
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO accounts (
                 name, broker, platform, account_number, currency,
                 initial_balance, current_balance, equity, margin, free_margin, leverage,
-                api_key, server_name, password, metaapi_token, auto_sync_enabled, sync_interval_minutes,
-                ctrader_client_id, ctrader_client_secret, ctrader_access_token, ctrader_account_id,
+                api_key, server_name, auto_sync_enabled, sync_interval_minutes,
+                ctrader_client_id, ctrader_client_secret, ctrader_access_token, ctrader_account_id, ctrader_is_live,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """, (
             account.name, account.broker or "", account.platform, account.account_number or "",
-            account.currency or "USD", account.initial_balance or 10000.0,
-            account.current_balance or account.initial_balance or 10000.0,
-            account.equity or account.initial_balance or 10000.0,
-            account.margin or 0.0, account.free_margin or account.initial_balance or 10000.0,
-            account.leverage or 100, api_key,
-            account.server_name or "", account.password or "", account.metaapi_token or "",
-            1 if account.auto_sync_enabled else 0, account.sync_interval_minutes or 5,
+            account.currency or "USD", initial_balance,
+            current_balance, equity,
+            account.margin if account.margin is not None else 0.0,
+            free_margin, account.leverage if account.leverage is not None else 100, api_key,
+            account.server_name or "", 1 if account.auto_sync_enabled else 0,
+            account.sync_interval_minutes or 5,
             account.ctrader_client_id or "", account.ctrader_client_secret or "",
             account.ctrader_access_token or "", account.ctrader_account_id or "",
+            1 if account.ctrader_is_live else 0,
             now_str, now_str
         ))
         acc_id = cursor.lastrowid
@@ -63,7 +72,7 @@ def create_account(account: AccountCreate):
         cursor.execute("""
             INSERT INTO equity_history (account_id, timestamp, balance, equity)
             VALUES (?, ?, ?, ?);
-        """, (acc_id, now_str, account.initial_balance or 10000.0, account.equity or 10000.0))
+        """, (acc_id, now_str, initial_balance, equity))
 
         conn.commit()
 
@@ -98,7 +107,7 @@ def update_account(account_id: int, account: AccountUpdate):
 
 @router.post("/{account_id}/regenerate-key")
 def regenerate_api_key(account_id: int):
-    new_key = f"key_{uuid.uuid4().hex[:16]}"
+    new_key = generate_journal_api_key()
     now_str = datetime.now(timezone.utc).isoformat()
     with get_connection() as conn:
         cursor = conn.cursor()

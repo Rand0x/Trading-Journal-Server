@@ -50,6 +50,11 @@ const API = {
   getTrade(id) { return this.request(`/api/trades/${id}`); },
   createTrade(data) { return this.request('/api/trades', { method: 'POST', body: JSON.stringify(data) }); },
   updateTrade(id, data) { return this.request(`/api/trades/${id}`, { method: 'PUT', body: JSON.stringify(data) }); },
+  addPartialClose(id, data) { return this.request(`/api/trades/${id}/partials`, { method: 'POST', body: JSON.stringify(data) }); },
+  deletePartialClose(tradeId, partialId) { return this.request(`/api/trades/${tradeId}/partials/${partialId}`, { method: 'DELETE' }); },
+  getTradeScreenshots(id) { return this.request(`/api/trades/${id}/screenshots`); },
+  addTradeScreenshot(id, data) { return this.request(`/api/trades/${id}/screenshots`, { method: 'POST', body: JSON.stringify(data) }); },
+  deleteTradeScreenshot(tradeId, screenshotId) { return this.request(`/api/trades/${tradeId}/screenshots/${screenshotId}`, { method: 'DELETE' }); },
   deleteTrade(id) { return this.request(`/api/trades/${id}`, { method: 'DELETE' }); },
 
   // Dashboard & Analytics
@@ -65,6 +70,7 @@ const API = {
   // Playbooks & Mistakes
   getPlaybooks() { return this.request('/api/playbooks'); },
   createPlaybook(data) { return this.request('/api/playbooks', { method: 'POST', body: JSON.stringify(data) }); },
+  updatePlaybook(id, data) { return this.request(`/api/playbooks/${id}`, { method: 'PUT', body: JSON.stringify(data) }); },
   deletePlaybook(id) { return this.request(`/api/playbooks/${id}`, { method: 'DELETE' }); },
 
   getMistakes() { return this.request('/api/mistakes'); },
@@ -79,9 +85,6 @@ const API = {
   // Sync & Import
   syncCTrader(data) {
     return this.request('/api/sync/ctrader', { method: 'POST', body: JSON.stringify(data) });
-  },
-  syncMTDirect(data) {
-    return this.request('/api/sync/mt-direct', { method: 'POST', body: JSON.stringify(data) });
   },
   async importStatement(formData) {
     const res = await fetch('/api/sync/import', {

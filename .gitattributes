@@ -1,0 +1,5 @@
+* text=auto eol=lf
+
+*.mq4 text eol=lf
+*.mq5 text eol=lf
+*.cs text eol=lf

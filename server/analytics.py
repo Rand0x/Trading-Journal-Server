@@ -1,7 +1,7 @@
 """
 Pure Quantitative Trading Analytics Engine (No AI)
 High performance, lightweight, zero-dependency statistical calculations
-optimized for low-resource environments (Raspberry Pi 3 Model B).
+designed for efficient, dependency-free calculations.
 """
 
 import math

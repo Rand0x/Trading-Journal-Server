@@ -4,13 +4,63 @@ Clean type validation without external AI or heavy dependencies.
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
+
+Platform = Literal["MT4", "MT5", "cTrader", "Manual"]
+Direction = Literal["BUY", "SELL"]
+TradeStatus = Literal["OPEN", "CLOSED", "WIN", "LOSS", "BE"]
+Severity = Literal["LOW", "MEDIUM", "HIGH"]
 
 # ================= ACCOUNT SCHEMAS =================
 class AccountBase(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    broker: Optional[str] = ""
+    platform: Platform = "MT5"
+    account_number: Optional[str] = ""
+    currency: Optional[str] = Field(default="USD", min_length=3, max_length=12)
+    initial_balance: Optional[float] = Field(default=10000.0, ge=0)
+    current_balance: Optional[float] = Field(default=10000.0, ge=0)
+    equity: Optional[float] = Field(default=10000.0, ge=0)
+    margin: Optional[float] = Field(default=0.0, ge=0)
+    free_margin: Optional[float] = Field(default=10000.0, ge=0)
+    leverage: Optional[int] = Field(default=100, ge=1)
+    server_name: Optional[str] = ""
+    auto_sync_enabled: Optional[bool] = True
+    sync_interval_minutes: Optional[int] = Field(default=5, ge=1, le=1440)
+    ctrader_client_id: Optional[str] = ""
+    ctrader_client_secret: Optional[str] = ""
+    ctrader_access_token: Optional[str] = ""
+    ctrader_account_id: Optional[str] = ""
+    ctrader_is_live: Optional[bool] = False
+
+class AccountCreate(AccountBase):
+    pass
+
+class AccountUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    broker: Optional[str] = None
+    account_number: Optional[str] = None
+    currency: Optional[str] = None
+    initial_balance: Optional[float] = Field(default=None, ge=0)
+    current_balance: Optional[float] = Field(default=None, ge=0)
+    equity: Optional[float] = Field(default=None, ge=0)
+    margin: Optional[float] = Field(default=None, ge=0)
+    free_margin: Optional[float] = Field(default=None, ge=0)
+    leverage: Optional[int] = Field(default=None, ge=1)
+    server_name: Optional[str] = None
+    auto_sync_enabled: Optional[bool] = None
+    sync_interval_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
+    ctrader_client_id: Optional[str] = None
+    ctrader_client_secret: Optional[str] = None
+    ctrader_access_token: Optional[str] = None
+    ctrader_account_id: Optional[str] = None
+    ctrader_is_live: Optional[bool] = None
+
+class AccountResponse(BaseModel):
+    id: int
     name: str
     broker: Optional[str] = ""
-    platform: str = "MT5"  # 'MT4', 'MT5', 'cTrader', 'Manual'
+    platform: Platform = "MT5"
     account_number: Optional[str] = ""
     currency: Optional[str] = "USD"
     initial_balance: Optional[float] = 10000.0
@@ -20,41 +70,9 @@ class AccountBase(BaseModel):
     free_margin: Optional[float] = 10000.0
     leverage: Optional[int] = 100
     server_name: Optional[str] = ""
-    password: Optional[str] = ""
-    metaapi_token: Optional[str] = ""
     auto_sync_enabled: Optional[bool] = True
     sync_interval_minutes: Optional[int] = 5
-    ctrader_client_id: Optional[str] = ""
-    ctrader_client_secret: Optional[str] = ""
-    ctrader_access_token: Optional[str] = ""
-    ctrader_account_id: Optional[str] = ""
-
-class AccountCreate(AccountBase):
-    pass
-
-class AccountUpdate(BaseModel):
-    name: Optional[str] = None
-    broker: Optional[str] = None
-    account_number: Optional[str] = None
-    currency: Optional[str] = None
-    initial_balance: Optional[float] = None
-    current_balance: Optional[float] = None
-    equity: Optional[float] = None
-    margin: Optional[float] = None
-    free_margin: Optional[float] = None
-    leverage: Optional[int] = None
-    server_name: Optional[str] = None
-    password: Optional[str] = None
-    metaapi_token: Optional[str] = None
-    auto_sync_enabled: Optional[bool] = None
-    sync_interval_minutes: Optional[int] = None
-    ctrader_client_id: Optional[str] = None
-    ctrader_client_secret: Optional[str] = None
-    ctrader_access_token: Optional[str] = None
-    ctrader_account_id: Optional[str] = None
-
-class AccountResponse(AccountBase):
-    id: int
+    ctrader_is_live: Optional[bool] = False
     api_key: Optional[str] = None
     last_synced_at: Optional[str] = None
     created_at: str
@@ -62,14 +80,19 @@ class AccountResponse(AccountBase):
 
 # ================= PLAYBOOK SCHEMAS =================
 class PlaybookBase(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=200)
     description: Optional[str] = ""
-    target_rr: Optional[float] = 2.0
     rules: Optional[str] = ""
     color: Optional[str] = "#3b82f6"
 
 class PlaybookCreate(PlaybookBase):
     pass
+
+class PlaybookUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = None
+    rules: Optional[str] = None
+    color: Optional[str] = None
 
 class PlaybookResponse(PlaybookBase):
     id: int
@@ -80,9 +103,9 @@ class PlaybookResponse(PlaybookBase):
 
 # ================= MISTAKE SCHEMAS =================
 class MistakeBase(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=200)
     description: Optional[str] = ""
-    severity: Optional[str] = "MEDIUM"
+    severity: Severity = "MEDIUM"
     color: Optional[str] = "#ef4444"
 
 class MistakeCreate(MistakeBase):
@@ -95,56 +118,86 @@ class MistakeResponse(MistakeBase):
     total_loss: Optional[float] = 0.0
 
 # ================= TRADE SCHEMAS =================
+class TradePartialCloseBase(BaseModel):
+    ticket: Optional[str] = None
+    volume: float = Field(gt=0)
+    close_time: str = Field(min_length=1)
+    close_price: float = Field(gt=0)
+    commission: Optional[float] = 0.0
+    swap: Optional[float] = 0.0
+    gross_profit: Optional[float] = None
+    net_profit: float = 0.0
+
+class TradePartialCloseCreate(TradePartialCloseBase):
+    pass
+
+class TradePartialCloseResponse(TradePartialCloseBase):
+    id: int
+    trade_id: int
+    created_at: str
+    updated_at: str
+
+class TradeScreenshotCreate(BaseModel):
+    source_url: str = Field(min_length=1, max_length=1000)
+    image_url: Optional[str] = Field(default=None, max_length=1000)
+    caption: Optional[str] = Field(default="", max_length=300)
+
+class TradeScreenshotResponse(TradeScreenshotCreate):
+    id: int
+    trade_id: int
+    created_at: str
+
 class TradeBase(BaseModel):
     account_id: int
     ticket: Optional[str] = None
-    symbol: str
-    direction: str  # 'BUY' or 'SELL'
-    volume: float   # Lots or size
-    open_time: str
+    symbol: str = Field(min_length=1, max_length=40)
+    direction: Direction
+    volume: float = Field(gt=0)
+    open_time: str = Field(min_length=1)
     close_time: Optional[str] = None
-    open_price: float
-    close_price: Optional[float] = None
-    stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
+    open_price: float = Field(gt=0)
+    close_price: Optional[float] = Field(default=None, gt=0)
+    stop_loss: Optional[float] = Field(default=None, gt=0)
+    take_profit: Optional[float] = Field(default=None, gt=0)
     commission: Optional[float] = 0.0
     swap: Optional[float] = 0.0
     gross_profit: Optional[float] = 0.0
     net_profit: Optional[float] = 0.0
     pnl_percent: Optional[float] = 0.0
-    status: Optional[str] = "CLOSED"  # 'OPEN', 'CLOSED', 'WIN', 'LOSS', 'BE'
+    status: Optional[TradeStatus] = None
     setup_id: Optional[int] = None
     mistake_id: Optional[int] = None
     notes: Optional[str] = ""
     emotions: Optional[str] = "Disciplined"
-    rating: Optional[int] = 5
+    rating: Optional[int] = Field(default=5, ge=1, le=5)
     tags: Optional[str] = ""
     timeframe: Optional[str] = "M15"
+    partial_closes: List[TradePartialCloseCreate] = Field(default_factory=list)
 
 class TradeCreate(TradeBase):
     pass
 
 class TradeUpdate(BaseModel):
-    symbol: Optional[str] = None
-    direction: Optional[str] = None
-    volume: Optional[float] = None
+    symbol: Optional[str] = Field(default=None, min_length=1, max_length=40)
+    direction: Optional[Direction] = None
+    volume: Optional[float] = Field(default=None, gt=0)
     open_time: Optional[str] = None
     close_time: Optional[str] = None
-    open_price: Optional[float] = None
-    close_price: Optional[float] = None
-    stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
+    open_price: Optional[float] = Field(default=None, gt=0)
+    close_price: Optional[float] = Field(default=None, gt=0)
+    stop_loss: Optional[float] = Field(default=None, gt=0)
+    take_profit: Optional[float] = Field(default=None, gt=0)
     commission: Optional[float] = None
     swap: Optional[float] = None
     gross_profit: Optional[float] = None
     net_profit: Optional[float] = None
     pnl_percent: Optional[float] = None
-    status: Optional[str] = None
+    status: Optional[TradeStatus] = None
     setup_id: Optional[int] = None
     mistake_id: Optional[int] = None
     notes: Optional[str] = None
     emotions: Optional[str] = None
-    rating: Optional[int] = None
+    rating: Optional[int] = Field(default=None, ge=1, le=5)
     tags: Optional[str] = None
     timeframe: Optional[str] = None
 
@@ -167,9 +220,10 @@ class MQLCandleBar(BaseModel):
 
 class MQLTradeItem(BaseModel):
     ticket: str
+    position_id: Optional[str] = None
     symbol: str
-    type: int  # 0 = BUY, 1 = SELL
-    lots: float
+    type: int = Field(ge=0, le=1)  # 0 = BUY, 1 = SELL
+    lots: float = Field(gt=0)
     open_time: str
     close_time: Optional[str] = None
     open_price: float
@@ -181,19 +235,21 @@ class MQLTradeItem(BaseModel):
     profit: Optional[float] = 0.0
     comment: Optional[str] = ""
     candles: Optional[List[MQLCandleBar]] = None
+    partial_closes: Optional[List[TradePartialCloseBase]] = None
 
 class MQLSyncPayload(BaseModel):
+    source: Literal["mql", "ctrader-cbot"] = "mql"
     account_number: str
     broker: Optional[str] = ""
     platform: Optional[str] = "MT5"  # 'MT4' or 'MT5'
     currency: Optional[str] = "USD"
-    balance: float
-    equity: float
+    balance: float = Field(ge=0)
+    equity: float = Field(ge=0)
     margin: Optional[float] = 0.0
     free_margin: Optional[float] = 0.0
-    leverage: Optional[int] = 100
-    closed_trades: Optional[List[MQLTradeItem]] = []
-    open_trades: Optional[List[MQLTradeItem]] = []
+    leverage: Optional[int] = Field(default=100, ge=1)
+    closed_trades: Optional[List[MQLTradeItem]] = Field(default_factory=list)
+    open_trades: Optional[List[MQLTradeItem]] = Field(default_factory=list)
 
 # ================= CANDLE SCHEMAS =================
 class CandleItem(BaseModel):
@@ -216,12 +272,4 @@ class CTraderSyncRequest(BaseModel):
     client_secret: Optional[str] = None
     access_token: Optional[str] = None
     ctrader_account_id: Optional[str] = None
-
-# ================= MT4/MT5 DIRECT LOGIN SYNC SCHEMA =================
-class MTDirectSyncRequest(BaseModel):
-    account_id: int
-    account_number: Optional[str] = None
-    password: Optional[str] = None
-    server_name: Optional[str] = None
-    platform: Optional[str] = None  # 'MT4' or 'MT5'
-    metaapi_token: Optional[str] = None
+    is_live: bool = False

@@ -1,18 +1,18 @@
 //+------------------------------------------------------------------+
 //|                                           TradeJournalSync.mq4   |
-//|                       Raspberry Pi Trading Journal Connector     |
+//|                       Trading Journal Connector                  |
 //|                      https://github.com/tradingview/lightweight-charts |
 //+------------------------------------------------------------------+
-#property copyright   "Trading Journal Raspi"
+#property copyright   "Trading Journal"
 #property link        "http://localhost:8000"
 #property version     "1.00"
 #property strict
 #property description "Auto-syncs closed trades, balance, equity, and market candle data"
-#property description "to your Raspberry Pi Trading Journal server (READ-ONLY)."
+#property description "to your Trading Journal server (READ-ONLY)."
 
 //--- Inputs
 input string   InpServerUrl     = "http://192.168.1.100:8000/api/sync/mql"; // Journal Server URL
-input string   InpApiKey        = "key_demo_tradezella_raspi_mt5";          // API Key from Web UI
+input string   InpApiKey        = "";                                        // Journal API Key from Web UI
 input int      InpSyncInterval  = 60;                                        // Sync Interval (Seconds)
 input bool     InpSyncCandles   = true;                                      // Attach M15 Candles for Chart Replay
 input int      InpCandleBars    = 60;                                        // Number of Candlesticks per Trade
@@ -27,7 +27,12 @@ int OnInit()
 {
    Print("=== TradeJournalSync MT4 Initializing ===");
    Print("Server URL: ", InpServerUrl);
-   Print("API Key: ", InpApiKey);
+   if(StringLen(InpApiKey) == 0)
+   {
+      Print("Journal API Key is required. Copy it from the account card in the web UI.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   Print("Journal API Key configured.");
    Print("Note: Ensure '", InpServerUrl, "' is added to MT4 Tools -> Options -> Expert Advisors -> Allow WebRequest!");
    
    EventSetTimer(InpSyncInterval);
@@ -96,7 +101,7 @@ string GetCandlesJson(string symbol, int tf, datetime tradeTime, int count)
 }
 
 //+------------------------------------------------------------------+
-//| Perform HTTP WebRequest Sync to Raspberry Pi Server              |
+//| Perform HTTP WebRequest Sync to Trading Journal Server            |
 //+------------------------------------------------------------------+
 void SyncToServer()
 {

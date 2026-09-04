@@ -10,6 +10,8 @@ const Trades = {
   sortBy: 'open_time',
   sortOrder: 'desc',
   activeEditingId: null,
+  expandedTradeId: null,
+  expandedRow: null,
 
   async load(page = 0) {
     this.currentOffset = page * this.limit;
@@ -56,6 +58,8 @@ const Trades = {
   renderTable(trades = []) {
     const tbody = document.getElementById('tradesTableBody');
     if (!tbody) return;
+    this.expandedTradeId = null;
+    this.expandedRow = null;
     tbody.innerHTML = '';
 
     if (trades.length === 0) {
@@ -65,6 +69,10 @@ const Trades = {
 
     trades.forEach(t => {
       const tr = document.createElement('tr');
+      tr.className = 'trade-data-row';
+      tr.dataset.tradeId = t.id;
+      tr.setAttribute('aria-expanded', 'false');
+      tr.title = 'Klicken, um die Trade-Details auszuklappen';
       const pnl = parseFloat(t.net_profit || 0);
       const isWin = pnl > 0.001;
       const isLoss = pnl < -0.001;
@@ -80,7 +88,11 @@ const Trades = {
 
       tr.innerHTML = `
         <td style="font-weight:600;color:#fff;">${t.open_time ? t.open_time.substring(0, 16).replace('T', ' ') : ''}</td>
-        <td><strong style="color:#60a5fa;">${t.symbol}</strong></td>
+        <td>
+          <strong style="color:#60a5fa;">${t.symbol}</strong>
+          ${t.partial_close_count > 0 ? `<span style="display:block;font-size:10px;color:#a78bfa;">${t.partial_close_count} partial exit(s)</span>` : ''}
+          ${t.screenshot_count > 0 ? `<span style="display:block;font-size:10px;color:#60a5fa;">${t.screenshot_count} screenshot(s)</span>` : ''}
+        </td>
         <td><span class="badge ${dirClass}">${t.direction}</span></td>
         <td>${t.volume}</td>
         <td>${t.open_price}</td>
@@ -105,7 +117,119 @@ const Trades = {
           </button>
         </td>
       `;
+      tr.addEventListener('click', event => {
+        if (event.target.closest?.('button, a, input, select, textarea')) return;
+        this.toggleExpandedTrade(t.id, tr);
+      });
       tbody.appendChild(tr);
+    });
+  },
+
+  async toggleExpandedTrade(tradeId, row) {
+    if (this.expandedTradeId === tradeId) {
+      this.collapseExpandedTrade();
+      return;
+    }
+
+    this.collapseExpandedTrade();
+    this.expandedTradeId = tradeId;
+    row.classList.add('is-expanded');
+    row.setAttribute('aria-expanded', 'true');
+
+    const detailRow = document.createElement('tr');
+    detailRow.className = 'trade-expanded-row';
+    detailRow.dataset.tradeId = tradeId;
+    detailRow.innerHTML = `
+      <td colspan="12">
+        <div class="trade-expanded-content">
+          <span class="trade-expanded-loading">Trade-Details und Screenshots werden geladen ...</span>
+        </div>
+      </td>`;
+    row.insertAdjacentElement('afterend', detailRow);
+    this.expandedRow = detailRow;
+
+    try {
+      const trade = await API.getTrade(tradeId);
+      if (this.expandedTradeId !== tradeId || this.expandedRow !== detailRow) return;
+      const content = detailRow.querySelector('.trade-expanded-content');
+      content.innerHTML = this.renderExpandedTrade(trade);
+      this.bindExpandedTradeActions(content, trade);
+    } catch (err) {
+      if (this.expandedTradeId !== tradeId || this.expandedRow !== detailRow) return;
+      detailRow.querySelector('.trade-expanded-content').innerHTML =
+        `<span class="trade-expanded-error">Details konnten nicht geladen werden: ${TradeDetail.escapeHtml(err.message)}</span>`;
+    }
+  },
+
+  collapseExpandedTrade() {
+    const sourceRow = this.expandedRow?.previousElementSibling;
+    if (sourceRow) {
+      sourceRow.classList.remove('is-expanded');
+      sourceRow.setAttribute('aria-expanded', 'false');
+    }
+    if (this.expandedRow?.parentNode) this.expandedRow.remove();
+    this.expandedTradeId = null;
+    this.expandedRow = null;
+  },
+
+  renderExpandedTrade(trade) {
+    const escape = value => TradeDetail.escapeHtml(value);
+    const pnl = Number(trade.net_profit || 0);
+    const pnlClass = pnl >= 0 ? 'color-green' : 'color-red';
+    const partials = Array.isArray(trade.partial_closes) ? trade.partial_closes : [];
+    const screenshots = Array.isArray(trade.screenshots) ? trade.screenshots : [];
+    const partialSummary = partials.length
+      ? `${partials.reduce((sum, item) => sum + Number(item.volume || 0), 0).toFixed(2)} lots in ${partials.length} Teilprofit(en)`
+      : 'Keine Teilprofite erfasst';
+
+    const screenshotMarkup = screenshots.length
+      ? `<div class="trade-expanded-screenshot-grid">${screenshots.map((screenshot, index) => `
+          <button type="button" class="trade-expanded-screenshot" data-screenshot-index="${index}" title="Screenshot im Karussell öffnen">
+            <img src="${escape(screenshot.image_url)}" alt="${escape(screenshot.caption || 'Trade Screenshot')}" loading="lazy">
+            <span>${escape(screenshot.caption || 'TradingView')}</span>
+          </button>`).join('')}</div>`
+      : '<div class="trade-expanded-empty">Noch keine Screenshots für diesen Trade.</div>';
+
+    const partialMarkup = partials.length
+      ? `<div class="trade-expanded-partials">${partials.map(partial => `
+          <div><span>${escape(partial.close_time)} · ${Number(partial.volume).toFixed(2)} lots @ ${Number(partial.close_price)}</span>
+          <strong class="${Number(partial.net_profit || 0) >= 0 ? 'color-green' : 'color-red'}">${Number(partial.net_profit || 0) >= 0 ? '+' : ''}$${Number(partial.net_profit || 0).toFixed(2)}</strong></div>`).join('')}</div>`
+      : '';
+
+    return `
+      <div class="trade-expanded-header">
+        <div>
+          <strong>${escape(trade.symbol)} · ${escape(trade.direction)}</strong>
+          <span>${escape(trade.ticket || 'Ohne Ticket')}</span>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" data-open-trade-detail>📊 Vollständige Details</button>
+      </div>
+      <div class="trade-expanded-grid">
+        <div><span>Open / Close</span><strong>${escape(trade.open_time || '—')} → ${escape(trade.close_time || 'Open')}</strong></div>
+        <div><span>Net P&L / Status</span><strong class="${pnlClass}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} · ${escape(trade.status || '—')}</strong></div>
+        <div><span>Setup / Mistake</span><strong>${escape(trade.setup_name || '—')} / ${escape(trade.mistake_name || '—')}</strong></div>
+        <div><span>Beschriftung / Notiz</span><strong>${escape(trade.notes || 'Keine Notiz')}</strong></div>
+      </div>
+      <div class="trade-expanded-section">
+        <div class="trade-expanded-section-title">Teilprofite <span>${escape(partialSummary)}</span></div>
+        ${partialMarkup}
+      </div>
+      <div class="trade-expanded-section">
+        <div class="trade-expanded-section-title">Screenshots <span>${screenshots.length} Bild(er) · Klick zum Öffnen</span></div>
+        ${screenshotMarkup}
+      </div>`;
+  },
+
+  bindExpandedTradeActions(content, trade) {
+    content.querySelector('[data-open-trade-detail]')?.addEventListener('click', event => {
+      event.stopPropagation();
+      TradeDetail.open(trade.id);
+    });
+    content.querySelectorAll('[data-screenshot-index]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        TradeDetail.openScreenshotCollection(trade.screenshots || [], Number(button.dataset.screenshotIndex));
+      });
     });
   },
 

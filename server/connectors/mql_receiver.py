@@ -1,6 +1,6 @@
 """
-MQL Receiver Connector for MetaTrader 4 and MetaTrader 5
-Receives incoming JSON payloads from the TradeJournalSync Expert Advisor.
+MQL Receiver Connector for MetaTrader 4, MetaTrader 5, and the cTrader cBot.
+Receives incoming JSON payloads from the TradeJournalSync Expert Advisor/cBot.
 Updates account balance, equity, closed trades, and stores market candle bars.
 """
 
@@ -13,9 +13,151 @@ from server.models import MQLSyncPayload
 
 logger = logging.getLogger(__name__)
 
+def _save_candles(cursor, symbol: str, candles) -> int:
+    saved = 0
+    for candle in candles or []:
+        cursor.execute("""
+            INSERT OR REPLACE INTO market_candles (symbol, timeframe, timestamp, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        """, (
+            symbol.upper(), "M15", candle.time, candle.open, candle.high,
+            candle.low, candle.close, candle.volume or 0.0
+        ))
+        saved += 1
+    return saved
+
+def _process_ctrader_grouped_trade(cursor, account_id: int, trade, now_str: str):
+    """Persist one cTrader position and all of its closing deals."""
+    cursor.execute(
+        "SELECT id, volume FROM trades WHERE account_id = ? AND ticket = ?;",
+        (account_id, trade.ticket)
+    )
+    existing = cursor.fetchone()
+    if existing:
+        trade_id = existing["id"]
+        original_volume = float(existing["volume"] or 0.0)
+        cursor.execute("""
+            UPDATE trades
+            SET symbol = ?, direction = ?, open_time = ?, open_price = ?,
+                stop_loss = COALESCE(?, stop_loss), take_profit = COALESCE(?, take_profit),
+                notes = ?, updated_at = ?
+            WHERE id = ?;
+        """, (
+            trade.symbol.upper(), "BUY" if trade.type == 0 else "SELL",
+            trade.open_time, trade.open_price, trade.stop_loss, trade.take_profit,
+            trade.comment or "", now_str, trade_id
+        ))
+        updated = 1
+    else:
+        trade_id = None
+        original_volume = float(trade.lots)
+        cursor.execute("""
+            INSERT INTO trades (
+                account_id, ticket, symbol, direction, volume,
+                open_time, open_price, stop_loss, take_profit,
+                commission, swap, gross_profit, net_profit, status,
+                notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, 0.0, 0.0, 'OPEN', ?, ?, ?);
+        """, (
+            account_id, trade.ticket, trade.symbol.upper(),
+            "BUY" if trade.type == 0 else "SELL", trade.lots,
+            trade.open_time, trade.open_price, trade.stop_loss, trade.take_profit,
+            trade.comment or "", now_str, now_str
+        ))
+        trade_id = cursor.lastrowid
+        updated = 0
+
+    legacy_rows = []
+    for index, partial in enumerate(trade.partial_closes or [], start=1):
+        partial_ticket = partial.ticket or f"{trade.ticket}-partial-{index}"
+        # Older cTrader cBot versions stored each closing deal as its own
+        # top-level trade (ctrader-deal-*). Migrate those rows into the new
+        # partial-close table when the grouped payload arrives.
+        cursor.execute("""
+            SELECT id, setup_id, mistake_id, notes, emotions, rating, tags, timeframe
+            FROM trades
+            WHERE account_id = ? AND ticket = ? AND id != ?;
+        """, (account_id, partial_ticket, trade_id))
+        legacy = cursor.fetchone()
+        if legacy:
+            legacy_rows.append(legacy)
+        commission = partial.commission or 0.0
+        swap = partial.swap or 0.0
+        net_profit = partial.net_profit or 0.0
+        gross_profit = partial.gross_profit if partial.gross_profit is not None else net_profit - commission - swap
+        cursor.execute("""
+            INSERT OR IGNORE INTO trade_partial_closes (
+                trade_id, ticket, volume, close_time, close_price,
+                commission, swap, gross_profit, net_profit, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """, (
+            trade_id, partial_ticket, partial.volume, partial.close_time,
+            partial.close_price, commission, swap, gross_profit, net_profit,
+            now_str, now_str
+        ))
+
+    if legacy_rows:
+        # Keep manually added annotations from the legacy row when the new
+        # grouped parent does not already have them.
+        legacy = legacy_rows[0]
+        cursor.execute("""
+            UPDATE trades
+            SET setup_id = COALESCE(setup_id, ?),
+                mistake_id = COALESCE(mistake_id, ?),
+                notes = CASE WHEN notes = '' THEN ? ELSE notes END,
+                emotions = CASE WHEN emotions = 'Disciplined' THEN ? ELSE emotions END,
+                rating = CASE WHEN rating = 5 THEN ? ELSE rating END,
+                tags = CASE WHEN tags = '' THEN ? ELSE tags END,
+                timeframe = CASE WHEN timeframe = 'M15' THEN ? ELSE timeframe END
+            WHERE id = ?;
+        """, (
+            legacy["setup_id"], legacy["mistake_id"], legacy["notes"] or "",
+            legacy["emotions"] or "Disciplined", legacy["rating"] or 5,
+            legacy["tags"] or "", legacy["timeframe"] or "M15", trade_id
+        ))
+        cursor.executemany(
+            "DELETE FROM trades WHERE id = ?;",
+            [(legacy_row["id"],) for legacy_row in legacy_rows]
+        )
+
+    cursor.execute("""
+        SELECT volume, close_time, close_price, commission, swap, gross_profit, net_profit
+        FROM trade_partial_closes
+        WHERE trade_id = ?
+        ORDER BY close_time ASC, id ASC;
+    """, (trade_id,))
+    partials = cursor.fetchall()
+    total_volume = sum(float(row["volume"] or 0.0) for row in partials)
+    parent_volume = max(original_volume, total_volume)
+    total_commission = sum(float(row["commission"] or 0.0) for row in partials)
+    total_swap = sum(float(row["swap"] or 0.0) for row in partials)
+    total_gross = sum(float(row["gross_profit"] or 0.0) for row in partials)
+    total_net = sum(float(row["net_profit"] or 0.0) for row in partials)
+    weighted_close_price = (
+        sum(float(row["volume"]) * float(row["close_price"]) for row in partials) / total_volume
+        if total_volume > 0 else None
+    )
+    last_close_time = partials[-1]["close_time"] if partials else None
+    is_complete = total_volume >= parent_volume - 1e-9
+    status = "WIN" if total_net > 0.001 else ("LOSS" if total_net < -0.001 else "BE")
+    if not is_complete:
+        status = "OPEN"
+
+    cursor.execute("""
+        UPDATE trades
+        SET volume = ?, close_time = ?, close_price = ?, commission = ?, swap = ?,
+            gross_profit = ?, net_profit = ?, status = ?, updated_at = ?
+        WHERE id = ?;
+    """, (
+        parent_volume, last_close_time, weighted_close_price,
+        total_commission, total_swap, total_gross, total_net, status,
+        now_str, trade_id
+    ))
+    return trade_id, updated, _save_candles(cursor, trade.symbol, trade.candles)
+
 def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]:
     """
-    Validates API key and processes data sent by MT4/MT5 EA:
+    Validates API key and processes data sent by MT4/MT5 EA or cTrader cBot:
     1. Authenticate account by api_key
     2. Update current balance, equity, margin, free margin, leverage, broker, platform
     3. Record equity history snapshot
@@ -25,15 +167,12 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
     with get_connection() as conn:
         cursor = conn.cursor()
 
-        # 1. Lookup account by api_key
+        # 1. Authenticate solely by the account-specific sync key. Account
+        # numbers are not secret and must never act as an authentication fallback.
         cursor.execute("SELECT id, name, initial_balance FROM accounts WHERE api_key = ?;", (api_key,))
         account = cursor.fetchone()
         if not account:
-            # Check if account matches account_number if api_key was empty
-            cursor.execute("SELECT id, name, initial_balance FROM accounts WHERE account_number = ?;", (payload.account_number,))
-            account = cursor.fetchone()
-            if not account:
-                raise ValueError("Invalid API Key or unknown account.")
+            raise ValueError("Invalid Journal API Key.")
 
         account_id = account["id"]
         now_str = datetime.now(timezone.utc).isoformat()
@@ -94,6 +233,17 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
         candles_saved = 0
 
         for trade in (payload.closed_trades or []):
+            if payload.source == "ctrader-cbot" and trade.partial_closes:
+                _, was_updated, saved_candles = _process_ctrader_grouped_trade(
+                    cursor, account_id, trade, now_str
+                )
+                if was_updated:
+                    updated_trades += 1
+                else:
+                    inserted_trades += 1
+                candles_saved += saved_candles
+                continue
+
             direction = "BUY" if trade.type == 0 else "SELL"
             pnl = trade.profit or 0.0
             gross_pnl = pnl - (trade.commission or 0.0) - (trade.swap or 0.0)
@@ -182,11 +332,56 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     candles_saved += 1
 
         # Also process open trades (status = OPEN)
+        active_ctrader_tickets = set()
         for trade in (payload.open_trades or []):
             direction = "BUY" if trade.type == 0 else "SELL"
+            if payload.source == "ctrader-cbot":
+                active_ctrader_tickets.add(trade.ticket)
+
+            # A grouped cTrader position uses the same ticket for its parent
+            # trade and its live position snapshot. Preserve the partial-exit
+            # aggregate while updating the remaining live volume and prices.
+            if payload.source == "ctrader-cbot" and trade.position_id:
+                cursor.execute("""
+                    SELECT t.id, COALESCE(SUM(pc.volume), 0.0) AS closed_volume
+                    FROM trades t
+                    LEFT JOIN trade_partial_closes pc ON pc.trade_id = t.id
+                    WHERE t.account_id = ? AND t.ticket = ?
+                    GROUP BY t.id;
+                """, (account_id, trade.ticket))
+                grouped_position = cursor.fetchone()
+                if grouped_position and grouped_position["closed_volume"] > 0:
+                    total_volume = float(grouped_position["closed_volume"]) + float(trade.lots)
+                    cursor.execute("""
+                        UPDATE trades
+                        SET symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?,
+                            stop_loss = ?, take_profit = ?, status = 'OPEN', notes = ?, updated_at = ?
+                        WHERE id = ?;
+                    """, (
+                        trade.symbol.upper(), direction, total_volume, trade.open_time,
+                        trade.open_price, trade.stop_loss, trade.take_profit,
+                        trade.comment or "", now_str, grouped_position["id"]
+                    ))
+                    updated_trades += 1
+                    continue
+
             cursor.execute("SELECT id FROM trades WHERE account_id = ? AND ticket = ?;", (account_id, trade.ticket))
             existing = cursor.fetchone()
-            if not existing:
+            if existing:
+                cursor.execute("""
+                    UPDATE trades
+                    SET symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?,
+                        stop_loss = ?, take_profit = ?, commission = ?, swap = ?,
+                        gross_profit = ?, net_profit = ?, status = 'OPEN', notes = ?, updated_at = ?
+                    WHERE id = ?;
+                """, (
+                    trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_price,
+                    trade.stop_loss, trade.take_profit, trade.commission or 0.0, trade.swap or 0.0,
+                    (trade.profit or 0.0) - (trade.commission or 0.0) - (trade.swap or 0.0),
+                    trade.profit or 0.0, trade.comment or "", now_str, existing["id"]
+                ))
+                updated_trades += 1
+            else:
                 cursor.execute("""
                     INSERT INTO trades (
                         account_id, ticket, symbol, direction, volume,
@@ -212,6 +407,28 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     now_str
                 ))
                 inserted_trades += 1
+
+        # cTrader historical deals use distinct deal tickets from currently
+        # open position tickets. Remove only stale cBot position snapshots once
+        # a position disappears from the latest account snapshot.
+        if payload.source == "ctrader-cbot":
+            if active_ctrader_tickets:
+                placeholders = ", ".join("?" for _ in active_ctrader_tickets)
+                cursor.execute(
+                    f"""
+                    DELETE FROM trades
+                    WHERE account_id = ? AND status = 'OPEN'
+                      AND ticket LIKE 'ctrader-position-%'
+                      AND ticket NOT IN ({placeholders});
+                    """,
+                    (account_id, *active_ctrader_tickets),
+                )
+            else:
+                cursor.execute("""
+                    DELETE FROM trades
+                    WHERE account_id = ? AND status = 'OPEN'
+                      AND ticket LIKE 'ctrader-position-%';
+                """, (account_id,))
 
         conn.commit()
 
