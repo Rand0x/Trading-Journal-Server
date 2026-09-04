@@ -146,7 +146,7 @@ namespace cAlgo.Robots
 
             var pendingOrders = PendingOrders.Select(ToPendingOrder).ToList();
             var openTrades = Positions.Select(ToOpenTrade).ToList();
-            AttachCandles(closedTrades, openTrades);
+            AttachCandles(closedTrades, openTrades, pendingOrders);
 
             return new JournalPayload
             {
@@ -284,10 +284,18 @@ namespace cAlgo.Robots
             return SupportedTimeframes[SupportedTimeframes.Length - 1]; // D1 fallback
         }
 
-        private void AttachCandles(List<JournalTrade> closedTrades, List<JournalTrade> openTrades)
+        private void AttachCandles(List<JournalTrade> closedTrades, List<JournalTrade> openTrades, List<JournalTrade> pendingOrders)
         {
             if (!SyncCandles || MaxCandlesPerTrade <= 0)
                 return;
+
+            foreach (var pendingOrder in pendingOrders)
+            {
+                if (DateTime.TryParse(pendingOrder.OpenTime, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var orderTime))
+                {
+                    pendingOrder.Candles = GetCandlesForTrade(pendingOrder.Symbol, orderTime, Server.TimeInUtc, MaxCandlesPerTrade);
+                }
+            }
 
             foreach (var openTrade in openTrades)
             {
@@ -319,10 +327,13 @@ namespace cAlgo.Robots
             {
                 var tfInfo = SelectTimeframe(openTime, closeTime, maxBars);
                 var bars = MarketData.GetBars(tfInfo.TimeFrame, symbolName);
-                var fromTime = openTime.AddSeconds(-8 * tfInfo.Seconds);
                 var toTime = closeTime.AddSeconds(8 * tfInfo.Seconds);
                 if (toTime > Server.TimeInUtc)
                     toTime = Server.TimeInUtc;
+                var fromTime = openTime.AddSeconds(-8 * tfInfo.Seconds);
+                var minFromTime = toTime.AddSeconds(-Math.Min(maxBars, 140) * tfInfo.Seconds);
+                if (fromTime > minFromTime)
+                    fromTime = minFromTime;
 
                 int loadAttempts = 0;
                 while (bars.Count > 0 && bars.OpenTimes[0] > fromTime && loadAttempts < 25 && bars.LoadMoreHistory() > 0)

@@ -124,8 +124,9 @@ string GetCandlesJson(string symbol, ENUM_TIMEFRAMES tf, datetime openTime, date
    MqlRates rates[];
    ArraySetAsSeries(rates, false);
    int seconds = TimeframeSeconds(tf);
-   datetime fromTime = openTime - (8 * seconds);
    datetime toTime = (datetime)MathMin(TimeCurrent(), closeTime + (8 * seconds));
+   datetime minFromTime = toTime - ((datetime)MathMin(maxBars, 140) * seconds);
+   datetime fromTime = (datetime)MathMin(openTime - (8 * seconds), minFromTime);
    int copied = CopyRates(symbol, tf, fromTime, toTime, rates);
    if(copied <= 0) return "[]";
 
@@ -303,9 +304,17 @@ void SyncToServer()
       datetime oTime = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
       string oComment = OrderGetString(ORDER_COMMENT);
 
+      string pendingCandlesJson = "[]";
+      if(InpSyncCandles && addedPending < InpCandleTrades)
+      {
+         datetime pOrderTime = oTime > 0 ? oTime : TimeCurrent();
+         ENUM_TIMEFRAMES pChartTf = SelectChartTimeframe(pOrderTime, TimeCurrent(), InpCandleBars);
+         pendingCandlesJson = GetCandlesJson(oSymbol, pChartTf, pOrderTime, TimeCurrent(), InpCandleBars);
+      }
+
       if(addedPending > 0) pendingOrdersJson += ",";
       pendingOrdersJson += StringFormat(
-         "{\"ticket\":\"mt5-order-%s\",\"order_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"comment\":\"%s\",\"status\":\"PENDING\"}",
+         "{\"ticket\":\"mt5-order-%s\",\"order_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"comment\":\"%s\",\"status\":\"PENDING\",\"candles\":%s}",
          IntegerToString(oTicket),
          IntegerToString(oTicket),
          oSymbol,
@@ -315,7 +324,8 @@ void SyncToServer()
          oPrice,
          oSL,
          oTP,
-         JsonEscape(oComment)
+         JsonEscape(oComment),
+         pendingCandlesJson
       );
       addedPending++;
    }

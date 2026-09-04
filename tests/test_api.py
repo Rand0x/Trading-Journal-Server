@@ -652,11 +652,15 @@ class TestAPI(unittest.TestCase):
                     "stop_loss": 1.0800,
                     "take_profit": 1.0900,
                     "open_time": "2026-09-04 12:00:00",
-                    "status": "PENDING"
+                    "status": "PENDING",
+                    "candles": [
+                        {"time": 1788523200, "open": 1.0820, "high": 1.0830, "low": 1.0815, "close": 1.0825, "volume": 50.0}
+                    ]
                 }
             ]
         }, headers={"X-API-Key": api_key})
         self.assertEqual(sync_res.status_code, 200, msg=f"Error: {sync_res.text}")
+        self.assertEqual(sync_res.json()["candles_saved"], 1)
 
         # 3. Verify pending order exists with status PENDING
         trades_res = self.client.get(f"/api/trades?account_id={acc_id}&status=PENDING").json()
@@ -666,6 +670,17 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(pending_trade["status"], "PENDING")
         self.assertEqual(pending_trade["open_price"], 1.0825)
         self.assertEqual(pending_trade["order_id"], "777")
+
+        # Verify chart data endpoint returns candles and limit price line for pending order
+        chart_res = self.client.get(f"/api/sync/chart-data/{trade_id}")
+        self.assertEqual(chart_res.status_code, 200)
+        chart_json = chart_res.json()
+        self.assertTrue(chart_json["data_available"])
+        self.assertTrue(chart_json["complete_coverage"])
+        self.assertEqual(len(chart_json["candles"]), 1)
+        self.assertEqual(len(chart_json["markers"]), 0)
+        self.assertEqual(len(chart_json["price_lines"]), 3)
+        self.assertEqual(chart_json["price_lines"][0]["title"], "LIMIT: 1.0825")
 
         # Verify it doesn't affect dashboard closed trades or win rate
         dash_res = self.client.get(f"/api/dashboard?account_id={acc_id}").json()

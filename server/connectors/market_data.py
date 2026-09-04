@@ -38,18 +38,23 @@ def get_chart_data_for_trade(
         if not trade:
             raise ValueError(f"Trade with ID {trade_id} not found.")
 
+        status = trade["status"] or ""
+        is_pending = status == "PENDING"
         open_ts = int(_parse_dt(trade["open_time"]).timestamp())
         close_ts = int(_parse_dt(trade["close_time"] or trade["open_time"]).timestamp())
         if not trade["close_time"]:
             close_ts = max(close_ts, int(datetime.now(timezone.utc).timestamp()))
 
         candles, selected_timeframe, interval_seconds = _load_best_candles(
-            cursor, trade["symbol"], timeframe, open_ts, close_ts
+            cursor, trade["symbol"], timeframe, open_ts, close_ts, is_pending=is_pending, num_bars=num_bars
         )
 
-    has_entry = _has_nearby_candle(candles, open_ts, interval_seconds)
-    has_exit = not trade["close_time"] or _has_nearby_candle(candles, close_ts, interval_seconds)
-    complete = bool(candles) and has_entry and has_exit
+    if is_pending:
+        complete = bool(candles)
+    else:
+        has_entry = _has_nearby_candle(candles, open_ts, interval_seconds)
+        has_exit = not trade["close_time"] or _has_nearby_candle(candles, close_ts, interval_seconds)
+        complete = bool(candles) and has_entry and has_exit
     message = ""
     if not candles:
         message = (
@@ -116,6 +121,33 @@ def _fetch_raw_candles(
     ]
 
 
+def _fetch_recent_candles(
+    cursor, symbol: str, timeframe: str, max_ts: int, limit: int = 140
+) -> List[Dict[str, Any]]:
+    cursor.execute(
+        """
+        SELECT timestamp, open, high, low, close, volume
+        FROM market_candles
+        WHERE symbol = ? AND timeframe = ? AND timestamp <= ?
+        ORDER BY timestamp DESC
+        LIMIT ?;
+        """,
+        (symbol.upper(), timeframe.upper(), max_ts, limit),
+    )
+    rows = cursor.fetchall()
+    return [
+        {
+            "time": int(row["timestamp"]),
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "volume": float(row["volume"] or 0.0),
+        }
+        for row in reversed(rows)
+    ]
+
+
 def _aggregate_candles(
     candles: List[Dict[str, Any]], target_timeframe: str
 ) -> List[Dict[str, Any]]:
@@ -146,7 +178,8 @@ def _aggregate_candles(
 
 
 def _load_best_candles(
-    cursor, symbol: str, requested_timeframe: str, open_ts: int, close_ts: int
+    cursor, symbol: str, requested_timeframe: str, open_ts: int, close_ts: int,
+    is_pending: bool = False, num_bars: int = 140
 ) -> tuple[List[Dict[str, Any]], str, int]:
     """
     Loads the best available real broker candles covering [open_ts, close_ts].
@@ -155,18 +188,23 @@ def _load_best_candles(
     """
     req_tf = requested_timeframe.upper()
     if req_tf == "AUTO":
-        target_tf = _select_auto_timeframe(open_ts, close_ts)
+        if is_pending:
+            target_tf = "M15"
+        else:
+            target_tf = _select_auto_timeframe(open_ts, close_ts)
     elif req_tf in CHART_TIMEFRAMES:
         target_tf = req_tf
     else:
         raise ValueError(f"Unsupported chart timeframe: {requested_timeframe}")
 
     target_interval = _timeframe_to_seconds(target_tf)
-    start_ts = open_ts - CONTEXT_BARS * target_interval
     end_ts = close_ts + CONTEXT_BARS * target_interval
+    start_ts = min(open_ts - CONTEXT_BARS * target_interval, end_ts - num_bars * target_interval)
 
     # 1. Direct query for target timeframe
     candles = _fetch_raw_candles(cursor, symbol, target_tf, start_ts, end_ts)
+    if not candles and is_pending:
+        candles = _fetch_recent_candles(cursor, symbol, target_tf, end_ts, num_bars)
     if candles:
         return candles, target_tf, target_interval
 
@@ -177,26 +215,41 @@ def _load_best_candles(
     ]
     for lower_tf in reversed(lower_candidates):
         raw_bars = _fetch_raw_candles(cursor, symbol, lower_tf, start_ts, end_ts)
+        if not raw_bars and is_pending:
+            ratio = max(1, target_interval // _timeframe_to_seconds(lower_tf))
+            raw_bars = _fetch_recent_candles(cursor, symbol, lower_tf, end_ts, num_bars * ratio)
         if raw_bars:
             return _aggregate_candles(raw_bars, target_tf), target_tf, target_interval
 
     # 3. If in AUTO mode, check if ANY other real timeframe is stored for this trade range
     if req_tf == "AUTO":
-        cursor.execute(
-            """
-            SELECT DISTINCT timeframe
-            FROM market_candles
-            WHERE symbol = ? AND timestamp >= ? AND timestamp <= ?;
-            """,
-            (symbol.upper(), open_ts - 86400, close_ts + 86400),
-        )
+        if is_pending:
+            cursor.execute(
+                """
+                SELECT DISTINCT timeframe
+                FROM market_candles
+                WHERE symbol = ?;
+                """,
+                (symbol.upper(),),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT DISTINCT timeframe
+                FROM market_candles
+                WHERE symbol = ? AND timestamp >= ? AND timestamp <= ?;
+                """,
+                (symbol.upper(), open_ts - 86400, close_ts + 86400),
+            )
         stored_tfs = {row["timeframe"].upper() for row in cursor.fetchall()}
         for alt_tf in AUTO_TIMEFRAMES:
             if alt_tf in stored_tfs:
                 alt_interval = _timeframe_to_seconds(alt_tf)
-                alt_start = open_ts - CONTEXT_BARS * alt_interval
                 alt_end = close_ts + CONTEXT_BARS * alt_interval
+                alt_start = min(open_ts - CONTEXT_BARS * alt_interval, alt_end - num_bars * alt_interval)
                 alt_candles = _fetch_raw_candles(cursor, symbol, alt_tf, alt_start, alt_end)
+                if not alt_candles and is_pending:
+                    alt_candles = _fetch_recent_candles(cursor, symbol, alt_tf, alt_end, num_bars)
                 if alt_candles:
                     return alt_candles, alt_tf, alt_interval
 

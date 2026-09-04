@@ -105,8 +105,9 @@ int SelectChartTimeframe(datetime openTime, datetime closeTime, int maxBars)
 string GetCandlesJson(string symbol, int tf, datetime openTime, datetime closeTime, int maxBars)
 {
    int seconds = TimeframeSeconds(tf);
-   datetime fromTime = openTime - (8 * seconds);
    datetime toTime = MathMin(TimeCurrent(), closeTime + (8 * seconds));
+   datetime minFromTime = toTime - ((datetime)MathMin(maxBars, 140) * seconds);
+   datetime fromTime = (datetime)MathMin(openTime - (8 * seconds), minFromTime);
    int oldestShift = iBarShift(symbol, tf, fromTime, false);
    int newestShift = iBarShift(symbol, tf, toTime, false);
    if(oldestShift < 0 || newestShift < 0) return("[]");
@@ -247,10 +248,49 @@ void SyncToServer()
    }
    openTradesJson += "]";
 
+   // Pending orders
+   string pendingOrdersJson = "[";
+   int addedPending = 0;
+   for(int k = 0; k < totalOpen; k++)
+   {
+      if(!OrderSelect(k, SELECT_BY_POS, MODE_TRADES)) continue;
+      int pType = OrderType();
+      if(pType != OP_BUYLIMIT && pType != OP_SELLLIMIT &&
+         pType != OP_BUYSTOP && pType != OP_SELLSTOP) continue;
+
+      int pDir = (pType == OP_BUYLIMIT || pType == OP_BUYSTOP) ? 0 : 1;
+      string pOrderType = (pType == OP_BUYLIMIT || pType == OP_SELLLIMIT) ? "Limit" : "Stop";
+      string pCandlesJson = "[]";
+      if(InpSyncCandles && addedPending < InpCandleTrades)
+      {
+         int pChartTf = SelectChartTimeframe(OrderOpenTime(), TimeCurrent(), InpCandleBars);
+         pCandlesJson = GetCandlesJson(OrderSymbol(), pChartTf, OrderOpenTime(), TimeCurrent(), InpCandleBars);
+      }
+
+      if(addedPending > 0) pendingOrdersJson += ",";
+      pendingOrdersJson += StringFormat(
+         "{\"ticket\":\"mt4-order-%d\",\"order_id\":\"%d\",\"order_type\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"comment\":\"%s\",\"status\":\"PENDING\",\"candles\":%s}",
+         OrderTicket(),
+         OrderTicket(),
+         pOrderType,
+         OrderSymbol(),
+         pDir,
+         OrderLots(),
+         TimeToStr(OrderOpenTime(), TIME_DATE|TIME_SECONDS),
+         OrderOpenPrice(),
+         OrderStopLoss(),
+         OrderTakeProfit(),
+         JsonEscape(OrderComment()),
+         pCandlesJson
+      );
+      addedPending++;
+   }
+   pendingOrdersJson += "]";
+
    // Root payload
    string payload = StringFormat(
-      "{\"account_number\":\"%d\",\"broker\":\"%s\",\"platform\":\"MT4\",\"currency\":\"%s\",\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,\"free_margin\":%.2f,\"leverage\":%d,\"closed_trades\":%s,\"open_trades\":%s}",
-      login, JsonEscape(broker), currency, balance, equity, margin, freeMargin, leverage, closedTradesJson, openTradesJson
+      "{\"account_number\":\"%d\",\"broker\":\"%s\",\"platform\":\"MT4\",\"currency\":\"%s\",\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,\"free_margin\":%.2f,\"leverage\":%d,\"closed_trades\":%s,\"open_trades\":%s,\"pending_orders\":%s}",
+      login, JsonEscape(broker), currency, balance, equity, margin, freeMargin, leverage, closedTradesJson, openTradesJson, pendingOrdersJson
    );
 
    char postData[];

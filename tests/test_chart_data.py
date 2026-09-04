@@ -1,4 +1,4 @@
-﻿"""Unit tests for chart data provider, auto-timeframe selection, and aggregation."""
+"""Unit tests for chart data provider, auto-timeframe selection, and aggregation."""
 
 import os
 import tempfile
@@ -143,6 +143,61 @@ class TestChartData(unittest.TestCase):
         self.assertTrue(data_complete["complete_coverage"])
         self.assertEqual(data_complete["message"], "")
         self.assertEqual(len(data_complete["markers"]), 2)
+
+    def test_pending_order_chart_coverage(self):
+        # 1. Create a pending limit order
+        now_dt = datetime.now(timezone.utc)
+        now_ts = int(now_dt.timestamp())
+        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, open_price, stop_loss, take_profit,
+                    status, order_type, created_at, updated_at
+                ) VALUES (?, 't_pending_limit', 'USDJPY', 'BUY', 0.5,
+                          ?, 150.250, 149.800, 151.000,
+                          'PENDING', 'Buy Limit', ?, ?);
+                """,
+                (self.account_id, now_str, now_str, now_str),
+            )
+            pending_trade_id = cursor.lastrowid
+            conn.commit()
+
+        # Without candles, reports real candles missing
+        data_no_candles = get_chart_data_for_trade(pending_trade_id, timeframe="AUTO")
+        self.assertFalse(data_no_candles["data_available"])
+        self.assertIn("No real", data_no_candles["message"])
+
+        # Insert real broker candles for USDJPY (e.g. 50 bars leading up to now)
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            for step in range(50, 0, -1):
+                ts = now_ts - (step * 900)
+                cursor.execute(
+                    """
+                    INSERT INTO market_candles (symbol, timeframe, timestamp, open, high, low, close, volume)
+                    VALUES ('USDJPY', 'M15', ?, 150.100, 150.400, 150.050, 150.300, 50.0);
+                    """,
+                    (ts,),
+                )
+            conn.commit()
+
+        data_with_candles = get_chart_data_for_trade(pending_trade_id, timeframe="AUTO")
+        self.assertTrue(data_with_candles["data_available"])
+        self.assertTrue(data_with_candles["complete_coverage"])
+        self.assertEqual(data_with_candles["message"], "")
+        self.assertEqual(data_with_candles["timeframe"], "M15")
+        self.assertGreaterEqual(len(data_with_candles["candles"]), 40)
+        # Pending orders must have no execution markers (buy/sell arrows), only limit price lines
+        self.assertEqual(len(data_with_candles["markers"]), 0)
+        self.assertEqual(len(data_with_candles["price_lines"]), 3)
+        limit_line = next(l for l in data_with_candles["price_lines"] if "LIMIT" in l["title"])
+        self.assertEqual(limit_line["price"], 150.250)
+        self.assertEqual(limit_line["color"], "#f59e0b")
 
 
 if __name__ == "__main__":

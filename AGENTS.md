@@ -128,21 +128,21 @@ Get-ChildItem -Path "server/static/js/*.js" | ForEach-Object { node -c $_.FullNa
 
 ---
 
-## 6. Remote-Deployment (Raspberry Pi)
+## 6. Remote-Deployment (Raspberry Pi / Linux Server)
 
-- **Zielsystem:** Raspberry Pi auf `192.168.178.42` (User: `pi`, SSH-Port: 22).
-- **Zielverzeichnis:** `/home/pi/Trading-Journal-Server`
+- **Zielsystem:** Raspberry Pi / Linux-Server (z. B. `<SERVER_IP>`, User: `<USER>`, SSH-Port: 22).
+- **Zielverzeichnis:** `/home/<USER>/Trading-Journal-Server`
 - **Docker-Container:** `trading-journal` (Exponiert auf Port 8000).
 - **Deployment-Skript:** `scratch/deploy.py` (führt SFTP-Upload unter Ausschluss von `.git`, `__pycache__` und `journal.db` durch und baut den Docker-Container remote neu).
 - **Befehle auf dem Server:**
   ```bash
-  cd /home/pi/Trading-Journal-Server
+  cd /home/<USER>/Trading-Journal-Server
   docker compose down
   docker compose build
   docker compose up -d
   curl -s http://localhost:8000/api/health
   ```
-- **Live-URL:** `http://192.168.178.42:8000`
+- **Live-URL:** `http://<SERVER_IP>:8000`
 
 ---
 

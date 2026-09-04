@@ -245,6 +245,7 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
             """, (account_id, now_str, payload.balance, payload.equity, payload.margin or 0.0))
 
         # 3.5 Process pending orders (status = PENDING)
+        candles_saved = 0
         active_pending_tickets = set()
         for p_order in (payload.pending_orders or []):
             p_ticket = p_order.ticket or (f"ctrader-order-{p_order.order_id}" if p_order.order_id else "")
@@ -291,10 +292,12 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     now_str
                 ))
 
+            if p_order.candles:
+                candles_saved += _save_candles(cursor, p_order.symbol, p_order.candles)
+
         # 4. Upsert closed trades
         inserted_trades = 0
         updated_trades = 0
-        candles_saved = 0
 
         for trade in (payload.closed_trades or []):
             if payload.source == "ctrader-cbot" and trade.partial_closes:

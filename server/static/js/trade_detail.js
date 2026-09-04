@@ -375,7 +375,7 @@ const TradeDetail = {
       },
       rightPriceScale: {
         borderColor: '#1f2937',
-        scaleMargins: { top: 0.15, bottom: 0.25 },
+        scaleMargins: { top: 0.1, bottom: 0.1 },
       },
       timeScale: {
         borderColor: '#1f2937',
@@ -399,19 +399,7 @@ const TradeDetail = {
       : this.chartInstance.addSeries(LightweightCharts.CandlestickSeries, candleOptions);
     this.candleSeries.setData(data.candles);
 
-    // 2. Volume Histogram Series
-    const volumeOptions = {
-      color: '#26a69a',
-      priceFormat: { type: 'volume' },
-      priceScaleId: '', // Overlay over chart
-      scaleMargins: { top: 0.8, bottom: 0 },
-    };
-    this.volumeSeries = typeof this.chartInstance.addHistogramSeries === 'function'
-      ? this.chartInstance.addHistogramSeries(volumeOptions)
-      : this.chartInstance.addSeries(LightweightCharts.HistogramSeries, volumeOptions);
-    this.volumeSeries.setData(data.volume);
-
-    // 3. Trade Entry & Exit Markers
+    // 2. Trade Entry & Exit Markers
     if (data.markers && data.markers.length > 0) {
       if (typeof this.candleSeries.setMarkers === 'function') {
         this.candleSeries.setMarkers(data.markers);
