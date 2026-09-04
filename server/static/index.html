@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trading Journal | Raspberry Pi Edition</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-icon">📈</div>
+        <div class="brand-text">
+          <h1>Trading Journal</h1>
+          <span>Raspberry Pi 3 Edition</span>
+        </div>
+      </div>
+
+      <ul class="nav-links">
+        <li class="nav-item active">
+          <a href="#" data-view="dashboard">
+            <span>📊</span> Dashboard
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="#" data-view="trades">
+            <span>📝</span> Trade Log
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="#" data-view="analytics">
+            <span>📈</span> Analytics
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="#" data-view="playbooks">
+            <span>🎯</span> Playbooks
+          </a>
+        </li>
+        <li class="nav-item">
+          <a href="#" data-view="accounts">
+            <span>🔄</span> Accounts & Sync
+          </a>
+        </li>
+      </ul>
+
+      <div class="sidebar-footer">
+        <div class="raspi-badge">
+          <span>🍓</span> 1 GB RAM Optimized
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#6b7280;">
+          Deterministic • Zero AI<br>
+          TradingView Charts v4
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="main-wrapper">
+      <!-- Topbar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <select id="globalAccountSelect" class="filter-select">
+            <option value="">All Accounts</option>
+          </select>
+          <select id="globalDatePreset" class="filter-select">
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="week">This Week</option>
+            <option value="month">This Month</option>
+            <option value="30days">Last 30 Days</option>
+          </select>
+        </div>
+
+        <div class="topbar-right">
+          <button class="btn btn-secondary btn-sm" onclick="App.navigateTo('accounts')">
+            📥 Import Statement
+          </button>
+          <button class="btn btn-primary btn-sm" onclick="Trades.openAddModal()">
+            + Log Trade
+          </button>
+        </div>
+      </header>
+
+      <!-- ================= VIEW: DASHBOARD ================= -->
+      <main id="view-dashboard" class="view-container active">
+        <!-- Top Metrics Cards Grid -->
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <span class="metric-label">Net Cumulative P&L</span>
+            <span id="dashNetPnl" class="metric-value color-green">$0.00</span>
+            <span class="metric-sub">Closed Trades Profit</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Win Rate</span>
+            <span id="dashWinRate" class="metric-value color-blue">0.0%</span>
+            <span id="dashWinLossCount" class="metric-sub">0W - 0L (0 BE)</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Profit Factor</span>
+            <span id="dashProfitFactor" class="metric-value color-green">0.00</span>
+            <span class="metric-sub">Gross Win / Gross Loss</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Total Trades</span>
+            <span id="dashTotalTrades" class="metric-value">0</span>
+            <span class="metric-sub">Executions Count</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Avg Win / Avg Loss</span>
+            <div style="display:flex;gap:8px;align-items:baseline;">
+              <span id="dashAvgWin" style="font-size:16px;font-weight:700;" class="color-green">+$0.00</span>
+              <span style="color:#6b7280;">/</span>
+              <span id="dashAvgLoss" style="font-size:16px;font-weight:700;" class="color-red">-$0.00</span>
+            </div>
+            <span id="dashWinLossRatio" class="metric-sub">0.0:1 Ratio</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Expectancy / Trade</span>
+            <span id="dashExpectancy" class="metric-value">$0.00</span>
+            <span class="metric-sub">Expected Value</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Sharpe Ratio</span>
+            <span id="dashSharpe" class="metric-value color-blue">0.00</span>
+            <span class="metric-sub">Risk-Adjusted Return</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Max Drawdown</span>
+            <span id="dashDrawdown" class="metric-value color-red">$0.00 (0.0%)</span>
+            <span id="dashStreaks" class="metric-sub">Streaks: W: 0 / L: 0</span>
+          </div>
+        </div>
+
+        <!-- TradeZella-Style Interactive Calendar Heatmap -->
+        <section class="calendar-wrapper">
+          <div class="calendar-header">
+            <div>
+              <h2 class="calendar-month-title" id="calendarMonthLabel">Calendar Heatmap</h2>
+              <span class="section-subtitle">Click any day with trades to filter log</span>
+            </div>
+            <div class="calendar-nav">
+              <button class="btn btn-secondary btn-sm" onclick="Dashboard.calendarPrevMonth()">◀ Prev</button>
+              <button class="btn btn-secondary btn-sm" onclick="Dashboard.calendarToday()">Today</button>
+              <button class="btn btn-secondary btn-sm" onclick="Dashboard.calendarNextMonth()">Next ▶</button>
+            </div>
+          </div>
+
+          <div class="calendar-weekdays">
+            <div>SUN</div><div>MON</div><div>TUE</div><div>WED</div><div>THU</div><div>FRI</div><div>SAT</div>
+          </div>
+          <div id="calendarDaysGrid" class="calendar-grid">
+            <!-- Rendered dynamically -->
+          </div>
+        </section>
+
+        <!-- Charts Grid (Equity Curve & Daily P&L) -->
+        <div class="charts-grid-2">
+          <div class="chart-card">
+            <div class="chart-header">
+              <span class="chart-title">Cumulative Equity Curve</span>
+              <span class="section-subtitle">Account Balance Growth</span>
+            </div>
+            <div id="equityCurveCanvasContainer" class="chart-container">
+              <!-- Canvas rendered dynamically -->
+            </div>
+          </div>
+
+          <div class="chart-card">
+            <div class="chart-header">
+              <span class="chart-title">Daily Net P&L</span>
+              <span class="section-subtitle">P&L Distribution</span>
+            </div>
+            <div id="dailyPnlBarContainer" class="chart-container">
+              <!-- Canvas rendered dynamically -->
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- ================= VIEW: TRADES LOG ================= -->
+      <main id="view-trades" class="view-container">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Trade Log</h2>
+            <span class="section-subtitle">Complete history of all executed trades</span>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button class="btn btn-secondary btn-sm" onclick="Trades.exportCSV()">
+              📥 Export CSV
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="Trades.openAddModal()">
+              + Log Trade
+            </button>
+          </div>
+        </div>
+
+        <div class="table-card">
+          <!-- Filter Toolbar -->
+          <div class="table-header-bar">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <input type="text" id="tradeSearchInput" class="filter-input" placeholder="Search symbol, note, ticket..." style="width:200px;" oninput="Trades.load()">
+              <select id="tradeDirFilter" class="filter-select" onchange="Trades.load()">
+                <option value="">All Directions</option>
+                <option value="BUY">BUY / LONG</option>
+                <option value="SELL">SELL / SHORT</option>
+              </select>
+              <select id="tradeStatusFilter" class="filter-select" onchange="Trades.load()">
+                <option value="">All Statuses</option>
+                <option value="WIN">WIN</option>
+                <option value="LOSS">LOSS</option>
+                <option value="BE">BREAKEVEN</option>
+                <option value="OPEN">OPEN</option>
+              </select>
+            </div>
+            <div id="tradesPageInfo" style="font-size:12px;color:#9ca3af;">
+              Page 1 of 1
+            </div>
+          </div>
+
+          <div class="data-table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th onclick="Trades.sortBy='open_time';Trades.load()">Date/Time</th>
+                  <th onclick="Trades.sortBy='symbol';Trades.load()">Symbol</th>
+                  <th>Direction</th>
+                  <th onclick="Trades.sortBy='volume';Trades.load()">Lots</th>
+                  <th>Entry</th>
+                  <th>Exit</th>
+                  <th>SL / TP</th>
+                  <th onclick="Trades.sortBy='net_profit';Trades.load()">Net P&L</th>
+                  <th>Status</th>
+                  <th>Playbook</th>
+                  <th>Mistake</th>
+                  <th style="text-align:right;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="tradesTableBody">
+                <!-- Populated dynamically -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Pagination Bar -->
+          <div style="padding:14px 20px;border-top:1px solid #1f2937;display:flex;justify-content:space-between;align-items:center;">
+            <button id="tradesPrevBtn" class="btn btn-secondary btn-sm" onclick="Trades.prevPage()">◀ Previous</button>
+            <button id="tradesNextBtn" class="btn btn-secondary btn-sm" onclick="Trades.nextPage()">Next ▶</button>
+          </div>
+        </div>
+      </main>
+
+      <!-- ================= VIEW: ANALYTICS ================= -->
+      <main id="view-analytics" class="view-container">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Performance Analytics</h2>
+            <span class="section-subtitle">Deep quantitative statistical edge breakdown</span>
+          </div>
+        </div>
+
+        <div class="charts-grid-2">
+          <!-- Day of the Week -->
+          <div class="chart-card">
+            <div class="chart-header">
+              <span class="chart-title">Performance by Day of Week</span>
+              <span class="section-subtitle">Monday - Sunday Net P&L</span>
+            </div>
+            <div id="analyticsDayOfWeekContainer" class="chart-container"></div>
+            <div style="margin-top:14px;overflow-x:auto;">
+              <table class="data-table" style="font-size:12px;">
+                <thead>
+                  <tr><th>Day</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Net P&L</th></tr>
+                </thead>
+                <tbody id="analyticsDayOfWeekTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Hour of Day -->
+          <div class="chart-card">
+            <div class="chart-header">
+              <span class="chart-title">Performance by Hour of Day</span>
+              <span class="section-subtitle">London / NY / Asian Sessions (00:00 - 23:00)</span>
+            </div>
+            <div id="analyticsHourContainer" class="chart-container"></div>
+          </div>
+        </div>
+
+        <!-- Symbol Breakdown Table -->
+        <div class="table-card" style="margin-bottom:24px;">
+          <div class="table-header-bar">
+            <span class="chart-title">Performance by Symbol</span>
+          </div>
+          <div class="data-table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th><th>Trades</th><th>Win Rate</th><th>Net P&L</th><th>Profit Factor</th><th>Volume</th><th>Avg Trade</th>
+                </tr>
+              </thead>
+              <tbody id="analyticsSymbolsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="charts-grid-2">
+          <!-- Playbook ROI -->
+          <div class="table-card">
+            <div class="table-header-bar">
+              <span class="chart-title">Strategy / Playbook Performance</span>
+            </div>
+            <div class="data-table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr><th>Playbook</th><th>Trades</th><th>Win Rate</th><th>Net P&L</th><th>Profit Factor</th></tr>
+                </thead>
+                <tbody id="analyticsSetupsTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Cost of Mistakes -->
+          <div class="table-card">
+            <div class="table-header-bar">
+              <span class="chart-title">Cost of Trading Mistakes</span>
+            </div>
+            <div class="data-table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr><th>Mistake</th><th>Occurrences</th><th>Total Lost</th><th>Worst Loss</th><th>Avg Cost</th></tr>
+                </thead>
+                <tbody id="analyticsMistakesTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- ================= VIEW: PLAYBOOKS ================= -->
+      <main id="view-playbooks" class="view-container">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Playbooks & Trading Setups</h2>
+            <span class="section-subtitle">Define setups, entry rules, and checklists to verify your edge</span>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="Playbooks.openAddPlaybookModal()">
+            + Create Playbook
+          </button>
+        </div>
+        <div id="playbooksListContainer" class="cards-grid" style="margin-bottom:36px;"></div>
+
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Trading Mistakes & Discipline</h2>
+            <span class="section-subtitle">Track emotional leaks, rule violations, and bad executions</span>
+          </div>
+          <button class="btn btn-danger btn-sm" onclick="Playbooks.openAddMistakeModal()">
+            + Add Mistake Type
+          </button>
+        </div>
+        <div id="mistakesListContainer" class="cards-grid"></div>
+      </main>
+
+      <!-- ================= VIEW: ACCOUNTS & SYNC ================= -->
+      <main id="view-accounts" class="view-container">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Trading Accounts & Broker Connectors</h2>
+            <span class="section-subtitle">Manage MetaTrader 4, MetaTrader 5, and cTrader read-only synchronization</span>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="Accounts.openAddAccountModal()">
+            + Add Trading Account
+          </button>
+        </div>
+
+        <div id="accountsListContainer" class="cards-grid" style="margin-bottom:30px;"></div>
+
+        <!-- MT4 / MT5 Integration Guide & Downloads -->
+        <div class="table-card" style="margin-bottom:24px;">
+          <div class="table-header-bar">
+            <div>
+              <h3 style="font-size:16px;color:#fff;font-weight:700;">MetaTrader 4 & MetaTrader 5 Read-Only Synchronization</h3>
+              <span class="section-subtitle">Automatically push closed trades, balance, equity, and chart candles from MT4/MT5</span>
+            </div>
+            <div style="display:flex;gap:10px;">
+              <a href="/static/downloads/TradeJournalSync.mq5" class="btn btn-secondary btn-sm" download>
+                📥 Download MT5 EA (.mq5)
+              </a>
+              <a href="/static/downloads/TradeJournalSync.mq4" class="btn btn-secondary btn-sm" download>
+                📥 Download MT4 EA (.mq4)
+              </a>
+            </div>
+          </div>
+          <div style="padding:20px;font-size:13px;color:#cbd5e1;line-height:1.7;">
+            <ol style="padding-left:20px;display:flex;flex-direction:column;gap:10px;">
+              <li><strong>Download</strong> the Expert Advisor file (<code>TradeJournalSync.mq5</code> or <code>TradeJournalSync.mq4</code>).</li>
+              <li>Open MetaTrader, click <strong>File ➔ Open Data Folder</strong>, navigate to <code>MQL5/Experts/</code> (or <code>MQL4/Experts/</code>) and paste the file. Restart or compile in MetaEditor.</li>
+              <li>Go to <strong>Tools ➔ Options ➔ Expert Advisors</strong>: Check <em>"Allow WebRequest for listed URL"</em> and add your server URL (e.g. <code>http://&lt;your-raspberry-pi-ip&gt;:8000</code>).</li>
+              <li>Attach the EA to any chart. In the EA inputs, paste your account's <strong>API Key</strong> (copied above). It will automatically sync trades, balance, and chart candles to your journal!</li>
+            </ol>
+          </div>
+        </div>
+
+        <!-- cTrader Open API Sync Card -->
+        <div class="table-card" style="margin-bottom:24px;">
+          <div class="table-header-bar">
+            <div>
+              <h3 style="font-size:16px;color:#fff;font-weight:700;">cTrader Open API 2.0 (Direct Cloud Login)</h3>
+              <span class="section-subtitle">Synchronize directly with cTrader cloud gateway without needing an open terminal</span>
+            </div>
+          </div>
+          <form id="ctraderSyncForm" style="padding:20px;" onsubmit="Accounts.triggerCTraderSync(event)">
+            <div class="form-grid">
+              <div class="form-group">
+                <label class="form-label">Target Account</label>
+                <select id="ctraderAccountSelect" class="form-select"></select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Client ID (Open API)</label>
+                <input type="text" id="ctClientId" class="form-input" placeholder="e.g. 1000_xxxxx">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Client Secret</label>
+                <input type="password" id="ctClientSecret" class="form-input" placeholder="Secret Key">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Access Token</label>
+                <input type="password" id="ctAccessToken" class="form-input" placeholder="OAuth Access Token">
+              </div>
+              <div class="form-group">
+                <label class="form-label">cTrader Account ID</label>
+                <input type="text" id="ctAccountId" class="form-input" placeholder="Trader Login ID">
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;">
+              <div id="ctraderSyncStatus" style="font-size:13px;"></div>
+              <button type="submit" class="btn btn-primary">
+                ⚡ Sync cTrader Now
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Universal Statement Importer -->
+        <div class="table-card">
+          <div class="table-header-bar">
+            <div>
+              <h3 style="font-size:16px;color:#fff;font-weight:700;">Universal Statement Importer</h3>
+              <span class="section-subtitle">Drag and drop statement files from MT4, MT5, cTrader, or TradeZella</span>
+            </div>
+          </div>
+          <div style="padding:20px;">
+            <div style="margin-bottom:16px;max-width:300px;">
+              <label class="form-label">Import Into Account:</label>
+              <select id="importAccountSelect" class="form-select"></select>
+            </div>
+
+            <div id="importDropzone" class="dropzone">
+              <div class="dropzone-icon">📁</div>
+              <h4 style="font-size:15px;color:#fff;margin-bottom:6px;">Drop your statement file here, or click to browse</h4>
+              <p style="font-size:12px;color:#9ca3af;">
+                Supports MT4 HTML Detailed Statement, MT5 Report (HTML/CSV), cTrader Deals (CSV), and TradeZella format (CSV).
+              </p>
+              <input type="file" id="importFileInput" style="display:none;" accept=".html,.htm,.csv">
+            </div>
+            <div id="importFileStatus" style="margin-top:12px;font-size:13px;text-align:center;"></div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- ================= MODAL: TRADE DETAIL & REPLAY (LIGHTWEIGHT CHARTS) ================= -->
+  <div id="tradeDetailModal" class="modal-overlay">
+    <div class="modal-content modal-lg">
+      <div class="modal-header">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <h2 id="tdSymbol" class="modal-title">EURUSD</h2>
+          <span id="tdDirection" class="badge badge-buy">BUY</span>
+          <span id="tdPnl" class="metric-value color-green" style="font-size:18px;">+$0.00</span>
+        </div>
+        <button class="modal-close" onclick="TradeDetail.close()">&times;</button>
+      </div>
+
+      <div class="modal-body" style="padding:16px 24px;">
+        <!-- Chart Controls Toolbar -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-secondary btn-sm tf-btn" data-tf="M1" onclick="TradeDetail.switchTimeframe('M1')">1m</button>
+            <button class="btn btn-secondary btn-sm tf-btn" data-tf="M5" onclick="TradeDetail.switchTimeframe('M5')">5m</button>
+            <button class="btn btn-primary btn-sm tf-btn" data-tf="M15" onclick="TradeDetail.switchTimeframe('M15')">15m</button>
+            <button class="btn btn-secondary btn-sm tf-btn" data-tf="H1" onclick="TradeDetail.switchTimeframe('H1')">1h</button>
+            <button class="btn btn-secondary btn-sm tf-btn" data-tf="H4" onclick="TradeDetail.switchTimeframe('H4')">4h</button>
+            <button class="btn btn-secondary btn-sm tf-btn" data-tf="D1" onclick="TradeDetail.switchTimeframe('D1')">1D</button>
+          </div>
+          <span style="font-size:12px;color:#9ca3af;">
+            TradingView Lightweight Charts • Entry/Exit Markers • SL/TP Levels
+          </span>
+        </div>
+
+        <!-- TradingView Lightweight Charts Container -->
+        <div id="tvChartContainer" class="tv-chart-box"></div>
+
+        <!-- Execution KPIs Row -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(110px, 1fr));gap:8px;margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
+          <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">VOLUME</span>
+            <span id="tdVolume" style="font-weight:700;color:#fff;">1.00</span>
+          </div>
+          <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">ENTRY</span>
+            <span id="tdEntryPrice" style="font-weight:700;color:#60a5fa;">0.00</span>
+          </div>
+          <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">EXIT</span>
+            <span id="tdExitPrice" style="font-weight:700;color:#fff;">0.00</span>
+          </div>
+          <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">STOP LOSS</span>
+            <span id="tdSL" style="font-weight:700;color:#ef4444;">None</span>
+          </div>
+          <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">TAKE PROFIT</span>
+            <span id="tdTP" style="font-weight:700;color:#10b981;">None</span>
+          </div>
+          <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">COMMISSION</span>
+            <span id="tdCommission" style="color:#9ca3af;">$0.00</span>
+          </div>
+          <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">SWAP</span>
+            <span id="tdSwap" style="color:#9ca3af;">$0.00</span>
+          </div>
+        </div>
+
+        <!-- Trade Tags & Notes Section -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px;">
+          <div class="form-group">
+            <label class="form-label">Assigned Playbook / Setup</label>
+            <select id="tdSetupSelect" class="form-select"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Identified Mistake</label>
+            <select id="tdMistakeSelect" class="form-select"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Psychology & Emotions</label>
+            <select id="tdEmotionSelect" class="form-select">
+              <option value="Disciplined">Disciplined</option>
+              <option value="Confident">Confident</option>
+              <option value="Patient">Patient</option>
+              <option value="FOMO">FOMO / Impulse</option>
+              <option value="Anxious">Anxious / Hesitant</option>
+              <option value="Greedy">Greedy</option>
+              <option value="Frustrated">Frustrated / Revenge</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Execution Rating (1-5)</label>
+            <select id="tdRatingSelect" class="form-select">
+              <option value="5">★★★★★ (5 - Flawless Execution)</option>
+              <option value="4">★★★★☆ (4 - Solid Followed Plan)</option>
+              <option value="3">★★★☆☆ (3 - Minor Imperfections)</option>
+              <option value="2">★★☆☆☆ (2 - Poor Risk/Timing)</option>
+              <option value="1">★☆☆☆☆ (1 - Disastrous / Broke Rules)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top:12px;">
+          <label class="form-label">Trade Notes & Reflections</label>
+          <textarea id="tdNotesInput" class="form-textarea" placeholder="Why did you enter? What went right or wrong?"></textarea>
+        </div>
+
+        <div style="font-size:11px;color:#6b7280;margin-top:8px;">
+          Open Time: <span id="tdOpenTime"></span> • Close Time: <span id="tdCloseTime"></span>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="TradeDetail.close()">Close</button>
+        <button class="btn btn-primary" onclick="TradeDetail.saveChanges()">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= MODAL: ADD / EDIT TRADE ================= -->
+  <div id="addTradeModal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="tradeModalTitle" class="modal-title">Log New Trade</h2>
+        <button class="modal-close" onclick="Trades.closeModal()">&times;</button>
+      </div>
+      <form id="tradeForm" onsubmit="Trades.saveTradeFromForm(event)">
+        <div class="modal-body">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">Trading Account</label>
+              <select id="tfAccount" class="form-select" required></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Symbol / Pair</label>
+              <input type="text" id="tfSymbol" class="form-input" placeholder="e.g. EURUSD, XAUUSD" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Direction</label>
+              <select id="tfDirection" class="form-select" required>
+                <option value="BUY">BUY / LONG</option>
+                <option value="SELL">SELL / SHORT</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Volume (Lots)</label>
+              <input type="number" id="tfVolume" class="form-input" step="0.01" value="1.00" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Open Price</label>
+              <input type="number" id="tfOpenPrice" class="form-input" step="any" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Close Price</label>
+              <input type="number" id="tfClosePrice" class="form-input" step="any">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Stop Loss</label>
+              <input type="number" id="tfStopLoss" class="form-input" step="any">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Take Profit</label>
+              <input type="number" id="tfTakeProfit" class="form-input" step="any">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Net P&L ($)</label>
+              <input type="number" id="tfNetProfit" class="form-input" step="0.01" value="0.00" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Commission</label>
+              <input type="number" id="tfCommission" class="form-input" step="0.01" value="0.00">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Swap</label>
+              <input type="number" id="tfSwap" class="form-input" step="0.01" value="0.00">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Open Time</label>
+              <input type="datetime-local" id="tfOpenTime" class="form-input" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Close Time</label>
+              <input type="datetime-local" id="tfCloseTime" class="form-input">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Playbook / Setup</label>
+              <select id="tfSetup" class="form-select"></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Mistake</label>
+              <select id="tfMistake" class="form-select"></select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Notes & Observations</label>
+            <textarea id="tfNotes" class="form-textarea" placeholder="Trade entry rationale, execution commentary..."></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="Trades.closeModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Trade</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= MODAL: ADD PLAYBOOK ================= -->
+  <div id="addPlaybookModal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title">New Playbook Setup</h2>
+        <button class="modal-close" onclick="Playbooks.closePlaybookModal()">&times;</button>
+      </div>
+      <form id="playbookForm" onsubmit="Playbooks.savePlaybook(event)">
+        <div class="modal-body">
+          <div class="form-group" style="margin-bottom:14px;">
+            <label class="form-label">Setup Name</label>
+            <input type="text" id="pbName" class="form-input" placeholder="e.g. London Breakout" required>
+          </div>
+          <div class="form-group" style="margin-bottom:14px;">
+            <label class="form-label">Target R:R</label>
+            <input type="number" id="pbTargetRR" class="form-input" step="0.1" value="2.0">
+          </div>
+          <div class="form-group" style="margin-bottom:14px;">
+            <label class="form-label">Description</label>
+            <input type="text" id="pbDesc" class="form-input" placeholder="Short description of the setup">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Rules / Checklist</label>
+            <textarea id="pbRules" class="form-textarea" placeholder="1. Identify high timeframe bias&#10;2. Wait for liquidity sweep&#10;3. Confirmation candle on 5M"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="Playbooks.closePlaybookModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Playbook</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= MODAL: ADD MISTAKE ================= -->
+  <div id="addMistakeModal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title">Add Mistake Category</h2>
+        <button class="modal-close" onclick="Playbooks.closeMistakeModal()">&times;</button>
+      </div>
+      <form id="mistakeForm" onsubmit="Playbooks.saveMistake(event)">
+        <div class="modal-body">
+          <div class="form-group" style="margin-bottom:14px;">
+            <label class="form-label">Mistake Name</label>
+            <input type="text" id="mkName" class="form-input" placeholder="e.g. FOMO Entry" required>
+          </div>
+          <div class="form-group" style="margin-bottom:14px;">
+            <label class="form-label">Severity Level</label>
+            <select id="mkSeverity" class="form-select">
+              <option value="HIGH">HIGH (Severe rule violation / capital risk)</option>
+              <option value="MEDIUM">MEDIUM (Impulsive behavior)</option>
+              <option value="LOW">LOW (Minor timing or sizing slip)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Description</label>
+            <textarea id="mkDesc" class="form-textarea" placeholder="Describe the trigger and psychological trap..."></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="Playbooks.closeMistakeModal()">Cancel</button>
+          <button type="submit" class="btn btn-danger">Save Mistake</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= MODAL: ADD ACCOUNT ================= -->
+  <div id="addAccountModal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title">Add Trading Account</h2>
+        <button class="modal-close" onclick="Accounts.closeAddAccountModal()">&times;</button>
+      </div>
+      <form id="accountForm" onsubmit="Accounts.saveAccount(event)">
+        <div class="modal-body">
+          <div class="form-group" style="margin-bottom:14px;">
+            <label class="form-label">Account Name</label>
+            <input type="text" id="accName" class="form-input" placeholder="e.g. FTMO 100k Challenge" required>
+          </div>
+          <div class="form-group" style="margin-bottom:14px;">
+            <label class="form-label">Platform</label>
+            <select id="accPlatform" class="form-select">
+              <option value="MT5">MetaTrader 5 (MT5)</option>
+              <option value="MT4">MetaTrader 4 (MT4)</option>
+              <option value="cTrader">cTrader</option>
+              <option value="Manual">Manual / Other Broker</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:14px;">
+            <label class="form-label">Broker Name</label>
+            <input type="text" id="accBroker" class="form-input" placeholder="e.g. IC Markets, FTMO, Pepperstone">
+          </div>
+          <div class="form-group" style="margin-bottom:14px;">
+            <label class="form-label">Account Number / Login</label>
+            <input type="text" id="accNumber" class="form-input" placeholder="e.g. 50123984">
+          </div>
+          <div class="form-group" style="margin-bottom:14px;">
+            <label class="form-label">Currency</label>
+            <input type="text" id="accCurrency" class="form-input" value="USD">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Initial Balance ($)</label>
+            <input type="number" id="accInitialBal" class="form-input" step="100" value="10000">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="Accounts.closeAddAccountModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Account</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Scripts -->
+  <script src="/static/js/lightweight-charts.standalone.production.js"></script>
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/trade_detail.js"></script>
+  <script src="/static/js/dashboard.js"></script>
+  <script src="/static/js/trades.js"></script>
+  <script src="/static/js/analytics.js"></script>
+  <script src="/static/js/playbooks.js"></script>
+  <script src="/static/js/accounts.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
