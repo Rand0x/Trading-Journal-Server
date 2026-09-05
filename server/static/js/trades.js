@@ -704,18 +704,156 @@ const Trades = {
     this.toggleDuringEmotion(btn, val);
   },
 
+  escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  },
+
+  renderSignalChips(initialSignals = '') {
+    const container = document.getElementById('tfSignalsChipGroup');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const currentSignalsStr = initialSignals !== '' ? initialSignals : (document.getElementById('tfSignals')?.value || '');
+    const currentList = currentSignalsStr
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    const currentLower = new Set(currentList.map(s => s.toLowerCase()));
+
+    const playbooks = (App.playbooks && App.playbooks.length > 0) ? App.playbooks : [];
+
+    const allNames = [];
+    const seenLower = new Set();
+
+    playbooks.forEach(p => {
+      const name = (p.name || '').trim();
+      if (name && !seenLower.has(name.toLowerCase())) {
+        allNames.push(name);
+        seenLower.add(name.toLowerCase());
+      }
+    });
+
+    currentList.forEach(name => {
+      if (name && !seenLower.has(name.toLowerCase())) {
+        allNames.push(name);
+        seenLower.add(name.toLowerCase());
+      }
+    });
+
+    if (allNames.length === 0) {
+      container.innerHTML = '<span style="font-size:12px;color:#6b7280;">Keine Playbooks/Signale hinterlegt. Lege Playbooks an oder tippe unten eigene Signale ein.</span>';
+      this.updateSignalCountBadge(0);
+      return;
+    }
+
+    allNames.forEach(name => {
+      const isActive = currentLower.has(name.toLowerCase());
+      const btn = document.createElement('span');
+      btn.className = `chip-btn ${isActive ? 'active' : ''}`;
+      btn.dataset.signal = name;
+      btn.style.cursor = 'pointer';
+      btn.innerHTML = `<span class="chip-icon">${isActive ? '✓' : '+'}</span> ${this.escapeHtml(name)}`;
+      btn.onclick = () => this.toggleSignalTag(name);
+      container.appendChild(btn);
+    });
+
+    this.updateSignalCountBadge(currentList.length);
+  },
+
   toggleSignalTag(tag) {
     const input = document.getElementById('tfSignals');
     if (!input) return;
-    const current = input.value.split(',').map(s => s.trim()).filter(Boolean);
-    const idx = current.indexOf(tag);
+    const normTag = tag.trim();
+    let current = input.value.split(',').map(s => s.trim()).filter(Boolean);
+    const idx = current.findIndex(s => s.toLowerCase() === normTag.toLowerCase());
+
     if (idx >= 0) {
       current.splice(idx, 1);
     } else {
-      current.push(tag);
+      current.push(normTag);
+
+      // If setup dropdown is empty, auto-select matching playbook if found
+      const setupSelect = document.getElementById('tfSetup');
+      if (setupSelect && (!setupSelect.value || setupSelect.value === '')) {
+        const matchingPb = (App.playbooks || []).find(p => p.name.toLowerCase() === normTag.toLowerCase());
+        if (matchingPb) {
+          setupSelect.value = matchingPb.id;
+        }
+      }
     }
+
     input.value = current.join(', ');
+    this.syncSignalChipsFromInput();
     this.checkTwinTrades();
+  },
+
+  syncSignalChipsFromInput() {
+    const input = document.getElementById('tfSignals');
+    const container = document.getElementById('tfSignalsChipGroup');
+    if (!input || !container) return;
+
+    const currentList = input.value.split(',').map(s => s.trim()).filter(Boolean);
+    const currentLower = new Set(currentList.map(s => s.toLowerCase()));
+
+    container.querySelectorAll('.chip-btn').forEach(chip => {
+      const sigName = chip.dataset.signal || '';
+      const isActive = currentLower.has(sigName.toLowerCase());
+      chip.classList.toggle('active', isActive);
+      const icon = chip.querySelector('.chip-icon');
+      if (icon) icon.textContent = isActive ? '✓' : '+';
+    });
+
+    this.updateSignalCountBadge(currentList.length);
+  },
+
+  updateSignalCountBadge(count) {
+    const badge = document.getElementById('tfSignalsCountBadge');
+    if (badge) {
+      badge.textContent = `${count} Signal${count === 1 ? '' : 'e'} ausgewählt`;
+      badge.style.color = count > 0 ? '#60a5fa' : '#9ca3af';
+    }
+  },
+
+  onSetupChange() {
+    const setupSelect = document.getElementById('tfSetup');
+    if (!setupSelect || !setupSelect.value) return;
+    const pbId = parseInt(setupSelect.value);
+    const pb = (App.playbooks || []).find(p => p.id === pbId);
+    if (pb && pb.name) {
+      const input = document.getElementById('tfSignals');
+      if (input) {
+        let current = input.value.split(',').map(s => s.trim()).filter(Boolean);
+        if (!current.some(s => s.toLowerCase() === pb.name.toLowerCase())) {
+          current.unshift(pb.name);
+          input.value = current.join(', ');
+          this.syncSignalChipsFromInput();
+        }
+      }
+    }
+  },
+
+  populateSignalFilters() {
+    const filter = document.getElementById('tradeSignalFilter');
+    if (!filter) return;
+    const currentVal = filter.value;
+    const playbooks = App.playbooks || [];
+    if (filter.options.length > 1 && filter.dataset.loadedCount == playbooks.length) {
+      return;
+    }
+    filter.innerHTML = '<option value="">All Signals / Confluences</option>';
+    playbooks.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = `⚡ ${p.name}`;
+      filter.appendChild(opt);
+    });
+    filter.dataset.loadedCount = playbooks.length;
+    if (currentVal) filter.value = currentVal;
   },
 
   checkTwinTrades() {
@@ -804,6 +942,7 @@ const Trades = {
       this.addDynamicTpRow();
     }
     if (document.getElementById('tfSignals')) document.getElementById('tfSignals').value = '';
+    this.renderSignalChips('');
     if (document.getElementById('tfPreTradeNotes')) document.getElementById('tfPreTradeNotes').value = '';
     if (document.getElementById('tfPostTradeNotes')) document.getElementById('tfPostTradeNotes').value = '';
     if (document.getElementById('tfKeyLearnings')) document.getElementById('tfKeyLearnings').value = '';

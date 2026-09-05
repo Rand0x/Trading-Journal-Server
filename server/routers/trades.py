@@ -239,6 +239,7 @@ def get_trades(
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    signals: Optional[str] = Query(None),
     is_missed: Optional[bool] = Query(None),
     sort_by: str = Query("open_time"),
     sort_order: str = Query("desc"),
@@ -282,6 +283,10 @@ def get_trades(
             where_clauses.append("(t.symbol LIKE ? OR t.notes LIKE ? OR t.tags LIKE ? OR t.ticket LIKE ?)")
             search_param = f"%{search}%"
             params.extend([search_param, search_param, search_param, search_param])
+        if signals:
+            where_clauses.append("(t.signals LIKE ? OR t.tags LIKE ?)")
+            sig_param = f"%{signals.strip()}%"
+            params.extend([sig_param, sig_param])
 
         where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
