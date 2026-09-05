@@ -13,6 +13,9 @@ const Playbooks = {
       ]);
       App.playbooks = playbooks;
       App.mistakes = mistakes;
+      if (typeof Trades !== 'undefined' && Trades.populateSignalFilters) {
+        Trades.populateSignalFilters();
+      }
       this.renderPlaybooks(playbooks);
       this.renderMistakes(mistakes);
     } catch (err) {

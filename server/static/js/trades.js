@@ -41,8 +41,13 @@ const Trades = {
     const mistakeVal = document.getElementById('tradeMistakeFilter')?.value;
     if (mistakeVal) params.mistake_id = mistakeVal;
 
+    const signalsVal = document.getElementById('tradeSignalFilter')?.value;
+    if (signalsVal) params.signals = signalsVal;
+
     const searchVal = document.getElementById('tradeSearchInput')?.value;
     if (searchVal) params.search = searchVal;
+
+    this.populateSignalFilters();
 
     try {
       const data = await API.getTrades(params);
@@ -952,6 +957,7 @@ const Trades = {
       if (document.getElementById('tfSignals')) {
         document.getElementById('tfSignals').value = trade.signals || '';
       }
+      this.renderSignalChips(trade.signals || '');
       if (document.getElementById('tfPreTradeNotes')) {
         document.getElementById('tfPreTradeNotes').value = trade.pre_trade_notes || (!trade.post_trade_notes && !trade.key_learnings ? (trade.notes || '') : '');
       }

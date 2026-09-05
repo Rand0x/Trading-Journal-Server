@@ -256,6 +256,9 @@
                 <option value="PENDING">LIMIT / PENDING</option>
                 <option value="CANCELLED">CANCELLED</option>
               </select>
+              <select id="tradeSignalFilter" class="filter-select" onchange="Trades.load()">
+                <option value="">All Signals / Confluences</option>
+              </select>
             </div>
             <div id="tradesPageInfo" style="font-size:12px;color:#9ca3af;">
               Page 1 of 1
@@ -1081,8 +1084,8 @@
               </select>
             </div>
             <div class="form-group">
-              <label class="form-label">Playbook / Setup</label>
-              <select id="tfSetup" class="form-select" onchange="Trades.checkTwinTrades()"></select>
+              <label class="form-label">Playbook / Primary Setup</label>
+              <select id="tfSetup" class="form-select" onchange="Trades.onSetupChange(); Trades.checkTwinTrades()"></select>
             </div>
           </div>
 
@@ -1137,17 +1140,18 @@
           </div>
 
           <!-- Setup Signals & Confluence Tags -->
-          <div style="margin-top:14px;">
-            <label class="form-label">Setup Signals & Confluence (comma-separated)</label>
-            <input type="text" id="tfSignals" class="form-input" placeholder="e.g. FVG, Order Block, BOS, Liquidity Sweep" oninput="Trades.checkTwinTrades()">
-            <div class="chip-group">
-              <span class="chip-btn" onclick="Trades.toggleSignalTag('FVG')">+ FVG</span>
-              <span class="chip-btn" onclick="Trades.toggleSignalTag('Order Block')">+ Order Block</span>
-              <span class="chip-btn" onclick="Trades.toggleSignalTag('BOS')">+ BOS</span>
-              <span class="chip-btn" onclick="Trades.toggleSignalTag('Liquidity Sweep')">+ Liquidity Sweep</span>
-              <span class="chip-btn" onclick="Trades.toggleSignalTag('Trendline')">+ Trendline</span>
-              <span class="chip-btn" onclick="Trades.toggleSignalTag('Support/Resistance')">+ Support/Resistance</span>
+          <div style="margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <div>
+                <span class="form-label" style="margin:0;font-weight:700;color:#60a5fa;">⚡ Setup Signals & Confluences (Multi-Select)</span>
+                <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Wähle mehrere Signale/Bestätigungen per Klick aus:</div>
+              </div>
+              <span id="tfSignalsCountBadge" class="badge" style="background:#1e293b;color:#9ca3af;font-size:11px;">0 Signale ausgewählt</span>
             </div>
+            <div id="tfSignalsChipGroup" class="chip-group" style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;">
+              <!-- Dynamically populated with user's Playbooks / Signals -->
+            </div>
+            <input type="text" id="tfSignals" class="form-input" placeholder="Oder eigene Signale kommagetrennt eingeben (z. B. MTC-Pattern, RSI Divergenz, RA1/RA2 Entry)" oninput="Trades.syncSignalChipsFromInput(); Trades.checkTwinTrades()">
           </div>
 
           <!-- 2-Phase Emotions (Multi-Select) -->
