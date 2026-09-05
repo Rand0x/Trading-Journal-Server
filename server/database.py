@@ -179,6 +179,7 @@ def init_db():
             emotion_pre TEXT DEFAULT '',
             emotion_during TEXT DEFAULT '',
             signals TEXT DEFAULT '',
+            tp_targets TEXT DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(account_id, ticket) ON CONFLICT IGNORE
@@ -201,6 +202,7 @@ def init_db():
             ("emotion_pre", "TEXT DEFAULT ''"),
             ("emotion_during", "TEXT DEFAULT ''"),
             ("signals", "TEXT DEFAULT ''"),
+            ("tp_targets", "TEXT DEFAULT ''"),
         ]
         for col_name, col_type in new_trade_cols:
             if col_name not in existing_trade_cols:

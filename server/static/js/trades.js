@@ -203,6 +203,14 @@ const Trades = {
         : '';
 
       let slTpDisplay = t.stop_loss ? `SL: ${t.stop_loss}` : '';
+      if ((!t.multiple_tps || t.multiple_tps.length <= 1) && t.tp_targets) {
+        try {
+          const parsed = JSON.parse(t.tp_targets);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            t.multiple_tps = parsed.map(x => parseFloat(x.price)).filter(p => !isNaN(p) && p > 0);
+          }
+        } catch (e) {}
+      }
       if (t.multiple_tps && t.multiple_tps.length > 1) {
         t.multiple_tps.forEach((tp, idx) => {
           slTpDisplay += `${slTpDisplay ? '<br>' : ''}<span style="color:#10b981;font-weight:600;">TP${idx + 1}: ${tp}</span>`;
@@ -429,16 +437,22 @@ const Trades = {
     row.className = 'dynamic-tp-row';
     row.style = 'display:flex;gap:8px;align-items:center;background:#090e18;padding:8px 10px;border-radius:6px;border:1px solid #1e293b;';
 
-    const priceVal = data?.close_price ?? '';
+    const priceVal = data?.close_price ?? data?.price ?? '';
     const volVal = data?.volume ?? '';
-    const pnlVal = data?.net_profit ?? '0.00';
+    const pnlVal = data?.net_profit ?? '';
 
     row.innerHTML = `
-      <span class="badge tp-label" style="background:#1e293b;color:#60a5fa;min-width:44px;text-align:center;">TP${nextIndex}</span>
-      <input type="number" class="form-input tp-price" step="any" placeholder="Preis" value="${priceVal}" style="flex:2;" oninput="Trades.recalculateRMultiple()">
-      <input type="number" class="form-input tp-vol" step="0.01" placeholder="Lots" value="${volVal}" style="flex:1;" oninput="Trades.recalculateRMultiple()">
-      <input type="number" class="form-input tp-pnl" step="0.01" placeholder="P&L" value="${pnlVal}" style="flex:1.5;" oninput="Trades.recalculateRMultiple()">
-      <button type="button" class="btn btn-secondary btn-sm" style="color:#ef4444;padding:4px 8px;" onclick="Trades.removeDynamicTpRow(this)">✕</button>
+      <span class="badge tp-label" style="background:#1e293b;color:#10b981;min-width:44px;text-align:center;font-weight:700;">TP${nextIndex}</span>
+      <div style="flex:2;position:relative;">
+        <input type="number" class="form-input tp-price" step="any" placeholder="Target Price" value="${priceVal}" style="width:100%;" oninput="Trades.recalculateRMultiple()">
+      </div>
+      <div style="flex:1.2;position:relative;">
+        <input type="number" class="form-input tp-vol" step="0.01" placeholder="Lots" value="${volVal}" style="width:100%;" oninput="Trades.recalculateRMultiple()">
+      </div>
+      <div style="flex:1.5;position:relative;">
+        <input type="number" class="form-input tp-pnl" step="0.01" placeholder="P&L (Optional)" value="${pnlVal}" style="width:100%;" oninput="Trades.recalculateRMultiple()">
+      </div>
+      <button type="button" class="btn btn-secondary btn-sm" style="color:#ef4444;padding:4px 8px;" onclick="Trades.removeDynamicTpRow(this)" title="Remove TP">✕</button>
     `;
     list.appendChild(row);
     this.recalculateRMultiple();
@@ -460,33 +474,61 @@ const Trades = {
   collectDynamicTps() {
     const list = document.getElementById('tfDynamicTpList');
     if (!list) return [];
-    const partials = [];
+    const targets = [];
     const openTime = document.getElementById('tfOpenTime')?.value || new Date().toISOString();
     list.querySelectorAll('.dynamic-tp-row').forEach((r, idx) => {
       const price = parseFloat(r.querySelector('.tp-price')?.value);
-      const vol = parseFloat(r.querySelector('.tp-vol')?.value);
-      const pnl = parseFloat(r.querySelector('.tp-pnl')?.value || 0);
-      if (!isNaN(price) && !isNaN(vol) && vol > 0) {
-        partials.push({
-          ticket: `manual_tp_${idx + 1}_${Date.now()}`,
-          close_price: price,
+      const volRaw = r.querySelector('.tp-vol')?.value;
+      const vol = volRaw !== '' && !isNaN(parseFloat(volRaw)) && parseFloat(volRaw) > 0 ? parseFloat(volRaw) : null;
+      const pnlRaw = r.querySelector('.tp-pnl')?.value;
+      const pnl = pnlRaw !== '' && !isNaN(parseFloat(pnlRaw)) ? parseFloat(pnlRaw) : null;
+      if (!isNaN(price) && price > 0) {
+        targets.push({
+          index: idx + 1,
+          price: price,
           volume: vol,
-          net_profit: isNaN(pnl) ? 0 : pnl,
+          net_profit: pnl,
           close_time: openTime.replace('T', ' ')
         });
       }
     });
-    return partials;
+    return targets;
   },
 
   recalculateRMultiple() {
     const dir = document.getElementById('tfDirection')?.value || 'BUY';
+    const isBuy = dir === 'BUY';
+    const totalVolume = parseFloat(document.getElementById('tfVolume')?.value) || 0;
     const openPrice = parseFloat(document.getElementById('tfOpenPrice')?.value) || 0;
     const closePrice = parseFloat(document.getElementById('tfClosePrice')?.value) || 0;
     const stopLoss = parseFloat(document.getElementById('tfStopLoss')?.value) || 0;
-    const takeProfit = parseFloat(document.getElementById('tfTakeProfit')?.value) || 0;
+    let takeProfit = parseFloat(document.getElementById('tfTakeProfit')?.value) || 0;
     const netProfit = parseFloat(document.getElementById('tfNetProfit')?.value) || 0;
     const initialRisk = parseFloat(document.getElementById('tfInitialRisk')?.value) || 0;
+
+    // Inspect dynamic TP rows
+    const list = document.getElementById('tfDynamicTpList');
+    const tpRows = list ? Array.from(list.querySelectorAll('.dynamic-tp-row')) : [];
+    const tpTargets = [];
+    tpRows.forEach(r => {
+      const p = parseFloat(r.querySelector('.tp-price')?.value);
+      const v = parseFloat(r.querySelector('.tp-vol')?.value);
+      const pnl = parseFloat(r.querySelector('.tp-pnl')?.value);
+      if (!isNaN(p) && p > 0) {
+        tpTargets.push({
+          price: p,
+          volume: !isNaN(v) && v > 0 ? v : 0,
+          netProfit: !isNaN(pnl) ? pnl : null
+        });
+      }
+    });
+
+    // If dynamic TPs exist, sync primary takeProfit input with either the final or first TP
+    if (tpTargets.length > 0) {
+      takeProfit = tpTargets[tpTargets.length - 1].price;
+      const tfTpInput = document.getElementById('tfTakeProfit');
+      if (tfTpInput) tfTpInput.value = takeProfit;
+    }
 
     let r = null;
     let riskDist = 0;
@@ -495,16 +537,40 @@ const Trades = {
     if (openPrice > 0 && stopLoss > 0 && openPrice !== stopLoss) {
       riskDist = Math.abs(openPrice - stopLoss);
 
-      // Target R:R from TP
-      if (takeProfit > 0 && takeProfit !== openPrice) {
-        const targetReward = Math.abs(takeProfit - openPrice);
+      // Target R:R from TP targets with volume weights if available
+      if (tpTargets.length > 0) {
+        const hasVolumes = tpTargets.some(t => t.volume > 0);
+        const sumV = tpTargets.reduce((acc, t) => acc + (t.volume > 0 ? t.volume : 0), 0);
+        const effectiveTotalV = sumV > 0 ? sumV : (totalVolume > 0 ? totalVolume : tpTargets.length);
+
+        let weightedTargetReward = 0;
+        let countedWeights = 0;
+
+        tpTargets.forEach(t => {
+          const reward = isBuy ? (t.price - openPrice) : (openPrice - t.price);
+          const weight = hasVolumes && sumV > 0 ? (t.volume / sumV) : (1 / tpTargets.length);
+          weightedTargetReward += reward * weight;
+          countedWeights += weight;
+        });
+
+        if (countedWeights > 0 && riskDist > 0) {
+          targetRR = weightedTargetReward / riskDist;
+        }
+      } else if (takeProfit > 0 && takeProfit !== openPrice) {
+        const targetReward = isBuy ? (takeProfit - openPrice) : (openPrice - takeProfit);
         targetRR = targetReward / riskDist;
       }
 
       // Realized R-Multiple
       if (closePrice > 0) {
-        const realizedReward = (dir === 'BUY') ? (closePrice - openPrice) : (openPrice - closePrice);
+        const realizedReward = isBuy ? (closePrice - openPrice) : (openPrice - closePrice);
         r = realizedReward / riskDist;
+      } else if (tpTargets.length > 0 && tpTargets.some(t => t.netProfit !== null && Math.abs(t.netProfit) > 0.0001)) {
+        // Sum from partial profits if available
+        const totalTpPnl = tpTargets.reduce((acc, t) => acc + (t.netProfit || 0), 0);
+        if (initialRisk > 0) {
+          r = totalTpPnl / initialRisk;
+        }
       } else if (initialRisk > 0 && Math.abs(netProfit) > 0.0001) {
         r = netProfit / initialRisk;
       }
@@ -515,7 +581,14 @@ const Trades = {
     // Update Target R:R display
     const rrDisplay = document.getElementById('tfTargetRRDisplay');
     if (rrDisplay) {
-      rrDisplay.textContent = targetRR !== null ? `1 : ${targetRR.toFixed(2)}` : '—';
+      if (targetRR !== null) {
+        const formatted = targetRR.toFixed(2);
+        rrDisplay.textContent = `1 : ${formatted}${tpTargets.length > 1 ? ' (avg)' : ''}`;
+        rrDisplay.style.color = targetRR >= 1 ? '#10b981' : '#f59e0b';
+      } else {
+        rrDisplay.textContent = '—';
+        rrDisplay.style.color = '#10b981';
+      }
     }
 
     // Update Risk Distance display
@@ -671,7 +744,7 @@ const Trades = {
     const now = new Date();
     const nowStr = now.toISOString().substring(0, 16);
     if (document.getElementById('tfOpenTime')) document.getElementById('tfOpenTime').value = nowStr;
-    if (document.getElementById('tfCloseTime')) document.getElementById('tfCloseTime').value = nowStr;
+    if (document.getElementById('tfCloseTime')) document.getElementById('tfCloseTime').value = '';
 
     // Reset feature inputs
     const isMissedChk = document.getElementById('tfIsMissed');
@@ -690,7 +763,10 @@ const Trades = {
     if (rrDisplay) rrDisplay.textContent = '—';
 
     const tpList = document.getElementById('tfDynamicTpList');
-    if (tpList) tpList.innerHTML = '';
+    if (tpList) {
+      tpList.innerHTML = '';
+      this.addDynamicTpRow();
+    }
     if (document.getElementById('tfSignals')) document.getElementById('tfSignals').value = '';
     if (document.getElementById('tfPreTradeNotes')) document.getElementById('tfPreTradeNotes').value = '';
     if (document.getElementById('tfPostTradeNotes')) document.getElementById('tfPostTradeNotes').value = '';
@@ -872,9 +948,31 @@ const Trades = {
       const tpList = document.getElementById('tfDynamicTpList');
       if (tpList) {
         tpList.innerHTML = '';
-        (trade.partial_closes || []).forEach(pc => {
-          this.addDynamicTpRow(pc);
-        });
+        let loaded = false;
+        if (trade.tp_targets) {
+          try {
+            const targets = JSON.parse(trade.tp_targets);
+            if (Array.isArray(targets) && targets.length > 0) {
+              targets.forEach(t => {
+                this.addDynamicTpRow({ close_price: t.price, volume: t.volume, net_profit: t.net_profit });
+              });
+              loaded = true;
+            }
+          } catch (e) {}
+        }
+        if (!loaded && trade.partial_closes && trade.partial_closes.length > 0) {
+          trade.partial_closes.forEach(pc => {
+            this.addDynamicTpRow(pc);
+          });
+          loaded = true;
+        }
+        if (!loaded && trade.take_profit && trade.take_profit > 0) {
+          this.addDynamicTpRow({ close_price: trade.take_profit, volume: trade.volume || '' });
+          loaded = true;
+        }
+        if (!loaded) {
+          this.addDynamicTpRow();
+        }
       }
 
       this.recalculateRMultiple();
@@ -946,10 +1044,28 @@ const Trades = {
       emotion_pre, emotion_during, signals, timeframe
     };
 
-    // Only include partial_closes if dynamically present
-    const dynamicPartials = this.collectDynamicTps();
-    if (dynamicPartials.length > 0) {
-      payload.partial_closes = dynamicPartials;
+    // Collect dynamic TP targets
+    const dynamicTargets = this.collectDynamicTps();
+    if (dynamicTargets.length > 0) {
+      payload.tp_targets = JSON.stringify(dynamicTargets);
+      if (!payload.take_profit) {
+        payload.take_profit = dynamicTargets[dynamicTargets.length - 1].price;
+      }
+      // If the trade is CLOSED and targets have lots, also save as partial closes
+      if (['CLOSED', 'WIN', 'LOSS', 'BE'].includes(status) || close_price) {
+        const closedPartials = dynamicTargets
+          .filter(t => t.volume && t.volume > 0)
+          .map((t, idx) => ({
+            ticket: `manual_tp_${idx + 1}_${Date.now()}`,
+            close_price: t.price,
+            volume: t.volume,
+            net_profit: t.net_profit || 0,
+            close_time: t.close_time
+          }));
+        if (closedPartials.length > 0) {
+          payload.partial_closes = closedPartials;
+        }
+      }
     }
 
     try {

@@ -1224,6 +1224,39 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(tp2["reached_count"], 0)
 
 
+    def test_tp_targets_and_open_trade_persistence(self):
+        # Test creating an open trade with planned dynamic tp_targets
+        tp_json = '[{"index":1,"price":1.0850,"volume":0.5},{"index":2,"price":1.0900,"volume":0.5}]'
+        res = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "ticket": "tp-target-test-1",
+            "symbol": "EURUSD",
+            "direction": "BUY",
+            "volume": 1.0,
+            "open_time": "2026-09-05 12:00:00",
+            "open_price": 1.0800,
+            "stop_loss": 1.0750,
+            "status": "OPEN",
+            "tp_targets": tp_json
+        })
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["status"], "OPEN")
+        self.assertIsNone(data["close_price"])
+        self.assertEqual(data["tp_targets"], tp_json)
+        self.assertEqual(data["multiple_tps"], [1.085, 1.09])
+
+        # Test updating the trade
+        new_tp_json = '[{"index":1,"price":1.0860,"volume":0.4},{"index":2,"price":1.0920,"volume":0.6}]'
+        update_res = self.client.put(f"/api/trades/{data['id']}", json={
+            "tp_targets": new_tp_json
+        })
+        self.assertEqual(update_res.status_code, 200)
+        updated_data = update_res.json()
+        self.assertEqual(updated_data["status"], "OPEN")
+        self.assertEqual(updated_data["multiple_tps"], [1.086, 1.092])
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -338,6 +338,16 @@ def _extract_all_take_profits(trade: Any, cursor=None) -> List[float]:
             except ValueError:
                 pass
 
+    # 1b. Dynamic TP targets column
+    if trade_dict.get("tp_targets"):
+        for part in re.findall(r"\d+(?:\.\d+)?", str(trade_dict["tp_targets"])):
+            try:
+                val = round(float(part), 5)
+                if val > 0:
+                    tps.add(val)
+            except ValueError:
+                pass
+
     # 2. Extract from notes or comment (e.g. "TP1: 80075.19, TP2: 78500", "TP: 80000, 79000")
     notes_str = f"{trade_dict.get('notes') or ''} {trade_dict.get('comment') or ''}"
     if notes_str.strip():

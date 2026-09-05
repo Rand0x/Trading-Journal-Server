@@ -6,6 +6,7 @@ Full trade log management, filtering, searching, editing, and CSV/JSON export.
 import io
 import csv
 import re
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
@@ -29,11 +30,11 @@ def _get_trade_with_partials(cursor, trade_id: int):
         LEFT JOIN mistakes m ON t.mistake_id = m.id
         WHERE t.id = ?;
     """, (trade_id,))
-    trade = cursor.fetchone()
-    if not trade:
+    row = cursor.fetchone()
+    if not row:
         return None
 
-    result = dict(trade)
+    result = dict(row)
     cursor.execute("""
         SELECT id, trade_id, ticket, volume, close_time, close_price,
                commission, swap, gross_profit, net_profit, created_at, updated_at
@@ -55,10 +56,24 @@ def _get_trade_with_partials(cursor, trade_id: int):
     result["is_grouped"] = False
     result["grouped_count"] = 1
     result["sub_trades"] = []
-    if result.get("take_profit") and float(result["take_profit"]) > 0:
+    result["multiple_tps"] = []
+
+    if result.get("tp_targets"):
+        try:
+            targets = json.loads(result["tp_targets"])
+            if isinstance(targets, list):
+                result["multiple_tps"] = [round(float(t["price"]), 5) for t in targets if t.get("price") and float(t["price"]) > 0]
+        except Exception:
+            for part in re.findall(r"\d+(?:\.\d+)?", str(result["tp_targets"])):
+                try:
+                    val = round(float(part), 5)
+                    if val > 0 and val not in result["multiple_tps"]:
+                        result["multiple_tps"].append(val)
+                except ValueError:
+                    pass
+
+    if not result["multiple_tps"] and result.get("take_profit") and float(result["take_profit"]) > 0:
         result["multiple_tps"] = [round(float(result["take_profit"]), 5)]
-    else:
-        result["multiple_tps"] = []
 
     if result.get("status") in ("OPEN", "PENDING"):
         account_id = result.get("account_id")
@@ -445,8 +460,8 @@ def create_trade(trade: TradeCreate):
                 tags, timeframe, r_multiple, initial_risk, risk_mode,
                 is_missed, pre_trade_notes, post_trade_notes,
                 key_learnings, emotion_pre, emotion_during, signals,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                tp_targets, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """, (
             trade.account_id, ticket, trade.symbol.upper(), trade.direction.upper(),
             trade.volume, trade.open_time, close_time,
@@ -464,6 +479,7 @@ def create_trade(trade: TradeCreate):
             trade.pre_trade_notes or "", trade.post_trade_notes or "",
             trade.key_learnings or "", trade.emotion_pre or "",
             trade.emotion_during or "", trade.signals or "",
+            trade.tp_targets or "",
             now_str, now_str
         ))
         trade_id = cursor.lastrowid

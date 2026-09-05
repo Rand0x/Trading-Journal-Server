@@ -211,6 +211,7 @@ class TradeBase(BaseModel):
     emotion_pre: Optional[str] = ""
     emotion_during: Optional[str] = ""
     signals: Optional[str] = ""
+    tp_targets: Optional[str] = ""
     partial_closes: List[TradePartialCloseCreate] = Field(default_factory=list)
 
     @field_validator("open_time", "close_time", mode="before")
@@ -254,6 +255,7 @@ class TradeUpdate(BaseModel):
     emotion_pre: Optional[str] = None
     emotion_during: Optional[str] = None
     signals: Optional[str] = None
+    tp_targets: Optional[str] = None
     partial_closes: Optional[List[TradePartialCloseCreate]] = None
 
     @field_validator("open_time", "close_time", mode="before")

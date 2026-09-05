@@ -987,12 +987,8 @@
               <input type="number" id="tfStopLoss" class="form-input" step="any" placeholder="SL Price" oninput="Trades.recalculateRMultiple()">
             </div>
             <div class="form-group">
-              <label class="form-label">Take Profit</label>
-              <input type="number" id="tfTakeProfit" class="form-input" step="any" placeholder="TP Price" oninput="Trades.recalculateRMultiple()">
-            </div>
-            <div class="form-group">
               <label class="form-label">Close Price</label>
-              <input type="number" id="tfClosePrice" class="form-input" step="any" placeholder="Exit Price" oninput="Trades.recalculateRMultiple()">
+              <input type="number" id="tfClosePrice" class="form-input" step="any" placeholder="Exit Price (if closed)" oninput="Trades.recalculateRMultiple()">
             </div>
             <div class="form-group">
               <label class="form-label">Net P&L</label>
@@ -1031,11 +1027,24 @@
             </div>
           </div>
 
+          <!-- Dedicated Full-Width Take Profit Targets & Lots Section -->
+          <div style="margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span class="form-label" style="margin:0;font-weight:700;color:#10b981;">🎯 Take Profit Targets & Lots</span>
+                <span style="font-size:11px;color:#9ca3af;">Specify price targets & how many lots to close per TP</span>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="Trades.addDynamicTpRow()" style="color:#10b981;border-color:#10b98144;padding:4px 10px;font-weight:600;">+ Add TP Target</button>
+            </div>
+            <div id="tfDynamicTpList" style="display:flex;flex-direction:column;gap:8px;"></div>
+            <input type="hidden" id="tfTakeProfit" value="">
+          </div>
+
           <!-- Risk & R-Multiple Info Section -->
           <div style="margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
               <span class="form-label" style="margin:0;font-weight:700;">Risk & R-Multiple</span>
-              <span style="font-size:11px;color:#9ca3af;">Auto-calculated from Entry, Stop Loss, Take Profit, and Close Price</span>
+              <span style="font-size:11px;color:#9ca3af;">Auto-calculated from Entry, Stop Loss, TP targets with lot sizes, and Close Price</span>
             </div>
             <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));">
               <div class="form-group">
