@@ -199,6 +199,104 @@ class TestChartData(unittest.TestCase):
         self.assertEqual(limit_line["price"], 150.250)
         self.assertEqual(limit_line["color"], "#f59e0b")
 
+    def test_load_2000_candles_capacity(self):
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, open_price, status, created_at, updated_at
+                ) VALUES (?, 't_2000_bars', 'BTCUSD', 'BUY', 0.5,
+                          '2026-09-01 00:00:00', 60000.0, 'OPEN',
+                          '2026-09-01 00:00:00', '2026-09-01 00:00:00');
+                """,
+                (self.account_id,),
+            )
+            trade_id = cursor.lastrowid
+
+            # Insert 2000 bars
+            rows = [
+                ('BTCUSD', 'M15', now_ts - (i * 900), 60000.0 + i, 60010.0 + i, 59990.0 + i, 60005.0 + i, 10.0)
+                for i in range(2000, 0, -1)
+            ]
+            cursor.executemany(
+                """
+                INSERT INTO market_candles (symbol, timeframe, timestamp, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                rows,
+            )
+            conn.commit()
+
+        data = get_chart_data_for_trade(trade_id, timeframe="M15", num_bars=2000)
+        self.assertTrue(data["data_available"])
+        self.assertEqual(len(data["candles"]), 2000)
+
+    def test_cancelled_order_chart_markers_and_timeframes(self):
+        now_dt = datetime.now(timezone.utc)
+        now_ts = int(now_dt.timestamp())
+        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, open_price, stop_loss, take_profit,
+                    status, order_type, created_at, updated_at
+                ) VALUES (?, 't_cancelled_1', 'BTCUSD', 'SELL', 0.01,
+                          ?, 82885.0, 85620.51, 80075.19,
+                          'CANCELLED', 'Limit', ?, ?);
+                """,
+                (self.account_id, now_str, now_str, now_str),
+            )
+            trade_id = cursor.lastrowid
+
+            # Insert M15 and M5 candles around now
+            m15_rows = [
+                ('BTCUSD', 'M15', now_ts - (i * 900), 82000.0, 82100.0, 81900.0, 82050.0, 50.0)
+                for i in range(10, 0, -1)
+            ]
+            m5_rows = [
+                ('BTCUSD', 'M5', now_ts - (i * 300), 82000.0, 82050.0, 81950.0, 82020.0, 20.0)
+                for i in range(20, 0, -1)
+            ]
+            cursor.executemany(
+                """
+                INSERT INTO market_candles (symbol, timeframe, timestamp, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                m15_rows + m5_rows,
+            )
+            conn.commit()
+
+        # 1. Test M15 timeframe on cancelled trade
+        data_m15 = get_chart_data_for_trade(trade_id, timeframe="M15")
+        self.assertTrue(data_m15["data_available"])
+        self.assertTrue(data_m15["complete_coverage"])
+        # No BUY or SELL execution markers for cancelled order!
+        self.assertEqual(data_m15["markers"], [])
+        # Check price line has muted CANCELLED line and no active SL/TP
+        self.assertEqual(len(data_m15["price_lines"]), 1)
+        self.assertEqual(data_m15["price_lines"][0]["title"], "CANCELLED: 82885.0")
+        self.assertEqual(data_m15["price_lines"][0]["color"], "#9ca3af")
+
+        # 2. Test switching to M5 timeframe
+        data_m5 = get_chart_data_for_trade(trade_id, timeframe="M5")
+        self.assertTrue(data_m5["data_available"])
+        self.assertTrue(data_m5["complete_coverage"])
+        self.assertEqual(data_m5["timeframe"], "M5")
+        self.assertEqual(data_m5["markers"], [])
+
+        # 3. Test AUTO mode
+        data_auto = get_chart_data_for_trade(trade_id, timeframe="AUTO")
+        self.assertTrue(data_auto["data_available"])
+        self.assertEqual(data_auto["markers"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
+

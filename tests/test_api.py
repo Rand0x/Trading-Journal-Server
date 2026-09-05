@@ -815,6 +815,125 @@ class TestAPI(unittest.TestCase):
         t2_cancelled = self.client.get(f"/api/trades/{t2_id}").json()
         self.assertEqual(t2_cancelled["status"], "CANCELLED")
 
+    def test_live_candles_5s_upsert_and_latest_candle(self):
+        # 1. Create a trade
+        trade_res = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "ticket": "live_test_trade_1",
+            "symbol": "EURUSD",
+            "direction": "BUY",
+            "volume": 1.0,
+            "open_time": "2026-09-01 10:00:00",
+            "open_price": 1.0850,
+            "status": "OPEN"
+        })
+        self.assertEqual(trade_res.status_code, 200)
+        trade_id = trade_res.json()["id"]
+
+        # Check latest candle before any candles are inserted -> no_data
+        latest_res = self.client.get(f"/api/sync/latest-candle/{trade_id}?timeframe=M15")
+        self.assertEqual(latest_res.status_code, 200)
+        self.assertEqual(latest_res.json()["status"], "no_data")
+        self.assertIsNone(latest_res.json()["candle"])
+
+        # 2. First 5s tick: Send forming candle for EURUSD M15 at ts = 1710000000
+        candle_ts = 1710000000
+        post_res_1 = self.client.post("/api/sync/live-candles", json={
+            "candles": [
+                {
+                    "symbol": "EURUSD",
+                    "timeframe": "M15",
+                    "time": candle_ts,
+                    "open": 1.0850,
+                    "high": 1.0855,
+                    "low": 1.0848,
+                    "close": 1.0852,
+                    "volume": 10.0
+                }
+            ]
+        })
+        self.assertEqual(post_res_1.status_code, 200)
+        self.assertEqual(post_res_1.json()["count"], 1)
+
+        # Verify in DB: exactly 1 row
+        with get_connection() as conn:
+            cnt = conn.execute("SELECT COUNT(*) FROM market_candles WHERE symbol = 'EURUSD' AND timeframe = 'M15';").fetchone()[0]
+            self.assertEqual(cnt, 1)
+
+        # 3. Second 5s tick: Candle price moves (high rises to 1.0860, close to 1.0858, volume to 18.0)
+        # Same bar timestamp -> must overwrite in-place, NO duplicate tick records saved!
+        post_res_2 = self.client.post("/api/sync/candles", json={
+            "candles": [
+                {
+                    "symbol": "EURUSD",
+                    "timeframe": "M15",
+                    "time": candle_ts,
+                    "open": 1.0850,
+                    "high": 1.0860,
+                    "low": 1.0848,
+                    "close": 1.0858,
+                    "volume": 18.0
+                }
+            ]
+        })
+        self.assertEqual(post_res_2.status_code, 200)
+        self.assertEqual(post_res_2.json()["count"], 1)
+
+        # Still exactly 1 row in SQLite!
+        with get_connection() as conn:
+            cnt = conn.execute("SELECT COUNT(*) FROM market_candles WHERE symbol = 'EURUSD' AND timeframe = 'M15';").fetchone()[0]
+            self.assertEqual(cnt, 1)
+            row = conn.execute("SELECT high, close, volume FROM market_candles WHERE symbol = 'EURUSD' AND timeframe = 'M15' AND timestamp = ?;", (candle_ts,)).fetchone()
+            self.assertAlmostEqual(row["high"], 1.0860)
+            self.assertAlmostEqual(row["close"], 1.0858)
+            self.assertAlmostEqual(row["volume"], 18.0)
+
+        # 4. Verify GET /api/sync/latest-candle/{trade_id}
+        latest_res_2 = self.client.get(f"/api/sync/latest-candle/{trade_id}?timeframe=M15")
+        self.assertEqual(latest_res_2.status_code, 200)
+        latest_data = latest_res_2.json()
+        self.assertEqual(latest_data["status"], "success")
+        self.assertEqual(latest_data["symbol"], "EURUSD")
+        self.assertEqual(latest_data["candle"]["time"], candle_ts)
+        self.assertAlmostEqual(latest_data["candle"]["close"], 1.0858)
+
+        # 5. Verify GET /api/sync/latest-candle by query params
+        latest_sym_res = self.client.get("/api/sync/latest-candle?symbol=EURUSD&timeframe=M15")
+        self.assertEqual(latest_sym_res.status_code, 200)
+        self.assertEqual(latest_sym_res.json()["candle"]["time"], candle_ts)
+
+        # 6. New candle appears 15 minutes later (ts = candle_ts + 900)
+        new_candle_ts = candle_ts + 900
+        post_res_3 = self.client.post("/api/sync/live-candles", json={
+            "candles": [
+                {
+                    "symbol": "EURUSD",
+                    "timeframe": "M15",
+                    "time": new_candle_ts,
+                    "open": 1.0858,
+                    "high": 1.0865,
+                    "low": 1.0857,
+                    "close": 1.0862,
+                    "volume": 5.0
+                }
+            ]
+        })
+        self.assertEqual(post_res_3.status_code, 200)
+
+        # Now DB has 2 rows: old finalized candle and new forming candle
+        with get_connection() as conn:
+            cnt = conn.execute("SELECT COUNT(*) FROM market_candles WHERE symbol = 'EURUSD' AND timeframe = 'M15';").fetchone()[0]
+            self.assertEqual(cnt, 2)
+
+        # latest-candle returns the new candle
+        latest_res_3 = self.client.get(f"/api/sync/latest-candle/{trade_id}?timeframe=M15")
+        self.assertEqual(latest_res_3.json()["candle"]["time"], new_candle_ts)
+        self.assertAlmostEqual(latest_res_3.json()["candle"]["close"], 1.0862)
+
+        # Non-existent trade returns 404
+        bad_res = self.client.get("/api/sync/latest-candle/999999")
+        self.assertEqual(bad_res.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

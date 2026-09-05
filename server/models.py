@@ -228,6 +228,7 @@ class TradeResponse(TradeBase):
 
 # ================= MQL / BROKER SYNC SCHEMAS =================
 class MQLCandleBar(BaseModel):
+    symbol: Optional[str] = None
     timeframe: str = "M15"
     time: int  # UNIX seconds
     open: float
@@ -272,6 +273,7 @@ class MQLSyncPayload(BaseModel):
     closed_trades: Optional[List[MQLTradeItem]] = Field(default_factory=list)
     open_trades: Optional[List[MQLTradeItem]] = Field(default_factory=list)
     pending_orders: Optional[List[MQLTradeItem]] = Field(default_factory=list)
+    candles: Optional[List[MQLCandleBar]] = Field(default_factory=list)
 
     @field_validator("currency", mode="before")
     @classmethod
@@ -289,11 +291,19 @@ class CandleItem(BaseModel):
     low: float
     close: float
     volume: Optional[float] = 0.0
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None
 
 class CandleBatch(BaseModel):
     symbol: str
     timeframe: str
     candles: List[CandleItem]
+
+class CandleUploadPayload(BaseModel):
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None
+    candles: Optional[List[CandleItem]] = None
+    batches: Optional[List[CandleBatch]] = None
 
 # ================= CTRADER SYNC SCHEMA =================
 class CTraderSyncRequest(BaseModel):

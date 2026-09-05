@@ -17,7 +17,7 @@ CONTEXT_BARS = 8
 
 
 def get_chart_data_for_trade(
-    trade_id: int, timeframe: str = "AUTO", num_bars: int = 140
+    trade_id: int, timeframe: str = "AUTO", num_bars: int = 2000
 ) -> Dict[str, Any]:
     """Return only real candles covering a trade and a small visual context."""
     with get_connection() as conn:
@@ -40,16 +40,18 @@ def get_chart_data_for_trade(
 
         status = trade["status"] or ""
         is_pending = status == "PENDING"
+        is_cancelled = status == "CANCELLED"
+        is_pending_or_cancelled = is_pending or is_cancelled
         open_ts = int(_parse_dt(trade["open_time"]).timestamp())
         close_ts = int(_parse_dt(trade["close_time"] or trade["open_time"]).timestamp())
         if not trade["close_time"]:
             close_ts = max(close_ts, int(datetime.now(timezone.utc).timestamp()))
 
         candles, selected_timeframe, interval_seconds = _load_best_candles(
-            cursor, trade["symbol"], timeframe, open_ts, close_ts, is_pending=is_pending, num_bars=num_bars
+            cursor, trade["symbol"], timeframe, open_ts, close_ts, is_pending=is_pending_or_cancelled, num_bars=num_bars
         )
 
-    if is_pending:
+    if is_pending_or_cancelled:
         complete = bool(candles)
     else:
         has_entry = _has_nearby_candle(candles, open_ts, interval_seconds)
@@ -122,7 +124,7 @@ def _fetch_raw_candles(
 
 
 def _fetch_recent_candles(
-    cursor, symbol: str, timeframe: str, max_ts: int, limit: int = 140
+    cursor, symbol: str, timeframe: str, max_ts: int, limit: int = 2000
 ) -> List[Dict[str, Any]]:
     cursor.execute(
         """
@@ -179,7 +181,7 @@ def _aggregate_candles(
 
 def _load_best_candles(
     cursor, symbol: str, requested_timeframe: str, open_ts: int, close_ts: int,
-    is_pending: bool = False, num_bars: int = 140
+    is_pending: bool = False, num_bars: int = 2000
 ) -> tuple[List[Dict[str, Any]], str, int]:
     """
     Loads the best available real broker candles covering [open_ts, close_ts].
@@ -199,13 +201,15 @@ def _load_best_candles(
 
     target_interval = _timeframe_to_seconds(target_tf)
     end_ts = close_ts + CONTEXT_BARS * target_interval
-    start_ts = min(open_ts - CONTEXT_BARS * target_interval, end_ts - num_bars * target_interval)
+    start_ts = min(open_ts - CONTEXT_BARS * target_interval, end_ts - (num_bars + CONTEXT_BARS) * target_interval)
 
     # 1. Direct query for target timeframe
     candles = _fetch_raw_candles(cursor, symbol, target_tf, start_ts, end_ts)
     if not candles and is_pending:
         candles = _fetch_recent_candles(cursor, symbol, target_tf, end_ts, num_bars)
     if candles:
+        if len(candles) > num_bars:
+            candles = candles[-num_bars:]
         return candles, target_tf, target_interval
 
     # 2. Try aggregation from lower timeframes (e.g. M15 -> H1, H4, D1)
@@ -219,7 +223,10 @@ def _load_best_candles(
             ratio = max(1, target_interval // _timeframe_to_seconds(lower_tf))
             raw_bars = _fetch_recent_candles(cursor, symbol, lower_tf, end_ts, num_bars * ratio)
         if raw_bars:
-            return _aggregate_candles(raw_bars, target_tf), target_tf, target_interval
+            agg = _aggregate_candles(raw_bars, target_tf)
+            if len(agg) > num_bars:
+                agg = agg[-num_bars:]
+            return agg, target_tf, target_interval
 
     # 3. If in AUTO mode, check if ANY other real timeframe is stored for this trade range
     if req_tf == "AUTO":
@@ -246,11 +253,13 @@ def _load_best_candles(
             if alt_tf in stored_tfs:
                 alt_interval = _timeframe_to_seconds(alt_tf)
                 alt_end = close_ts + CONTEXT_BARS * alt_interval
-                alt_start = min(open_ts - CONTEXT_BARS * alt_interval, alt_end - num_bars * alt_interval)
+                alt_start = min(open_ts - CONTEXT_BARS * alt_interval, alt_end - (num_bars + CONTEXT_BARS) * alt_interval)
                 alt_candles = _fetch_raw_candles(cursor, symbol, alt_tf, alt_start, alt_end)
                 if not alt_candles and is_pending:
                     alt_candles = _fetch_recent_candles(cursor, symbol, alt_tf, alt_end, num_bars)
                 if alt_candles:
+                    if len(alt_candles) > num_bars:
+                        alt_candles = alt_candles[-num_bars:]
                     return alt_candles, alt_tf, alt_interval
 
     return [], target_tf, target_interval
@@ -269,19 +278,22 @@ def _select_auto_timeframe(open_ts: int, close_ts: int) -> str:
 def _build_markers(trade, candles: List[Dict[str, Any]], open_ts: int, close_ts: int):
     status = trade["status"] if "status" in trade.keys() else ""
     is_pending = status == "PENDING"
+    is_cancelled = status == "CANCELLED"
+    if is_pending or is_cancelled:
+        return []
+
     is_buy = trade["direction"].upper() in ("BUY", "LONG")
     markers = []
-    if not is_pending:
-        markers.append(
-            {
-                "time": _find_closest_candle_time(candles, open_ts),
-                "position": "belowBar" if is_buy else "aboveBar",
-                "color": "#10b981" if is_buy else "#ef4444",
-                "shape": "arrowUp" if is_buy else "arrowDown",
-                "text": f"{'BUY' if is_buy else 'SELL'} {trade['volume']} @ {trade['open_price']}",
-                "size": 2,
-            }
-        )
+    markers.append(
+        {
+            "time": _find_closest_candle_time(candles, open_ts),
+            "position": "belowBar" if is_buy else "aboveBar",
+            "color": "#10b981" if is_buy else "#ef4444",
+            "shape": "arrowUp" if is_buy else "arrowDown",
+            "text": f"{'BUY' if is_buy else 'SELL'} {trade['volume']} @ {trade['open_price']}",
+            "size": 2,
+        }
+    )
     if trade["close_time"] and trade["close_price"]:
         pnl = float(trade["net_profit"] or 0.0)
         markers.append(
@@ -300,6 +312,23 @@ def _build_markers(trade, candles: List[Dict[str, Any]], open_ts: int, close_ts:
 def _price_lines(trade) -> List[Dict[str, Any]]:
     status = trade["status"] if "status" in trade.keys() else ""
     is_pending = status == "PENDING"
+    is_cancelled = status == "CANCELLED"
+
+    if is_cancelled:
+        lines = []
+        if trade["open_price"] and float(trade["open_price"]) > 0:
+            lines.append(
+                {
+                    "price": float(trade["open_price"]),
+                    "color": "#9ca3af",
+                    "lineWidth": 2,
+                    "lineStyle": 2,
+                    "axisLabelVisible": True,
+                    "title": f"CANCELLED: {trade['open_price']}",
+                }
+            )
+        return lines
+
     lines = [
         {
             "price": float(trade["open_price"]),

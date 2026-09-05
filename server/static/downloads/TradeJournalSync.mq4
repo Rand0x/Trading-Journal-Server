@@ -13,13 +13,18 @@
 //--- Inputs
 input string   InpServerUrl     = "http://192.168.1.100:8000/api/sync/mql"; // Journal Server URL
 input string   InpApiKey        = "";                                        // Journal API Key from Web UI
-input int      InpSyncInterval  = 60;                                        // Sync Interval (Seconds)
+input int      InpSyncInterval  = 60;                                        // Full Sync Interval (Seconds)
+input int      InpLiveInterval  = 5;                                         // Live Candle Interval (Seconds)
 input bool     InpSyncCandles   = true;                                      // Attach Real Candles for Chart Replay
-input int      InpCandleBars    = 500;                                       // Maximum real chart bars per trade
+input int      InpCandleBars    = 2000;                                      // Maximum real chart bars per trade/timeframe
 input int      InpCandleTrades  = 10;                                        // Number of recent trades to attach candles to
 
 //--- Global variables
 datetime g_lastSyncTime = 0;
+datetime g_lastHistorySync = 0;
+
+void SendLiveCandles();
+void SyncHistoryCandles();
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -36,7 +41,7 @@ int OnInit()
    Print("Journal API Key configured.");
    Print("Note: Ensure '", InpServerUrl, "' is added to MT4 Tools -> Options -> Expert Advisors -> Allow WebRequest!");
    
-   EventSetTimer(InpSyncInterval);
+   EventSetTimer(MathMax(1, InpLiveInterval));
    
    // Create on-chart manual sync button
    ObjectCreate(0, "BtnJournalSync", OBJ_BUTTON, 0, 0, 0);
@@ -76,6 +81,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       Print("Manual sync triggered via chart button. Syncing to Journal...");
       ObjectSetInteger(0, "BtnJournalSync", OBJPROP_STATE, false);
       ChartRedraw();
+      g_lastHistorySync = 0;
       SyncToServer();
    }
 }
@@ -85,7 +91,11 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   SyncToServer();
+   SendLiveCandles();
+   if(TimeCurrent() - g_lastSyncTime >= InpSyncInterval)
+   {
+      SyncToServer();
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -140,7 +150,7 @@ string GetCandlesJson(string symbol, int tf, datetime openTime, datetime closeTi
 {
    int seconds = TimeframeSeconds(tf);
    datetime toTime = MathMin(TimeCurrent(), closeTime + (8 * seconds));
-   datetime minFromTime = toTime - ((datetime)MathMin(maxBars, 140) * seconds);
+   datetime minFromTime = toTime - ((datetime)maxBars * seconds);
    datetime fromTime = (datetime)MathMin(openTime - (8 * seconds), minFromTime);
    int oldestShift = iBarShift(symbol, tf, fromTime, false);
    int newestShift = iBarShift(symbol, tf, toTime, false);
@@ -343,9 +353,199 @@ void SyncToServer()
    {
       Print("TradeJournalSync MT4: Successfully synced ", addedTrades, " trades to Server!");
       g_lastSyncTime = TimeCurrent();
+      if(TimeCurrent() - g_lastHistorySync >= 900)
+      {
+         g_lastHistorySync = TimeCurrent();
+         SyncHistoryCandles();
+      }
    }
    else
    {
       PrintFormat("TradeJournalSync MT4: WebRequest failed! Code: %d, Error: %d. Check URL whitelist.", res, GetLastError());
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Collect unique active symbols from orders and history            |
+//+------------------------------------------------------------------+
+void GetActiveSymbols(string &symbols[], int &totalSymbols)
+{
+   totalSymbols = 0;
+   ArrayResize(symbols, 64);
+
+   // Current chart symbol
+   symbols[totalSymbols++] = Symbol();
+
+   // Open and pending trades
+   int totalTrades = OrdersTotal();
+   for(int i = 0; i < totalTrades && totalSymbols < 60; i++)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      string sym = OrderSymbol();
+      bool exists = false;
+      for(int s = 0; s < totalSymbols; s++)
+      {
+         if(symbols[s] == sym) { exists = true; break; }
+      }
+      if(!exists) symbols[totalSymbols++] = sym;
+   }
+
+   // History orders (last 30 days)
+   int totalHist = OrdersHistoryTotal();
+   for(int k = totalHist - 1; k >= 0 && totalSymbols < 60; k--)
+   {
+      if(!OrderSelect(k, SELECT_BY_POS, MODE_HISTORY)) continue;
+      string hSym = OrderSymbol();
+      if(StringLen(hSym) == 0) continue;
+      bool exists = false;
+      for(int s = 0; s < totalSymbols; s++)
+      {
+         if(symbols[s] == hSym) { exists = true; break; }
+      }
+      if(!exists) symbols[totalSymbols++] = hSym;
+   }
+
+   ArrayResize(symbols, totalSymbols);
+}
+
+//+------------------------------------------------------------------+
+//| Helper to derive candles endpoint URL from InpServerUrl          |
+//+------------------------------------------------------------------+
+string GetCandlesEndpointUrl()
+{
+   string candlesUrl = InpServerUrl;
+   if(StringFind(candlesUrl, "/api/sync/mql") >= 0)
+   {
+      StringReplace(candlesUrl, "/api/sync/mql", "/api/sync/candles");
+   }
+   else if(StringSubstr(candlesUrl, StringLen(candlesUrl) - 1, 1) == "/")
+   {
+      candlesUrl = candlesUrl + "api/sync/candles";
+   }
+   else
+   {
+      candlesUrl = candlesUrl + "/api/sync/candles";
+   }
+   return candlesUrl;
+}
+
+//+------------------------------------------------------------------+
+//| Send newest forming candle (bar 0) every 5s for active symbols   |
+//+------------------------------------------------------------------+
+void SendLiveCandles()
+{
+   if(!InpSyncCandles) return;
+   if(StringLen(InpApiKey) == 0) return;
+
+   string symbols[];
+   int totalSymbols = 0;
+   GetActiveSymbols(symbols, totalSymbols);
+   if(totalSymbols == 0) return;
+
+   int timeframes[6] = {PERIOD_M1, PERIOD_M5, PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
+   string liveJson = "{\"candles\":[";
+   bool first = true;
+   int candleCount = 0;
+
+   for(int s = 0; s < totalSymbols; s++)
+   {
+      string sym = symbols[s];
+      for(int t = 0; t < 6; t++)
+      {
+         datetime cTime = iTime(sym, timeframes[t], 0);
+         if(cTime <= 0) continue;
+
+         double cOpen = iOpen(sym, timeframes[t], 0);
+         double cHigh = iHigh(sym, timeframes[t], 0);
+         double cLow = iLow(sym, timeframes[t], 0);
+         double cClose = iClose(sym, timeframes[t], 0);
+         long cVol = iVolume(sym, timeframes[t], 0);
+
+         if(!first) liveJson += ",";
+         liveJson += StringFormat(
+            "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"time\":%d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"volume\":%d}",
+            sym, TimeframeName(timeframes[t]), (long)cTime, cOpen, cHigh, cLow, cClose, cVol
+         );
+         first = false;
+         candleCount++;
+      }
+   }
+   liveJson += "]}";
+
+   if(candleCount == 0) return;
+
+   string candlesUrl = GetCandlesEndpointUrl();
+
+   char postData[];
+   char result[];
+   string resultHeaders;
+   StringToCharArray(liveJson, postData, 0, WHOLE_ARRAY, CP_UTF8);
+   ArrayResize(postData, ArraySize(postData) - 1);
+
+   string headers = StringFormat("Content-Type: application/json\r\nX-API-Key: %s\r\n", InpApiKey);
+   ResetLastError();
+   WebRequest("POST", candlesUrl, headers, 3000, postData, result, resultHeaders);
+}
+
+//+------------------------------------------------------------------+
+//| Download up to 2000 candles for each timeframe for active markets|
+//+------------------------------------------------------------------+
+void SyncHistoryCandles()
+{
+   if(!InpSyncCandles) return;
+   if(StringLen(InpApiKey) == 0) return;
+
+   string symbols[];
+   int totalSymbols = 0;
+   GetActiveSymbols(symbols, totalSymbols);
+   if(totalSymbols == 0) return;
+
+   int timeframes[6] = {PERIOD_M1, PERIOD_M5, PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
+   string candlesUrl = GetCandlesEndpointUrl();
+   string headers = StringFormat("Content-Type: application/json\r\nX-API-Key: %s\r\n", InpApiKey);
+
+   for(int s = 0; s < totalSymbols; s++)
+   {
+      string sym = symbols[s];
+      for(int t = 0; t < 6; t++)
+      {
+         int tf = timeframes[t];
+         int available = iBars(sym, tf);
+         if(available <= 0) continue;
+
+         int barsCount = MathMin(InpCandleBars, available);
+         string batchJson = StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"candles\":[", sym, TimeframeName(tf));
+         int added = 0;
+
+         for(int i = barsCount - 1; i >= 0; i--)
+         {
+            datetime cTime = iTime(sym, tf, i);
+            if(cTime <= 0) continue;
+
+            if(added > 0) batchJson += ",";
+            batchJson += StringFormat(
+               "{\"time\":%d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"volume\":%d}",
+               (long)cTime,
+               iOpen(sym, tf, i),
+               iHigh(sym, tf, i),
+               iLow(sym, tf, i),
+               iClose(sym, tf, i),
+               iVolume(sym, tf, i)
+            );
+            added++;
+         }
+         batchJson += "]}";
+
+         if(added == 0) continue;
+
+         char postData[];
+         char result[];
+         string resultHeaders;
+         StringToCharArray(batchJson, postData, 0, WHOLE_ARRAY, CP_UTF8);
+         ArrayResize(postData, ArraySize(postData) - 1);
+
+         ResetLastError();
+         WebRequest("POST", candlesUrl, headers, 5000, postData, result, resultHeaders);
+      }
    }
 }

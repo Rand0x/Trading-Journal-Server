@@ -78,8 +78,14 @@ const API = {
   deleteMistake(id) { return this.request(`/api/mistakes/${id}`, { method: 'DELETE' }); },
 
   // Chart data for TradingView Lightweight Charts
-  getChartData(tradeId, tf = 'M15', bars = 120) {
+  getChartData(tradeId, tf = 'AUTO', bars = 2000) {
     return this.request(`/api/sync/chart-data/${tradeId}?timeframe=${tf}&bars=${bars}`);
+  },
+  getLatestCandle(tradeId, tf = 'AUTO') {
+    return this.request(`/api/sync/latest-candle/${tradeId}?timeframe=${tf}`);
+  },
+  getLatestCandleBySymbol(symbol, tf = 'M15') {
+    return this.request(`/api/sync/latest-candle?symbol=${encodeURIComponent(symbol)}&timeframe=${tf}`);
   },
 
   // Sync & Import

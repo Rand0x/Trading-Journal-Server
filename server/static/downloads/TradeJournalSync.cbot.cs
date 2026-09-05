@@ -36,8 +36,11 @@ namespace cAlgo.Robots
         [Parameter("Sync Real Candles for Chart", Group = "Chart Data", DefaultValue = true)]
         public bool SyncCandles { get; set; }
 
-        [Parameter("Max Real Bars per Trade", Group = "Chart Data", DefaultValue = 500, MinValue = 50, MaxValue = 2000)]
+        [Parameter("Max Real Bars per Trade", Group = "Chart Data", DefaultValue = 2000, MinValue = 50, MaxValue = 5000)]
         public int MaxCandlesPerTrade { get; set; }
+
+        [Parameter("Live Candle Interval (sec)", Group = "Chart Data", DefaultValue = 5, MinValue = 1, MaxValue = 60)]
+        public int LiveCandleIntervalSeconds { get; set; }
 
         [Parameter("Max Recent Trades with Candles", Group = "Chart Data", DefaultValue = 10, MinValue = 1, MaxValue = 50)]
         public int MaxTradesWithCandles { get; set; }
@@ -48,6 +51,7 @@ namespace cAlgo.Robots
         };
 
         private readonly Dictionary<int, long> _positionToOrderMap = new Dictionary<int, long>();
+        private DateTime _lastFullSync = DateTime.MinValue;
 
         protected override void OnStart()
         {
@@ -96,7 +100,7 @@ namespace cAlgo.Robots
             }
 
             SyncAccount();
-            Timer.Start(TimeSpan.FromMinutes(SyncIntervalMinutes));
+            Timer.Start(TimeSpan.FromSeconds(Math.Max(1, LiveCandleIntervalSeconds)));
         }
 
         private void OnPendingOrderFilled(PendingOrderFilledEventArgs args)
@@ -114,7 +118,11 @@ namespace cAlgo.Robots
 
         protected override void OnTimer()
         {
-            SyncAccount();
+            SendLiveCandles();
+            if (DateTime.UtcNow - _lastFullSync >= TimeSpan.FromMinutes(SyncIntervalMinutes))
+            {
+                SyncAccount();
+            }
         }
 
         protected override void OnStop()
@@ -124,6 +132,7 @@ namespace cAlgo.Robots
 
         private void SyncAccount()
         {
+            _lastFullSync = DateTime.UtcNow;
             try
             {
                 var payload = BuildPayload();
@@ -141,6 +150,8 @@ namespace cAlgo.Robots
                     Print("Trade Journal sync completed: HTTP {0} - {1}", response.StatusCode, response.Body);
                 else
                     Print("Trade Journal sync failed: HTTP {0} - {1}", response.StatusCode, response.Body);
+
+                SyncHistoryCandles();
             }
             catch (Exception exception)
             {
@@ -339,6 +350,150 @@ namespace cAlgo.Robots
             }
         }
 
+        private HashSet<string> GetActiveSymbols()
+        {
+            var symbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(SymbolName))
+                symbols.Add(SymbolName);
+
+            foreach (var pos in Positions)
+                symbols.Add(pos.SymbolName);
+
+            foreach (var order in PendingOrders)
+                symbols.Add(order.SymbolName);
+
+            var cutoff = Server.TimeInUtc.AddDays(-HistoryDays);
+            foreach (var h in History.Where(t => t.ClosingTime >= cutoff).Take(100))
+                symbols.Add(h.SymbolName);
+
+            return symbols;
+        }
+
+        private string GetCandlesUrl()
+        {
+            if (JournalServerUrl.EndsWith("/api/sync/ctrader-push", StringComparison.OrdinalIgnoreCase))
+            {
+                return JournalServerUrl.Substring(0, JournalServerUrl.Length - "/api/sync/ctrader-push".Length) + "/api/sync/candles";
+            }
+            if (JournalServerUrl.EndsWith("/api/sync/mql", StringComparison.OrdinalIgnoreCase))
+            {
+                return JournalServerUrl.Substring(0, JournalServerUrl.Length - "/api/sync/mql".Length) + "/api/sync/candles";
+            }
+            if (Uri.TryCreate(JournalServerUrl, UriKind.Absolute, out var uri))
+            {
+                return $"{uri.Scheme}://{uri.Authority}/api/sync/candles";
+            }
+            return JournalServerUrl;
+        }
+
+        private void SendLiveCandles()
+        {
+            if (!SyncCandles) return;
+            try
+            {
+                var symbols = GetActiveSymbols();
+                var liveBars = new List<JournalCandle>();
+
+                foreach (var sym in symbols)
+                {
+                    foreach (var tf in SupportedTimeframes)
+                    {
+                        var bars = MarketData.GetBars(tf.TimeFrame, sym);
+                        if (bars.Count > 0)
+                        {
+                            int lastIdx = bars.Count - 1;
+                            liveBars.Add(new JournalCandle
+                            {
+                                Symbol = sym,
+                                Timeframe = tf.Name,
+                                Time = ToUnixSeconds(bars.OpenTimes[lastIdx]),
+                                Open = bars.OpenPrices[lastIdx],
+                                High = bars.HighPrices[lastIdx],
+                                Low = bars.LowPrices[lastIdx],
+                                Close = bars.ClosePrices[lastIdx],
+                                Volume = bars.TickVolumes[lastIdx]
+                            });
+                        }
+                    }
+                }
+
+                if (liveBars.Count == 0) return;
+
+                var payload = new { candles = liveBars };
+                var request = new HttpRequest(new Uri(GetCandlesUrl()))
+                {
+                    Method = HttpMethod.Post,
+                    Body = JsonSerializer.Serialize(payload, JsonOptions),
+                    Timeout = TimeSpan.FromSeconds(5)
+                };
+                request.Headers.Add("Content-Type", "application/json");
+                request.Headers.Add("X-API-Key", JournalApiKey);
+                Http.Send(request);
+            }
+            catch {}
+        }
+
+        private void SyncHistoryCandles()
+        {
+            if (!SyncCandles) return;
+            try
+            {
+                var symbols = GetActiveSymbols();
+                var candlesUrl = new Uri(GetCandlesUrl());
+
+                foreach (var sym in symbols)
+                {
+                    foreach (var tf in SupportedTimeframes)
+                    {
+                        var bars = MarketData.GetBars(tf.TimeFrame, sym);
+                        int loadAttempts = 0;
+                        while (bars.Count < MaxCandlesPerTrade && loadAttempts < 25 && bars.LoadMoreHistory() > 0)
+                        {
+                            loadAttempts++;
+                        }
+                        if (bars.Count == 0) continue;
+
+                        int count = Math.Min(bars.Count, MaxCandlesPerTrade);
+                        int startIdx = Math.Max(0, bars.Count - count);
+                        var candleList = new List<JournalCandle>();
+                        for (int i = startIdx; i < bars.Count; i++)
+                        {
+                            candleList.Add(new JournalCandle
+                            {
+                                Time = ToUnixSeconds(bars.OpenTimes[i]),
+                                Open = bars.OpenPrices[i],
+                                High = bars.HighPrices[i],
+                                Low = bars.LowPrices[i],
+                                Close = bars.ClosePrices[i],
+                                Volume = bars.TickVolumes[i]
+                            });
+                        }
+
+                        var batchPayload = new CandleBatchDto
+                        {
+                            Symbol = sym,
+                            Timeframe = tf.Name,
+                            Candles = candleList
+                        };
+
+                        var request = new HttpRequest(candlesUrl)
+                        {
+                            Method = HttpMethod.Post,
+                            Body = JsonSerializer.Serialize(batchPayload, JsonOptions),
+                            Timeout = TimeSpan.FromSeconds(15)
+                        };
+                        request.Headers.Add("Content-Type", "application/json");
+                        request.Headers.Add("X-API-Key", JournalApiKey);
+                        Http.Send(request);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Print("SyncHistoryCandles notice: {0}", ex.Message);
+            }
+        }
+
         private List<JournalCandle> GetCandlesForTrade(string symbolName, DateTime openTime, DateTime closeTime, int maxBars)
         {
             try
@@ -349,7 +504,7 @@ namespace cAlgo.Robots
                 if (toTime > Server.TimeInUtc)
                     toTime = Server.TimeInUtc;
                 var fromTime = openTime.AddSeconds(-8 * tfInfo.Seconds);
-                var minFromTime = toTime.AddSeconds(-Math.Min(maxBars, 140) * tfInfo.Seconds);
+                var minFromTime = toTime.AddSeconds(-maxBars * tfInfo.Seconds);
                 if (fromTime > minFromTime)
                     fromTime = minFromTime;
 
@@ -569,8 +724,23 @@ namespace cAlgo.Robots
         public double NetProfit { get; set; }
     }
 
+    public class CandleBatchDto
+    {
+        [JsonPropertyName("symbol")]
+        public string Symbol { get; set; }
+
+        [JsonPropertyName("timeframe")]
+        public string Timeframe { get; set; }
+
+        [JsonPropertyName("candles")]
+        public List<JournalCandle> Candles { get; set; }
+    }
+
     public class JournalCandle
     {
+        [JsonPropertyName("symbol")]
+        public string Symbol { get; set; }
+
         [JsonPropertyName("timeframe")]
         public string Timeframe { get; set; } = "M15";
 

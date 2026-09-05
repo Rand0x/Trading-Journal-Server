@@ -517,9 +517,9 @@
       </div>
 
       <div class="modal-body" style="padding:16px 24px;">
-        <!-- Chart Controls Toolbar -->
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-          <div style="display:flex;gap:6px;align-items:center;">
+        <!-- Chart Controls Toolbar (Sticky) -->
+        <div class="chart-controls-toolbar" style="display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:20;background:var(--bg-card,#0f172a);padding:4px 0 10px;margin-bottom:8px;border-bottom:1px solid #1a2233;">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
             <button id="tdBtnAuto" class="btn btn-primary btn-sm tf-btn" data-tf="AUTO" onclick="TradeDetail.switchTimeframe('AUTO')">Auto</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="M1" onclick="TradeDetail.switchTimeframe('M1')">1m</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="M5" onclick="TradeDetail.switchTimeframe('M5')">5m</button>
@@ -530,7 +530,7 @@
             <button id="tdBtnSync" class="btn btn-secondary btn-sm" onclick="TradeDetail.syncAndReload()" title="Refresh chart candles from server" style="margin-left:8px;">🔄 Refresh / Sync</button>
           </div>
           <span style="font-size:12px;color:#9ca3af;">
-            TradingView Lightweight Charts • Entry/Exit Markers • SL/TP Levels
+            TradingView Lightweight Charts • Live Feed
           </span>
         </div>
 

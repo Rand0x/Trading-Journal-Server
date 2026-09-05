@@ -6,6 +6,8 @@
 const TradeDetail = {
   currentTradeId: null,
   currentTimeframe: 'AUTO',
+  activeTimeframe: 'M15',
+  liveUpdateTimer: null,
   chartInstance: null,
   candleSeries: null,
   volumeSeries: null,
@@ -25,6 +27,7 @@ const TradeDetail = {
   },
 
   async open(tradeId, timeframe = 'AUTO') {
+    this.stopLiveUpdate();
     this.currentTradeId = tradeId;
     this.currentTimeframe = timeframe;
 
@@ -39,12 +42,13 @@ const TradeDetail = {
 
     try {
       const [data, trade] = await Promise.all([
-        API.getChartData(tradeId, this.currentTimeframe, 140),
+        API.getChartData(tradeId, this.currentTimeframe, 2000),
         API.getTrade(tradeId)
       ]);
       this.currentTrade = trade;
       this.renderTradeInfo(trade);
       this.initChart(chartContainer, data);
+      this.startLiveUpdate();
     } catch (err) {
       chartContainer.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ef4444;">Failed to load chart: ${this.escapeHtml(err.message)}</div>`;
       App.showToast(`Error: ${err.message}`, 'error');
@@ -52,6 +56,7 @@ const TradeDetail = {
   },
 
   close() {
+    this.stopLiveUpdate();
     const modal = document.getElementById('tradeDetailModal');
     modal.classList.remove('active');
     if (this.chartInstance) {
@@ -302,6 +307,7 @@ const TradeDetail = {
 
   initChart(container, data) {
     container.innerHTML = ''; // Clear container
+    this.activeTimeframe = data.timeframe || (this.currentTimeframe !== 'AUTO' ? this.currentTimeframe : 'M15');
 
     // Check if TradingView LightweightCharts is loaded
     if (typeof LightweightCharts === 'undefined') {
@@ -346,7 +352,10 @@ const TradeDetail = {
           <div style="font-size:36px;margin-bottom:12px;">📊</div>
           <div style="font-weight:600;font-size:15px;color:#e2e8f0;margin-bottom:6px;">No Real Broker Candles Stored</div>
           <div style="font-size:13px;max-width:440px;line-height:1.5;color:#9ca3af;">${this.escapeHtml(data.message || 'No real broker candles have been stored for this trade yet. Please run a sync in the updated EA or cBot.')}</div>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="TradeDetail.syncAndReload()" style="margin-top:14px;">🔄 Refresh / Check Sync</button>
+          <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;justify-content:center;">
+            ${this.currentTimeframe !== 'AUTO' ? '<button type="button" class="btn btn-primary btn-sm" onclick="TradeDetail.switchTimeframe(\'AUTO\')">🎯 Switch to Auto Timeframe</button>' : ''}
+            <button type="button" class="btn btn-secondary btn-sm" onclick="TradeDetail.syncAndReload()">🔄 Refresh / Check Sync</button>
+          </div>
         </div>
       `;
       return;
@@ -451,8 +460,9 @@ const TradeDetail = {
     const chartContainer = document.getElementById('tvChartContainer');
     chartContainer.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#9ca3af;">Loading Chart Data...</div>';
     try {
-      const data = await API.getChartData(this.currentTradeId, tf, 140);
+      const data = await API.getChartData(this.currentTradeId, tf, 2000);
       this.initChart(chartContainer, data);
+      this.updateLiveCandle();
     } catch (err) {
       App.showToast(`Error changing timeframe: ${err.message}`, 'error');
     }
@@ -553,7 +563,7 @@ const TradeDetail = {
 
       // Re-fetch chart data and trade details
       const [data, updatedTrade] = await Promise.all([
-        API.getChartData(this.currentTradeId, this.currentTimeframe, 140),
+        API.getChartData(this.currentTradeId, this.currentTimeframe, 2000),
         API.getTrade(this.currentTradeId)
       ]);
       this.currentTrade = updatedTrade;
@@ -576,6 +586,53 @@ const TradeDetail = {
         btn.disabled = false;
         btn.innerHTML = origText;
       }
+    }
+  },
+
+  startLiveUpdate() {
+    this.stopLiveUpdate();
+    this.liveUpdateTimer = setInterval(() => {
+      this.updateLiveCandle();
+    }, 5000);
+  },
+
+  stopLiveUpdate() {
+    if (this.liveUpdateTimer) {
+      clearInterval(this.liveUpdateTimer);
+      this.liveUpdateTimer = null;
+    }
+  },
+
+  async updateLiveCandle() {
+    if (!this.currentTradeId || !this.candleSeries) return;
+    const modal = document.getElementById('tradeDetailModal');
+    if (!modal || !modal.classList.contains('active')) {
+      this.stopLiveUpdate();
+      return;
+    }
+    const tf = (this.currentTimeframe === 'AUTO' || !this.currentTimeframe)
+      ? (this.activeTimeframe || 'M15')
+      : this.currentTimeframe;
+    try {
+      const res = await API.getLatestCandle(this.currentTradeId, tf);
+      if (res && res.candle && this.candleSeries) {
+        this.candleSeries.update(res.candle);
+        if (this.volumeSeries && res.candle.volume !== undefined) {
+          this.volumeSeries.update({
+            time: res.candle.time,
+            value: res.candle.volume,
+            color: res.candle.close >= res.candle.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
+          });
+        }
+        if (this.currentTrade && this.currentTrade.status === 'OPEN') {
+          const exitEl = document.getElementById('tdExitPrice');
+          if (exitEl) {
+            exitEl.textContent = Number(res.candle.close).toFixed(5);
+          }
+        }
+      }
+    } catch (e) {
+      // Non-fatal, live polling can fail silently on network interruptions
     }
   }
 };

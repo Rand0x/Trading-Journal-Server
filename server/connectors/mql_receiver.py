@@ -14,34 +14,45 @@ from server.models import MQLSyncPayload
 logger = logging.getLogger(__name__)
 
 def _save_candles(cursor, symbol: str, candles) -> int:
-    saved = 0
+    rows = []
     for candle in candles or []:
         if isinstance(candle, dict):
+            c_sym = candle.get("symbol") or symbol
             tf = candle.get("timeframe", "M15") or "M15"
-            c_time = int(candle["time"])
+            c_time = int(candle.get("time", candle.get("timestamp", 0)))
             c_open = float(candle["open"])
             c_high = float(candle["high"])
             c_low = float(candle["low"])
             c_close = float(candle["close"])
             c_vol = float(candle.get("volume", 0.0) or 0.0)
         else:
+            c_sym = getattr(candle, "symbol", None) or symbol
             tf = getattr(candle, "timeframe", "M15") or "M15"
-            c_time = int(candle.time)
+            c_time = int(getattr(candle, "time", getattr(candle, "timestamp", 0)))
             c_open = float(candle.open)
             c_high = float(candle.high)
             c_low = float(candle.low)
             c_close = float(candle.close)
             c_vol = float(getattr(candle, "volume", 0.0) or 0.0)
 
-        cursor.execute("""
+        if c_sym and c_time > 0:
+            rows.append((
+                c_sym.strip().upper(),
+                tf.strip().upper(),
+                c_time,
+                c_open,
+                c_high,
+                c_low,
+                c_close,
+                c_vol
+            ))
+
+    if rows:
+        cursor.executemany("""
             INSERT OR REPLACE INTO market_candles (symbol, timeframe, timestamp, open, high, low, close, volume)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-        """, (
-            symbol.upper(), tf.upper(), c_time, c_open, c_high,
-            c_low, c_close, c_vol
-        ))
-        saved += 1
-    return saved
+        """, rows)
+    return len(rows)
 
 def _process_ctrader_grouped_trade(cursor, account_id: int, trade, now_str: str):
     """Persist one cTrader position and all of its closing deals."""
@@ -512,6 +523,10 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
 
             if trade.candles:
                 candles_saved += _save_candles(cursor, trade.symbol, trade.candles)
+
+        # Process any top-level candles attached directly to the payload
+        if payload.candles:
+            candles_saved += _save_candles(cursor, "", payload.candles)
 
         # Update any pending orders that were cancelled or expired in the broker
         if payload.pending_orders is not None and payload.source in ("ctrader-cbot", "mql"):
