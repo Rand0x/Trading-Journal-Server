@@ -23,7 +23,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TradingJournal")
 
-_UNPROTECTED_PATHS = {"/api/health", "/api/sync/mql", "/api/sync/ctrader-push"}
+_UNPROTECTED_PATHS = {
+    "/api/health",
+    "/api/sync/mql",
+    "/api/sync/ctrader-push",
+    "/favicon.ico",
+    "/apple-touch-icon.png",
+}
 
 
 def get_access_credentials():
@@ -142,6 +148,16 @@ def health_check():
         "service": "trading-journal-server",
         "ai_enabled": False
     }
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Serves the browser favicon."""
+    return FileResponse(os.path.join(STATIC_DIR, "favicon.ico"))
+
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+def apple_touch_icon():
+    """Serves the Apple touch icon."""
+    return FileResponse(os.path.join(STATIC_DIR, "apple-touch-icon.png"))
 
 @app.get("/")
 def serve_spa():

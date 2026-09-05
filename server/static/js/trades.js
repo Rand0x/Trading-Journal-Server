@@ -133,7 +133,7 @@ const Trades = {
         <td>${setupBadge}</td>
         <td>${mistakeBadge}</td>
         <td style="text-align:right;">
-          <button class="btn btn-secondary btn-sm" onclick="TradeDetail.open(${t.id})" title="Inspect Trade on Lightweight Charts">
+          <button class="btn btn-secondary btn-sm" onclick="TradeDetail.open(${t.id})" title="Inspect Trade Chart">
             📊 Chart
           </button>
           <button class="btn btn-secondary btn-sm" onclick="Trades.openEditModal(${t.id})" title="Edit Trade">

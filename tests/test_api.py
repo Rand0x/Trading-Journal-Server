@@ -45,6 +45,19 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(data["status"], "healthy")
         self.assertFalse(data["ai_enabled"])
 
+    def test_favicon_endpoints(self):
+        res_ico = self.client.get("/favicon.ico")
+        self.assertEqual(res_ico.status_code, 200)
+        self.assertIn("image", res_ico.headers.get("content-type", ""))
+
+        res_apple = self.client.get("/apple-touch-icon.png")
+        self.assertEqual(res_apple.status_code, 200)
+        self.assertEqual(res_apple.headers.get("content-type"), "image/png")
+
+        res_svg = self.client.get("/static/favicon.svg")
+        self.assertEqual(res_svg.status_code, 200)
+        self.assertIn("svg", res_svg.headers.get("content-type", ""))
+
     def test_get_accounts(self):
         res = self.client.get("/api/accounts")
         self.assertEqual(res.status_code, 200)
