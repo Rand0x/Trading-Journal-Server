@@ -345,20 +345,11 @@ const TradeDetail = {
       }
     }
 
-    // Setup Signals & Confluence
+    // Setup Signals & Confluence (Always visible, interactive 1-click toggle)
     const signalsCard = document.getElementById('tdSignalsCard');
-    const signalsList = document.getElementById('tdSignalsList');
-    const signalsCount = document.getElementById('tdSignalsCount');
-    if (signalsCard && signalsList) {
-      const sigs = (trade.signals || '').split(',').map(s => s.trim()).filter(Boolean);
-      if (sigs.length > 0) {
-        signalsCard.style.display = 'block';
-        if (signalsCount) signalsCount.textContent = `${sigs.length} Signal${sigs.length > 1 ? 's' : ''}`;
-        signalsList.innerHTML = sigs.map(s => `<span class="chip-btn active" style="cursor:default;background:#3b82f622;color:#60a5fa;border-color:#3b82f655;">✓ ${this.escapeHtml(s)}</span>`).join('');
-      } else {
-        signalsCard.style.display = 'none';
-        signalsList.innerHTML = '';
-      }
+    if (signalsCard) {
+      signalsCard.style.display = 'block';
+      this.renderDetailSignals(trade);
     }
 
     // 2-Phase Emotions
@@ -945,6 +936,79 @@ const TradeDetail = {
     } catch (e) {
       // Non-fatal, live polling can fail silently on network interruptions
     }
+  },
+
+  renderDetailSignals(trade) {
+    const signalsList = document.getElementById('tdSignalsList');
+    const signalsCount = document.getElementById('tdSignalsCount');
+    if (!signalsList) return;
+    signalsList.innerHTML = '';
+
+    const currentList = (trade.signals || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    const currentLower = new Set(currentList.map(s => s.toLowerCase()));
+
+    if (signalsCount) {
+      signalsCount.textContent = `${currentList.length} Signal${currentList.length === 1 ? '' : 'e'} aktiv`;
+      signalsCount.style.color = currentList.length > 0 ? '#60a5fa' : '#9ca3af';
+    }
+
+    const playbooks = (App.playbooks && App.playbooks.length > 0) ? App.playbooks : [];
+    const allNames = [];
+    const seenLower = new Set();
+
+    playbooks.forEach(p => {
+      const name = (p.name || '').trim();
+      if (name && !seenLower.has(name.toLowerCase())) {
+        allNames.push(name);
+        seenLower.add(name.toLowerCase());
+      }
+    });
+
+    currentList.forEach(name => {
+      if (name && !seenLower.has(name.toLowerCase())) {
+        allNames.push(name);
+        seenLower.add(name.toLowerCase());
+      }
+    });
+
+    if (allNames.length === 0) {
+      signalsList.innerHTML = '<span style="font-size:12px;color:#6b7280;">Keine Signale/Playbooks definiert.</span>';
+      return;
+    }
+
+    allNames.forEach(name => {
+      const isActive = currentLower.has(name.toLowerCase());
+      const btn = document.createElement('span');
+      btn.className = `chip-btn ${isActive ? 'active' : ''}`;
+      btn.style.cursor = 'pointer';
+      btn.innerHTML = `<span class="chip-icon">${isActive ? '✓' : '+'}</span> ${this.escapeHtml(name)}`;
+      btn.title = isActive ? 'Klicken zum Abwählen' : 'Klicken zum Aktivieren';
+      btn.onclick = async () => {
+        let updated = [...currentList];
+        const idx = updated.findIndex(s => s.toLowerCase() === name.toLowerCase());
+        if (idx >= 0) {
+          updated.splice(idx, 1);
+        } else {
+          updated.push(name);
+        }
+        const newSigStr = updated.join(', ');
+        try {
+          await API.updateTrade(trade.id, { signals: newSigStr });
+          trade.signals = newSigStr;
+          this.renderDetailSignals(trade);
+          if (typeof Trades !== 'undefined' && Trades.load) {
+            Trades.load(Math.floor((Trades.currentOffset || 0) / (Trades.limit || 25)));
+          }
+          App.showToast(`Signal "${name}" ${idx >= 0 ? 'entfernt' : 'hinzugefügt'}`, 'success');
+        } catch (e) {
+          App.showToast(`Fehler: ${e.message}`, 'error');
+        }
+      };
+      signalsList.appendChild(btn);
+    });
   }
 };
 
