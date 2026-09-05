@@ -161,7 +161,7 @@ def _extract_candle_rows(payload: Any, default_symbol: str = "", default_tf: str
             rows.extend(_extract_candle_rows(b, default_symbol, default_tf))
 
     sym = (data.get("symbol") or default_symbol or "").strip().upper()
-    tf = (data.get("timeframe") or default_tf or "M15").strip().upper()
+    batch_tf = (data.get("timeframe") or default_tf or "").strip().upper()
 
     candles = data.get("candles")
     if isinstance(candles, list):
@@ -173,7 +173,7 @@ def _extract_candle_rows(payload: Any, default_symbol: str = "", default_tf: str
             else:
                 continue
             c_sym = (c_dict.get("symbol") or sym).strip().upper()
-            c_tf = (c_dict.get("timeframe") or tf).strip().upper()
+            c_tf = (batch_tf or c_dict.get("timeframe") or "M15").strip().upper()
             c_time = int(c_dict.get("time", c_dict.get("timestamp", 0)))
             if c_sym and c_time > 0 and "open" in c_dict and "close" in c_dict:
                 rows.append((
@@ -190,9 +190,10 @@ def _extract_candle_rows(payload: Any, default_symbol: str = "", default_tf: str
         # Single candle object directly passed
         c_time = int(data.get("time", data.get("timestamp", 0)))
         if c_time > 0:
+            c_tf = (batch_tf or data.get("timeframe") or "M15").strip().upper()
             rows.append((
                 sym,
-                tf,
+                c_tf,
                 c_time,
                 float(data["open"]),
                 float(data["high"]),

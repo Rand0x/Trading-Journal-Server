@@ -934,6 +934,55 @@ class TestAPI(unittest.TestCase):
         bad_res = self.client.get("/api/sync/latest-candle/999999")
         self.assertEqual(bad_res.status_code, 404)
 
+    def test_timeframe_batch_isolation_and_alignment(self):
+        # 1. Post a batch for M1 where candles have no timeframe or default
+        m1_ts = 1710000060  # Not divisible by 900
+        res_m1 = self.client.post("/api/sync/candles", json={
+            "symbol": "BTCUSD",
+            "timeframe": "M1",
+            "candles": [
+                {
+                    "time": m1_ts,
+                    "open": 80000.0,
+                    "high": 80010.0,
+                    "low": 79990.0,
+                    "close": 80005.0,
+                    "volume": 1.0
+                }
+            ]
+        })
+        self.assertEqual(res_m1.status_code, 200)
+
+        # 2. Post a batch for M15 at round time
+        m15_ts = 1710000000  # Divisible by 900
+        res_m15 = self.client.post("/api/sync/candles", json={
+            "symbol": "BTCUSD",
+            "timeframe": "M15",
+            "candles": [
+                {
+                    "time": m15_ts,
+                    "open": 80000.0,
+                    "high": 80100.0,
+                    "low": 79900.0,
+                    "close": 80050.0,
+                    "volume": 15.0
+                }
+            ]
+        })
+        self.assertEqual(res_m15.status_code, 200)
+
+        # Verify in DB: M1 candle is in M1, M15 candle is in M15
+        with get_connection() as conn:
+            m1_cnt = conn.execute("SELECT COUNT(*) FROM market_candles WHERE symbol = 'BTCUSD' AND timeframe = 'M1';").fetchone()[0]
+            m15_cnt = conn.execute("SELECT COUNT(*) FROM market_candles WHERE symbol = 'BTCUSD' AND timeframe = 'M15';").fetchone()[0]
+            self.assertEqual(m1_cnt, 1)
+            self.assertEqual(m15_cnt, 1)
+
+            # Ensure no M1 candle leaked into M15
+            leaked = conn.execute("SELECT COUNT(*) FROM market_candles WHERE symbol = 'BTCUSD' AND timeframe = 'M15' AND timestamp % 900 != 0;").fetchone()[0]
+            self.assertEqual(leaked, 0)
+
+
 
 if __name__ == "__main__":
     unittest.main()

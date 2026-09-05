@@ -460,6 +460,8 @@ namespace cAlgo.Robots
                         {
                             candleList.Add(new JournalCandle
                             {
+                                Symbol = sym,
+                                Timeframe = tf.Name,
                                 Time = ToUnixSeconds(bars.OpenTimes[i]),
                                 Open = bars.OpenPrices[i],
                                 High = bars.HighPrices[i],
@@ -558,6 +560,7 @@ namespace cAlgo.Robots
                 {
                     candles.Add(new JournalCandle
                     {
+                        Symbol = symbolName,
                         Timeframe = tfInfo.Name,
                         Time = ToUnixSeconds(bars.OpenTimes[i]),
                         Open = bars.OpenPrices[i],
@@ -742,7 +745,7 @@ namespace cAlgo.Robots
         public string Symbol { get; set; }
 
         [JsonPropertyName("timeframe")]
-        public string Timeframe { get; set; } = "M15";
+        public string Timeframe { get; set; }
 
         [JsonPropertyName("time")]
         public long Time { get; set; }

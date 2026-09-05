@@ -301,6 +301,12 @@ def init_db():
                 "Rotated a legacy demo Journal API Key. Copy the new key from the account card into the EA or cBot."
             )
 
+        # Clean up any misaligned candles resulting from previous timeframe collisions
+        cursor.execute("DELETE FROM market_candles WHERE timeframe = 'M15' AND (timestamp % 900 != 0);")
+        cursor.execute("DELETE FROM market_candles WHERE timeframe = 'M5' AND (timestamp % 300 != 0);")
+        cursor.execute("DELETE FROM market_candles WHERE timeframe = 'H1' AND (timestamp % 3600 != 0);")
+        cursor.execute("DELETE FROM market_candles WHERE timeframe = 'H4' AND (timestamp % 14400 != 0);")
+
         conn.commit()
         logger.info("Database initialized successfully with WAL mode.")
 
