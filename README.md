@@ -1,61 +1,60 @@
 # Trading Journal Server
 
-Ein selbst gehostetes Trading-Journal mit Dashboard, Trade-Log, Playbooks,
-Analytics, TradingView-Charts, Screenshots und Anbindungen für MetaTrader und
-cTrader. Die Anwendung läuft lokal auf einem Rechner oder Server und speichert
-die Daten in einer SQLite-Datenbank.
+A self-hosted trading journal featuring a dashboard, trade log, playbooks,
+analytics, TradingView charts, screenshots, and native integrations for
+MetaTrader and cTrader. The application runs locally on your computer or server
+and stores all data in an SQLite database.
 
-Die Auswertungen sind deterministisch und benötigen keine KI- oder
-LLM-Dienste.
+All analytics are deterministic and do not require any AI or LLM services.
 
-## Funktionen
+## Features
 
-- Dashboard mit P&L, Win Rate, Profit Factor, Expectancy, Drawdown und Equity-Kurve
-- Trade-Log mit Suche, Filtern, Bearbeiten und aufklappbaren Detailzeilen
-- Teilprofite und Scale-outs unter einem übergeordneten Trade
-- TradingView Lightweight Charts mit Candles, Volumen, Entry-/Exit-Markierungen sowie SL-/TP-Linien
-- Playbooks mit Setup Name, Beschreibung und Checklist/Regeln
-- Trade-Notizen, Beschriftungen und mehrere TradingView-Screenshots pro Trade
-- Screenshot-Miniaturen und Vollbild-Slideshow mit Pfeiltasten und ESC
-- Fehler- und Psychologie-Kategorien inklusive Rating
-- Verwaltung mehrerer Trading-Konten
-- MT4-/MT5-Synchronisierung über einen Expert Advisor
-- cTrader-Synchronisierung über einen lokal laufenden cBot ohne cTrader-OAuth-Token
-- Optionale cTrader-Open-API-Anbindung
-- Import von MT4-, MT5-, cTrader- und TradeZella-Statements
-- CSV-Export des Trade-Logs
+- Dashboard with P&L, Win Rate, Profit Factor, Expectancy, Drawdown, and Equity curve
+- Trade log with search, filtering, editing, and collapsible detail rows
+- Partial profits and scale-outs tracked under a single parent trade
+- TradingView Lightweight Charts with candles, volume, entry/exit markers, and SL/TP price lines
+- Playbooks with setup name, description, and rules/checklist
+- Trade notes, captions, and multiple TradingView screenshots per trade
+- Screenshot thumbnails and fullscreen slideshow with arrow-key navigation and ESC to close
+- Trading mistake and psychology categories with execution rating
+- Multi-account management
+- MT4 / MT5 synchronization via an Expert Advisor
+- cTrader synchronization via a locally running cBot without cTrader OAuth tokens
+- Optional cTrader Open API integration
+- Statement importer for MT4, MT5, cTrader, and TradeZella statements
+- CSV export for the trade log
 
-## Voraussetzungen
+## Prerequisites
 
-Für die Docker-Installation:
+For Docker installation:
 
 - Docker Engine
 - Docker Compose v2
 
-Für die lokale Installation ohne Docker:
+For local installation without Docker:
 
-- Python 3.10 oder neuer
+- Python 3.10 or newer
 - pip
 
-Für eine automatische Broker-Synchronisierung müssen MetaTrader oder cTrader
-auf dem Rechner laufen, der die Daten an den Journal-Server sendet. Der Server
-muss aus diesem Netzwerk erreichbar sein.
+For automatic broker synchronization, MetaTrader or cTrader must run on the
+machine sending data to the journal server. The server must be reachable from
+that network.
 
-## Installation mit Docker
+## Installation with Docker
 
-Dies ist die empfohlene Installationsvariante.
+This is the recommended installation method.
 
-### 1. Projekt holen
+### 1. Clone the repository
 
 ~~~bash
 git clone <REPOSITORY_URL> trading-journal-server
 cd trading-journal-server
 ~~~
 
-Falls das Repository bereits lokal vorhanden ist, direkt in dessen
-Projektordner wechseln.
+If the repository is already present locally, navigate directly into its
+project directory.
 
-### 2. Datenordner anlegen
+### 2. Create the data directory
 
 Linux/macOS:
 
@@ -69,12 +68,11 @@ Windows PowerShell:
 New-Item -ItemType Directory -Path data -Force
 ~~~
 
-Der Ordner data enthält die SQLite-Datenbank und bleibt bei einem Neubau des
-Containers erhalten.
+The `data` directory holds the SQLite database and persists across container rebuilds.
 
-### 3. Zugriff konfigurieren (empfohlen)
+### 3. Configure access (recommended)
 
-Die Beispielkonfiguration kopieren:
+Copy the example configuration:
 
 ~~~bash
 cp .env.example .env
@@ -86,83 +84,81 @@ Windows PowerShell:
 Copy-Item .env.example .env
 ~~~
 
-Standardmäßig ist der Dienst nur auf diesem Rechner unter localhost erreichbar.
-Für Zugriff aus dem vertrauenswürdigen lokalen Netzwerk in .env bewusst
-HOST_BIND_ADDRESS auf 0.0.0.0 setzen. Optional können JOURNAL_USERNAME und
-JOURNAL_PASSWORD die Weboberfläche und Verwaltungs-API mit einem Passwort
-schützen. Beide Werte müssen gemeinsam gesetzt werden.
+By default, the service is accessible only on localhost. To allow access from a
+trusted local network, set `HOST_BIND_ADDRESS` to `0.0.0.0` in `.env`.
+Optionally, set `JOURNAL_USERNAME` and `JOURNAL_PASSWORD` to protect the web
+interface and management API with HTTP Basic Auth. Both values must be set together.
 
-### 4. Container bauen und starten
+### 4. Build and start the container
 
 ~~~bash
 docker compose up -d --build
 ~~~
 
-Die Anwendung ist anschließend unter dieser Adresse erreichbar:
+The application is then reachable at:
 
 ~~~text
 http://localhost:8000
 ~~~
 
-Wenn der Server für das lokale Netzwerk freigegeben wurde, dessen
-Netzwerkadresse verwenden:
+If the server is exposed to your local network, use its network IP address:
 
 ~~~text
 http://<SERVER-IP>:8000
 ~~~
 
-### 5. Installation prüfen
+### 5. Verify the installation
 
 ~~~bash
 docker compose ps
 curl http://localhost:8000/api/health
 ~~~
 
-Die API sollte den Status healthy zurückgeben. Die interaktive FastAPI-Doku
-ist unter http://localhost:8000/docs verfügbar.
+The API should return a status of `healthy`. Interactive FastAPI documentation
+is available at `http://localhost:8000/docs`.
 
-## Docker-Betrieb
+## Docker Operations
 
 ~~~bash
-# Live-Logs anzeigen
+# View live logs
 docker compose logs -f
 
-# Container stoppen
+# Stop container
 docker compose stop
 
-# Container starten
+# Start container
 docker compose start
 
-# Container entfernen, Datenordner behalten
+# Remove container while preserving the data folder
 docker compose down
 
-# Nach einem Update neu bauen und starten
+# Rebuild and restart after an update
 git pull
 docker compose up -d --build
 ~~~
 
-Den Ordner data nicht löschen, wenn die Journal-Daten erhalten bleiben sollen.
+Do not delete the `data` directory if you want to keep your journal data.
 
 ### Backup
 
-Vor einem Backup den Container möglichst stoppen:
+Stop the container prior to making a backup if possible:
 
 ~~~bash
 docker compose stop
 ~~~
 
-Anschließend die Datei data/journal.db oder den gesamten Ordner data kopieren.
-Danach den Container wieder starten:
+Then copy the `data/journal.db` file or the entire `data` directory.
+Afterward, restart the container:
 
 ~~~bash
 docker compose start
 ~~~
 
-Backups sollten regelmäßig und auf einem anderen Datenträger gespeichert werden.
+Backups should be performed regularly and stored on a separate physical drive or storage device.
 
-## Lokale Installation ohne Docker
+## Local Installation without Docker
 
-### 1. Virtuelle Umgebung erstellen
+### 1. Create a virtual environment
 
 Windows PowerShell:
 
@@ -178,30 +174,30 @@ python3 -m venv .venv
 source .venv/bin/activate
 ~~~
 
-Falls PowerShell das Aktivieren blockiert, kann es für das aktuelle Terminal
-erlaubt werden:
+If PowerShell blocks script execution, you can bypass the execution policy for
+the current terminal session:
 
 ~~~powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ~~~
 
-### 2. Abhängigkeiten installieren
+### 2. Install dependencies
 
 ~~~bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ~~~
 
-### 3. Server starten
+### 3. Start the server
 
 ~~~bash
 python -m server.main
 ~~~
 
-Die Anwendung ist anschließend unter http://localhost:8000 erreichbar.
+The application is then reachable at `http://localhost:8000`.
 
-Die Datenbank wird beim ersten Start automatisch unter data/journal.db
-angelegt. Ein anderer Datenordner kann über DB_DIR gesetzt werden:
+The SQLite database is automatically created at `data/journal.db` on first startup.
+A custom data directory can be specified via the `DB_DIR` environment variable:
 
 Linux/macOS:
 
@@ -216,241 +212,237 @@ $env:DB_DIR = "C:\path\to\journal-data"
 python -m server.main
 ~~~
 
-## Ersteinrichtung in der Weboberfläche
+## Initial Setup in the Web Interface
 
-1. Anwendung öffnen und zu Accounts & Sync wechseln.
-2. Mit Add Trading Account ein Konto anlegen.
-3. Plattform, Kontonummer und optional Broker-/Servername eintragen.
-4. Konto speichern.
-5. Für MT4, MT5 und den cTrader-cBot wird automatisch ein Journal API Key erzeugt.
+1. Open the application and navigate to **Accounts & Sync**.
+2. Click **Add Trading Account** to create an account.
+3. Enter the platform, account number, and optional broker/server name.
+4. Save the account.
+5. For MT4, MT5, and the cTrader cBot, a **Journal API Key** is generated automatically.
 
-Der Journal API Key gehört ausschließlich zu diesem Journal-Server. Er ist
-kein Broker-Passwort und kein cTrader-Open-API-Token.
+The Journal API Key belongs solely to this journal server. It is neither a
+broker password nor a cTrader Open API token.
 
-## MetaTrader 4 und MetaTrader 5
+## MetaTrader 4 and MetaTrader 5
 
-Die MetaTrader-Anbindung verwendet den mitgelieferten Expert Advisor. Der
-Server benötigt dafür kein MetaTrader-Passwort und keinen Drittanbieter-Token.
+The MetaTrader connector uses the bundled Expert Advisor. The server does not
+require any MetaTrader credentials or third-party service tokens.
 
-### Einrichtung
+### Setup
 
-1. In Accounts & Sync ein Konto mit Plattform MT4 oder MT5 anlegen.
-2. Den angezeigten Journal API Key kopieren.
-3. Die passende Datei aus server/static/downloads/ laden:
-   - TradeJournalSync.mq4 für MT4
-   - TradeJournalSync.mq5 für MT5
-4. Die Datei in den jeweiligen Experts-Ordner kopieren.
-5. MetaTrader neu starten oder im Navigator aktualisieren.
-6. Den Expert Advisor auf einen Chart ziehen und konfigurieren:
+1. In **Accounts & Sync**, create an account with platform **MT4** or **MT5**.
+2. Copy the displayed **Journal API Key**.
+3. Download the corresponding file from `server/static/downloads/`:
+   - `TradeJournalSync.mq4` for MT4
+   - `TradeJournalSync.mq5` for MT5
+4. Copy the file into your MetaTrader `Experts` folder.
+5. Restart MetaTrader or refresh the Navigator window.
+6. Attach the Expert Advisor to a chart and configure its inputs:
 
 ~~~text
 Server URL: http://<SERVER-IP>:8000/api/sync/mql
 API Key:    <JOURNAL_API_KEY>
 ~~~
 
-7. In MetaTrader unter Tools → Options → Expert Advisors die Serveradresse
-   unter Allow WebRequest for listed URL freigeben. Als Basisadresse genügt:
+7. In MetaTrader under **Tools → Options → Expert Advisors**, allow the server
+   URL under **Allow WebRequest for listed URL**. Specifying the base URL is sufficient:
 
 ~~~text
 http://<SERVER-IP>:8000
 ~~~
 
-8. Den Expert Advisor aktivieren und das AutoTrading-/Algo-Trading-Symbol
-   entsprechend der MetaTrader-Version einschalten.
+8. Enable the Expert Advisor and ensure the **AutoTrading** / **Algo Trading**
+   button in MetaTrader is activated.
 
-Der Expert Advisor sendet Kontostand, Equity, offene Positionen, geschlossene
-Trades und Kerzendaten. Er kann keine Orders platzieren, ändern oder schließen.
-Das MetaTrader-Terminal muss laufen, damit neue Daten übertragen werden.
+The Expert Advisor transmits balance, equity, open positions, closed trades,
+and candlestick data. It cannot place, modify, or close orders. The MetaTrader
+terminal must remain running for new data to sync.
 
-## cTrader-cBot ohne Open-API-Token
+## cTrader cBot without Open API Tokens
 
-Der cTrader-cBot ist die lokale Alternative zum Expert Advisor. Dafür werden
-kein cTrader-Client-Secret und kein OAuth-Access-Token benötigt.
+The cTrader cBot is the local push alternative to the MetaTrader EA. It requires
+no cTrader client secret or OAuth access token.
 
-### Einrichtung
+### Setup
 
-1. In Accounts & Sync ein Konto mit Plattform cTrader anlegen.
-2. Den Journal API Key dieses Kontos kopieren.
-3. TradeJournalSync.cbot.cs aus server/static/downloads/ herunterladen.
-4. In cTrader Algo öffnen und einen neuen C#-cBot erstellen.
-5. Den Vorlagecode vollständig durch den heruntergeladenen Code ersetzen.
-6. Den cBot bauen.
-7. Die Parameter setzen:
+1. In **Accounts & Sync**, create an account with platform **cTrader**.
+2. Copy the **Journal API Key** for this account.
+3. Download `TradeJournalSync.cbot.cs` from `server/static/downloads/`.
+4. In cTrader, open **Algo** and create a new C# cBot.
+5. Replace the template code completely with the downloaded code.
+6. Build the cBot.
+7. Configure the parameters:
 
 ~~~text
 Journal Server URL: http://<SERVER-IP>:8000/api/sync/ctrader-push
 Journal API Key:    <JOURNAL_API_KEY>
 ~~~
 
-Zusätzlich können Zeitraum, Synchronisierungsintervall und Anzahl der
-M15-Kerzen konfiguriert werden.
+Additionally, the sync lookback period, synchronization interval, and number of
+M15 candles can be customized.
 
-8. Den cBot auf dem Rechner starten, auf dem cTrader läuft.
+8. Start the cBot on the computer running cTrader.
 
-Der cBot muss den Journal-Server per Netzwerk erreichen können. Bei einem
-Server im lokalen Netzwerk darf nicht localhost verwendet werden; stattdessen
-die tatsächliche Server-IP oder ein auflösbarer Hostname eintragen.
+The cBot must be able to reach the journal server over the network. If the
+server is on the local network, do not use `localhost`; enter the server's actual
+LAN IP address or resolvable hostname instead.
 
-Der cBot liest Kontodaten, Positionen, historische Deals und Kerzen. Er sendet
-keine Handelsaufträge. Teilabschlüsse werden anhand der Positions-ID unter
-einem gemeinsamen Journal-Trade zusammengefasst.
+The cBot reads account information, positions, historical deals, and candles.
+It never places trade orders. Partial closes are grouped under a single shared
+journal trade based on their position ID.
 
-## cTrader Open API (optional)
+## cTrader Open API (Optional)
 
-Alternativ zum lokalen cBot kann die serverseitige cTrader-Open-API-Anbindung
-verwendet werden. Diese Variante benötigt cTrader-Open-API-Zugangsdaten.
+As an alternative to the local cBot, the server-side cTrader Open API connector
+can be used. This approach requires cTrader Open API application credentials.
 
-1. Im cTrader-Open-API-Portal eine Anwendung erstellen.
-2. Client ID und Client Secret notieren.
-3. Einen Access Token für das gewünschte Konto erzeugen.
-4. Die numerische cTrader Account ID bereithalten.
-5. In Accounts & Sync → cTrader Open API Konto und Umgebung auswählen.
-6. Client ID, Client Secret, Access Token und cTrader Account ID eintragen.
-7. Sync cTrader Now ausführen.
+1. Create an application in the cTrader Open API portal.
+2. Note your Client ID and Client Secret.
+3. Generate an Access Token for the desired account.
+4. Have your numeric cTrader Account ID ready.
+5. In **Accounts & Sync → cTrader Open API**, select the account and environment.
+6. Enter Client ID, Client Secret, Access Token, and cTrader Account ID.
+7. Click **Sync cTrader Now**.
 
-Diese Variante verwendet ausschließlich Leseanfragen. Die Zugangsdaten werden
-für die konfigurierte Verbindung im Konto gespeichert und sollten wie
-Passwörter geschützt werden.
+This connector performs read-only requests exclusively. The credentials are
+stored per-account and should be treated like passwords.
 
-## Trade-Log und Screenshots
+## Trade Log and Screenshots
 
-### Aufklappbare Trade-Zeilen
+### Collapsible Trade Rows
 
-Im Trade Log auf eine Trade-Zeile klicken. Darunter werden die vollständigen
-Trade-Daten geladen, darunter auch Teilprofite, Notizen und Screenshots. Ein
-zweiter Klick auf dieselbe Hauptzeile klappt den Bereich wieder ein.
+Click on any trade row in the **Trade Log** to expand it. The complete trade
+details load inline below the row, including partial exits, notes, and screenshots.
+Clicking the same main row again collapses the details.
 
-Die Aktionsbuttons für Chart, Bearbeiten und Löschen bleiben unabhängig davon
-bedienbar.
+Action buttons for Chart, Edit, and Delete remain accessible independently.
 
-### TradingView-Screenshot hinzufügen
+### Adding TradingView Screenshots
 
-1. Trade im Trade Log aufklappen oder über Chart öffnen.
-2. Im Bereich Trade Screenshots den TradingView-Link einfügen, zum Beispiel:
+1. Expand a trade in the Trade Log or open it via the **Chart** modal.
+2. In the **Trade Screenshots** section, paste the TradingView link, for example:
 
 ~~~text
 https://www.tradingview.com/x/oo0a7Ei5/
 ~~~
 
-3. Optional eine Beschriftung wie Entry, TP1 oder News eintragen.
-4. Screenshot hinzufügen anklicken.
+3. Optionally enter a caption such as `Entry`, `TP1`, or `News`.
+4. Click **Add Screenshot**.
 
-Die Bildadresse wird automatisch nach diesem Muster erzeugt:
+The direct image URL is resolved automatically according to this pattern:
 
 ~~~text
-https://s3.tradingview.com/snapshots/<erstes-kleines-zeichen>/<pattern>.png
+https://s3.tradingview.com/snapshots/<first-char-lowercase>/<pattern>.png
 ~~~
 
-Beispiel:
+Example:
 
 ~~~text
 https://www.tradingview.com/x/oo0a7Ei5/
 → https://s3.tradingview.com/snapshots/o/oo0a7Ei5.png
 ~~~
 
-Mehrere Screenshots können demselben Trade zugeordnet werden. Die Miniaturen
-werden unter dem Trade angezeigt. Ein Klick öffnet die Vollbild-Slideshow;
-mit den Pfeiltasten kann gewechselt werden, ESC schließt sie wieder.
+Multiple screenshots can be attached to the same trade. Thumbnails appear
+directly beneath the trade. Clicking a thumbnail opens the fullscreen slideshow;
+navigate with arrow keys and press ESC to close.
 
-Die Anwendung speichert Quell- und Bild-URLs sowie die Beschriftung. Die
-PNG-Dateien werden nicht in die SQLite-Datenbank kopiert. Der Browser benötigt
-daher Zugriff auf die jeweilige Bildadresse.
+The application stores the source URL, direct image URL, and caption. The PNG
+image files are not stored in SQLite; the browser loads them directly from the
+source URL.
 
 ## Playbooks
 
-Ein Playbook besteht aus:
+A playbook setup consists of:
 
 - Setup Name
 - Description
 - Rules / Checklist
 
-Ein Trade kann im Trade-Detail einem Playbook zugeordnet werden. Performance,
-Win Rate und P&L werden daraus automatisch aggregiert.
+A trade can be assigned to a playbook in the trade details. Performance, Win
+Rate, and P&L metrics are automatically aggregated per setup.
 
-## Statements importieren
+## Importing Statements
 
-Unter Accounts & Sync → Universal Statement Importer können vergangene Trades
-importiert werden. Unterstützt werden:
+Under **Accounts & Sync → Universal Statement Importer**, historical trades
+can be imported from broker files. Supported formats:
 
-- MT4 Detailed Statement als HTML
-- MT5 Report als HTML oder CSV
-- cTrader Deals als CSV
-- TradeZella-kompatible CSV-Dateien
+- MT4 Detailed Statement as HTML
+- MT5 Report as HTML or CSV
+- cTrader Deals as CSV
+- TradeZella-compatible CSV files
 
-Vor dem Import das Zielkonto auswählen. Bereits vorhandene Trades werden anhand
-ihrer Kontokombination und Ticketnummer vor Duplikaten geschützt.
+Select the target account before importing. Existing trades are deduplicated
+based on their account ID and ticket number.
 
-## API und wichtige Endpunkte
+## API and Important Endpoints
 
-Die FastAPI-Dokumentation ist unter /docs erreichbar. Wichtige Endpunkte:
+FastAPI documentation is available at `/docs`. Key endpoints:
 
-| Zweck | Methode | Endpunkt |
+| Purpose | Method | Endpoint |
 |---|---:|---|
-| Gesundheitsprüfung | GET | /api/health |
-| Konten | GET/POST | /api/accounts |
+| Health check | GET | /api/health |
+| Accounts | GET/POST | /api/accounts |
 | Trades | GET/POST | /api/trades |
-| Trade-Details | GET | /api/trades/{trade_id} |
+| Trade details | GET | /api/trades/{trade_id} |
 | Screenshots | GET/POST/DELETE | /api/trades/{trade_id}/screenshots |
 | Playbooks | GET/POST/PUT/DELETE | /api/playbooks |
-| MT4/MT5-EA | POST | /api/sync/mql |
-| cTrader-cBot | POST | /api/sync/ctrader-push |
+| MT4/MT5 EA push | POST | /api/sync/mql |
+| cTrader cBot push | POST | /api/sync/ctrader-push |
 | cTrader Open API | POST | /api/sync/ctrader |
 
-Die Sync-Endpunkte für EA und cBot erwarten den Journal API Key im HTTP-Header:
+The EA and cBot sync endpoints require the Journal API Key in the HTTP request header:
 
 ~~~http
 X-API-Key: <JOURNAL_API_KEY>
 ~~~
 
-## Sicherheit
+## Security
 
-- Die Docker-Konfiguration bindet den Dienst standardmäßig nur an localhost.
-  HOST_BIND_ADDRESS=0.0.0.0 nur setzen, wenn vertrauenswürdige Geräte im LAN
-  zugreifen sollen.
-- Für den Zugriff auf die Oberfläche JOURNAL_USERNAME und JOURNAL_PASSWORD in
-  .env setzen. Die Push-Endpunkte von EA und cBot bleiben davon ausgenommen,
-  weil sie mit dem eigenen Journal API Key des Kontos arbeiten.
-- Den Journal-Server nicht ungeschützt direkt im Internet veröffentlichen.
-- Für externen Zugriff VPN oder einen Reverse Proxy mit HTTPS verwenden.
-- Journal API Keys nicht in öffentliche Repositories oder Screenshots aufnehmen.
-- Den Ordner data und insbesondere journal.db vor unberechtigtem Zugriff schützen.
-- Bei Verwendung der cTrader Open API Client Secret und Access Token wie Passwörter behandeln.
-- Für jedes Konto den automatisch erzeugten eigenen Journal API Key verwenden.
-- Nach dem Update von einer älteren Version den Journal API Key auf der
-  Kontokarte erneut in EA oder cBot eintragen: Ein früherer öffentlicher
-  Demo-Key wird beim Start automatisch ersetzt.
+- The Docker configuration binds the service to `127.0.0.1` by default. Only set
+  `HOST_BIND_ADDRESS=0.0.0.0` when trusted devices on the local network need access.
+- To protect the web UI and management API, set `JOURNAL_USERNAME` and `JOURNAL_PASSWORD`
+  in `.env`. The push endpoints for the EA and cBot remain accessible with their
+  account-specific Journal API key.
+- Never expose the journal server directly to the public internet without protection.
+- For remote access, use a VPN or a reverse proxy with HTTPS.
+- Do not commit Journal API keys or share them in public repositories or screenshots.
+- Protect the `data` directory and `journal.db` from unauthorized access.
+- When using cTrader Open API, treat the Client Secret and Access Token like passwords.
+- Use the automatically generated unique Journal API Key for each account.
+- When upgrading from an older release, re-enter the Journal API Key into your EA
+  or cBot: Any earlier public demo key is rotated automatically on startup.
 
 ## Tests
 
-Virtuelle Umgebung aktivieren und aus dem Projektordner ausführen:
+Activate your virtual environment and run from the project root:
 
 ~~~bash
 python -m unittest discover tests
 python -m compileall -q server tests
 ~~~
 
-## Projektstruktur
+## Project Structure
 
 ~~~text
 trading-journal-server/
 ├── Dockerfile
 ├── docker-compose.yml
-├── .env.example                # Sichere Beispielkonfiguration
+├── .env.example                # Secure sample configuration
 ├── LICENSE
 ├── SECURITY.md
 ├── THIRD_PARTY_NOTICES.md
 ├── requirements.txt
 ├── README.md
 ├── server/
-│   ├── main.py                  # FastAPI-Anwendung und Lifespan
-│   ├── database.py              # SQLite-Schema und Initialisierung
-│   ├── models.py                # Pydantic-Datenmodelle
-│   ├── analytics.py             # Statistische Auswertungen
+│   ├── main.py                  # FastAPI application & lifespan
+│   ├── database.py              # SQLite schema & initialization
+│   ├── models.py                # Pydantic data models
+│   ├── analytics.py             # Statistical calculations & metrics
 │   ├── connectors/
-│   │   ├── mql_receiver.py      # MT4/MT5-EA und cBot-Empfang
-│   │   ├── ctrader_api.py       # Optionale cTrader Open API
-│   │   ├── statement_parser.py  # HTML-/CSV-Import
-│   │   └── market_data.py       # Chart- und Kerzendaten
+│   │   ├── mql_receiver.py      # MT4/MT5 EA & cBot ingestion
+│   │   ├── ctrader_api.py       # Optional cTrader Open API
+│   │   ├── statement_parser.py  # HTML/CSV statement import
+│   │   └── market_data.py       # Candlestick data & chart markers
 │   ├── routers/
 │   │   ├── accounts.py
 │   │   ├── trades.py
@@ -467,10 +459,10 @@ trading-journal-server/
 │           ├── TradeJournalSync.mq4
 │           ├── TradeJournalSync.mq5
 │           └── TradeJournalSync.cbot.cs
-├── data/                        # Persistente SQLite-Daten
+├── data/                        # Persistent SQLite database
 └── tests/
 ~~~
 
-## Lizenz
+## License
 
-MIT License. Für private und kommerzielle Trading-Journals verwendbar.
+MIT License. Free to use for private and commercial trading journals.

@@ -72,7 +72,7 @@ const Trades = {
       tr.className = 'trade-data-row';
       tr.dataset.tradeId = t.id;
       tr.setAttribute('aria-expanded', 'false');
-      tr.title = 'Klicken, um die Trade-Details auszuklappen';
+      tr.title = 'Click to expand trade details';
       const tradeCurrency = t.account_currency || App.getActiveCurrency();
       const pnl = parseFloat(t.net_profit || 0);
       const isWin = pnl > 0.001;

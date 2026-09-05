@@ -1,27 +1,26 @@
-# Sicherheitsrichtlinie
+# Security Policy
 
-## Unterstützte Version
+## Supported Versions
 
-Sicherheitskorrekturen werden für den aktuellen Stand des main-Branches
-bereitgestellt.
+Security fixes are provided for the current state of the `main` branch.
 
-## Sicherheitslücke melden
+## Reporting a Vulnerability
 
-Keine Zugangsdaten, Journal API Keys, Datenbanken oder reproduzierbaren
-Exploit-Code in einem öffentlichen Issue veröffentlichen. Verwende stattdessen
-die private Sicherheitsmeldung der Hosting-Plattform, falls sie aktiviert ist,
-oder kontaktiere den Repository-Inhaber über einen privaten Kanal.
+Do not disclose credentials, Journal API keys, database contents, or reproducible
+exploit code in a public issue. Instead, use the private vulnerability reporting
+feature of the hosting platform if enabled, or contact the repository owner
+via a private channel.
 
-## Sicher betreiben
+## Operating Securely
 
-- Die Docker-Konfiguration bindet den Dienst standardmäßig nur an
-  127.0.0.1. Für Zugriff aus dem LAN muss HOST_BIND_ADDRESS=0.0.0.0
-  bewusst gesetzt werden.
-- Für die Weboberfläche kann mit JOURNAL_USERNAME und JOURNAL_PASSWORD
-  HTTP Basic Auth aktiviert werden.
-- Die MT4-/MT5- und cTrader-Push-Endpunkte sind davon ausgenommen, da sie
-  mit ihrem eigenen, pro Konto erzeugten Journal API Key geschützt werden.
-- Kein Journal API Key, cTrader Client Secret, Access Token oder Inhalt von
-  data/journal.db gehört in ein Repository, einen Chat oder einen Screenshot.
-- Für Zugriff außerhalb des lokalen Netzwerks VPN oder einen HTTPS-Reverse-Proxy
-  mit zusätzlichem Zugriffsschutz verwenden.
+- The Docker configuration binds the service to `127.0.0.1` by default.
+  Set `HOST_BIND_ADDRESS=0.0.0.0` deliberately only when access from trusted
+  LAN devices is required.
+- HTTP Basic Auth can be enabled for the web interface using `JOURNAL_USERNAME`
+  and `JOURNAL_PASSWORD`.
+- The MT4/MT5 and cTrader push endpoints are excluded from Basic Auth because
+  they are authenticated via their individual, per-account Journal API key.
+- Never commit or share Journal API keys, cTrader client secrets, access tokens,
+  or the contents of `data/journal.db` in repositories, chats, or screenshots.
+- For access outside the local network, use a VPN or an HTTPS reverse proxy
+  with additional access control.
