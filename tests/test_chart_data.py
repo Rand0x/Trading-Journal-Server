@@ -279,10 +279,14 @@ class TestChartData(unittest.TestCase):
         self.assertTrue(data_m15["complete_coverage"])
         # No BUY or SELL execution markers for cancelled order!
         self.assertEqual(data_m15["markers"], [])
-        # Check price line has muted CANCELLED line and no active SL/TP
-        self.assertEqual(len(data_m15["price_lines"]), 1)
+        # Check price lines have CANCELLED, SL, and TP
+        self.assertEqual(len(data_m15["price_lines"]), 3)
         self.assertEqual(data_m15["price_lines"][0]["title"], "CANCELLED: 82885.0")
         self.assertEqual(data_m15["price_lines"][0]["color"], "#9ca3af")
+        self.assertEqual(data_m15["price_lines"][1]["title"], "SL: 85620.51")
+        self.assertEqual(data_m15["price_lines"][1]["color"], "#ef4444")
+        self.assertEqual(data_m15["price_lines"][2]["title"], "TP: 80075.19")
+        self.assertEqual(data_m15["price_lines"][2]["color"], "#10b981")
 
         # 2. Test switching to M5 timeframe
         data_m5 = get_chart_data_for_trade(trade_id, timeframe="M5")
@@ -295,6 +299,65 @@ class TestChartData(unittest.TestCase):
         data_auto = get_chart_data_for_trade(trade_id, timeframe="AUTO")
         self.assertTrue(data_auto["data_available"])
         self.assertEqual(data_auto["markers"], [])
+
+    def test_multiple_take_profits_displayed_on_chart(self):
+        now_dt = datetime.now(timezone.utc)
+        now_ts = int(now_dt.timestamp())
+        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            # Order 1: primary trade with TP1 (80075.19)
+            cursor.execute(
+                """
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, open_price, stop_loss, take_profit,
+                    status, order_type, notes, created_at, updated_at
+                ) VALUES (?, 't_multi_tp_1', 'BTCUSD', 'SELL', 0.01,
+                          ?, 82885.0, 85620.51, 80075.19,
+                          'CANCELLED', 'Limit', 'Planned TP2: 78500.00', ?, ?);
+                """,
+                (self.account_id, now_str, now_str, now_str),
+            )
+            trade_id_1 = cursor.lastrowid
+
+            # Order 2: related order for same setup with TP3 (76000.00)
+            cursor.execute(
+                """
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, open_price, stop_loss, take_profit,
+                    status, order_type, created_at, updated_at
+                ) VALUES (?, 't_multi_tp_2', 'BTCUSD', 'SELL', 0.01,
+                          ?, 82885.0, 85620.51, 76000.00,
+                          'CANCELLED', 'Limit', ?, ?);
+                """,
+                (self.account_id, now_str, now_str, now_str),
+            )
+
+            # Insert M15 candles
+            m15_rows = [
+                ('BTCUSD', 'M15', now_ts - (i * 900), 82000.0, 82100.0, 81900.0, 82050.0, 50.0)
+                for i in range(5, 0, -1)
+            ]
+            cursor.executemany(
+                """
+                INSERT INTO market_candles (symbol, timeframe, timestamp, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                m15_rows,
+            )
+            conn.commit()
+
+        data = get_chart_data_for_trade(trade_id_1, timeframe="M15")
+        # Should have CANCELLED, SL, TP1, TP2, TP3 lines
+        titles = [pl["title"] for pl in data["price_lines"]]
+        self.assertIn("CANCELLED: 82885.0", titles)
+        self.assertIn("SL: 85620.51", titles)
+        self.assertIn("TP1: 80075.19", titles)
+        self.assertIn("TP2: 78500.0", titles)
+        self.assertIn("TP3: 76000.0", titles)
 
 
 if __name__ == "__main__":

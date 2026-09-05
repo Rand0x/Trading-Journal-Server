@@ -5,10 +5,14 @@ The journal never fabricates price candles. A chart either displays bars receive
 MetaTrader/cTrader or explicitly reports that real data is not available yet.
 """
 
+import re
+import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from server.database import get_connection
+
+logger = logging.getLogger(__name__)
 
 CHART_TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
 AUTO_TIMEFRAMES = ("M15", "H1", "H4", "D1")
@@ -50,6 +54,7 @@ def get_chart_data_for_trade(
         candles, selected_timeframe, interval_seconds = _load_best_candles(
             cursor, trade["symbol"], timeframe, open_ts, close_ts, is_pending=is_pending_or_cancelled, num_bars=num_bars
         )
+        price_lines = _price_lines(trade, cursor)
 
     if is_pending_or_cancelled:
         complete = bool(candles)
@@ -88,7 +93,7 @@ def get_chart_data_for_trade(
         "candles": candles,
         "volume": volume,
         "markers": markers,
-        "price_lines": _price_lines(trade),
+        "price_lines": price_lines,
         "symbol": trade["symbol"].upper(),
         "timeframe": selected_timeframe,
         "requested_timeframe": timeframe.upper(),
@@ -309,58 +314,163 @@ def _build_markers(trade, candles: List[Dict[str, Any]], open_ts: int, close_ts:
     return sorted(markers, key=lambda marker: marker["time"])
 
 
-def _price_lines(trade) -> List[Dict[str, Any]]:
-    status = trade["status"] if "status" in trade.keys() else ""
+def _extract_all_take_profits(trade: Any, cursor=None) -> List[float]:
+    """
+    Extracts all Take Profit levels belonging to this trade / setup:
+    1. Primary trade['take_profit']
+    2. Any partial close prices in trade_partial_closes
+    3. Any TPs explicitly written in trade['notes'] or comment (e.g. TP1: ..., TP2: ...)
+    4. Any related multi-order legs in the trades table (same account, symbol, direction, entry price & time)
+    """
+    trade_dict = dict(trade) if hasattr(trade, "keys") else (trade or {})
+    tps = set()
+    open_price = float(trade_dict.get("open_price") or 0.0)
+    sl_val = float(trade_dict.get("stop_loss") or 0.0)
+
+    # 1. Primary take_profit column
+    if trade_dict.get("take_profit") is not None:
+        tp_raw = str(trade_dict["take_profit"]).strip()
+        for part in re.findall(r"\d+(?:\.\d+)?", tp_raw):
+            try:
+                val = round(float(part), 5)
+                if val > 0:
+                    tps.add(val)
+            except ValueError:
+                pass
+
+    # 2. Extract from notes or comment (e.g. "TP1: 80075.19, TP2: 78500", "TP: 80000, 79000")
+    notes_str = f"{trade_dict.get('notes') or ''} {trade_dict.get('comment') or ''}"
+    if notes_str.strip():
+        pattern = r"(?:tp\d*|target\d*|take\s*profit\d*)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)"
+        for match in re.finditer(pattern, notes_str, re.IGNORECASE):
+            try:
+                val = round(float(match.group(1)), 5)
+                if val > 0:
+                    tps.add(val)
+            except ValueError:
+                pass
+
+    # 3. Partial closes in database
+    if cursor and trade_dict.get("id"):
+        try:
+            cursor.execute(
+                "SELECT close_price FROM trade_partial_closes WHERE trade_id = ? AND close_price > 0;",
+                (trade_dict["id"],),
+            )
+            for row in cursor.fetchall():
+                if row["close_price"]:
+                    val = round(float(row["close_price"]), 5)
+                    if val > 0:
+                        tps.add(val)
+        except Exception:
+            pass
+
+    # 4. Related multi-order legs (e.g. when a broker/trader creates 2 or 3 orders for multiple TPs)
+    if cursor and trade_dict.get("account_id") and open_price > 0:
+        try:
+            trade_open_ts = int(_parse_dt(trade_dict.get("open_time") or "").timestamp())
+            cursor.execute(
+                """
+                SELECT id, take_profit, open_price, open_time
+                FROM trades
+                WHERE account_id = ? AND symbol = ? AND direction = ?
+                  AND id != ? AND take_profit IS NOT NULL AND take_profit > 0;
+                """,
+                (trade_dict["account_id"], trade_dict["symbol"], trade_dict["direction"], trade_dict["id"]),
+            )
+            for rel in cursor.fetchall():
+                rel_price = float(rel["open_price"] or 0.0)
+                if abs(rel_price - open_price) <= max(0.0005 * open_price, 0.0001):
+                    rel_ts = int(_parse_dt(rel["open_time"] or "").timestamp())
+                    if abs(rel_ts - trade_open_ts) <= 900:
+                        val = round(float(rel["take_profit"]), 5)
+                        if val > 0:
+                            tps.add(val)
+        except Exception:
+            pass
+
+    # Discard open_price or stop_loss if mistakenly picked up
+    if open_price > 0:
+        tps.discard(round(open_price, 5))
+    if sl_val > 0:
+        tps.discard(round(sl_val, 5))
+
+    # Sort TPs by distance from open_price (TP1 closest, TP2 further, etc.)
+    if open_price > 0:
+        return sorted(list(tps), key=lambda p: abs(p - open_price))
+    return sorted(list(tps))
+
+
+def _price_lines(trade, cursor=None) -> List[Dict[str, Any]]:
+    trade_dict = dict(trade) if hasattr(trade, "keys") else (trade or {})
+    status = trade_dict.get("status") or ""
     is_pending = status == "PENDING"
     is_cancelled = status == "CANCELLED"
 
-    if is_cancelled:
-        lines = []
-        if trade["open_price"] and float(trade["open_price"]) > 0:
-            lines.append(
-                {
-                    "price": float(trade["open_price"]),
-                    "color": "#9ca3af",
-                    "lineWidth": 2,
-                    "lineStyle": 2,
-                    "axisLabelVisible": True,
-                    "title": f"CANCELLED: {trade['open_price']}",
-                }
-            )
-        return lines
+    lines = []
 
-    lines = [
-        {
-            "price": float(trade["open_price"]),
-            "color": "#f59e0b" if is_pending else "#3b82f6",
-            "lineWidth": 2,
-            "lineStyle": 2,
-            "axisLabelVisible": True,
-            "title": f"LIMIT: {trade['open_price']}" if is_pending else f"ENTRY: {trade['open_price']}",
-        }
-    ]
-    if trade["stop_loss"] and float(trade["stop_loss"]) > 0:
+    # 1. Entry / Limit / Cancelled price line
+    if trade_dict.get("open_price") and float(trade_dict["open_price"]) > 0:
+        if is_cancelled:
+            entry_title = f"CANCELLED: {trade_dict['open_price']}"
+            entry_color = "#9ca3af"
+        elif is_pending:
+            entry_title = f"LIMIT: {trade_dict['open_price']}"
+            entry_color = "#f59e0b"
+        else:
+            entry_title = f"ENTRY: {trade_dict['open_price']}"
+            entry_color = "#3b82f6"
+
         lines.append(
             {
-                "price": float(trade["stop_loss"]),
+                "price": float(trade_dict["open_price"]),
+                "color": entry_color,
+                "lineWidth": 2,
+                "lineStyle": 2,
+                "axisLabelVisible": True,
+                "title": entry_title,
+            }
+        )
+
+    # 2. Stop Loss (Always shown for OPEN, PENDING, CANCELLED, CLOSED if set)
+    if trade_dict.get("stop_loss") and float(trade_dict["stop_loss"]) > 0:
+        lines.append(
+            {
+                "price": float(trade_dict["stop_loss"]),
                 "color": "#ef4444",
                 "lineWidth": 2,
                 "lineStyle": 2,
                 "axisLabelVisible": True,
-                "title": f"SL: {trade['stop_loss']}",
+                "title": f"SL: {trade_dict['stop_loss']}",
             }
         )
-    if trade["take_profit"] and float(trade["take_profit"]) > 0:
+
+    # 3. Take Profit(s) (All TPs belonging to this trade, sorted by distance from entry)
+    tps = _extract_all_take_profits(trade_dict, cursor)
+    if len(tps) == 1:
         lines.append(
             {
-                "price": float(trade["take_profit"]),
+                "price": tps[0],
                 "color": "#10b981",
                 "lineWidth": 2,
                 "lineStyle": 2,
                 "axisLabelVisible": True,
-                "title": f"TP: {trade['take_profit']}",
+                "title": f"TP: {tps[0]}",
             }
         )
+    elif len(tps) > 1:
+        for idx, tp_price in enumerate(tps, start=1):
+            lines.append(
+                {
+                    "price": tp_price,
+                    "color": "#10b981",
+                    "lineWidth": 2,
+                    "lineStyle": 2,
+                    "axisLabelVisible": True,
+                    "title": f"TP{idx}: {tp_price}",
+                }
+            )
+
     return lines
 
 

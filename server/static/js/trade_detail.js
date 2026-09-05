@@ -435,6 +435,22 @@ const TradeDetail = {
       });
     }
 
+    // Synchronize KPI cards with detected SL and multiple TPs
+    const tpLines = (data.price_lines || []).filter(pl => pl.title && pl.title.startsWith('TP'));
+    const tpEl = document.getElementById('tdTP');
+    if (tpEl && tpLines.length > 0) {
+      if (tpLines.length > 1) {
+        tpEl.textContent = tpLines.map(l => `${l.title}: ${l.price}`).join(' • ');
+      } else {
+        tpEl.textContent = tpLines[0].price;
+      }
+    }
+    const slLine = (data.price_lines || []).find(pl => pl.title && pl.title.startsWith('SL'));
+    const slEl = document.getElementById('tdSL');
+    if (slEl && slLine) {
+      slEl.textContent = slLine.price;
+    }
+
     // Fit content
     this.chartInstance.timeScale().fitContent();
 
