@@ -142,6 +142,8 @@ const Trades = {
     tbody.innerHTML = '';
 
     const displayTrades = this.groupOpenTrades(trades);
+    this.currentTrades = displayTrades;
+    this.rawTrades = trades;
 
     if (displayTrades.length === 0) {
       tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:30px;color:#6b7280;">No trades match your filter criteria.</td></tr>';
@@ -244,8 +246,8 @@ const Trades = {
         <td>${setupBadge}</td>
         <td>${mistakeBadge}</td>
         <td style="text-align:right;">
-          <button class="btn btn-secondary btn-sm" onclick="TradeDetail.open(${t.id})" title="Inspect Trade Chart">
-            📊 Chart
+          <button class="btn btn-secondary btn-sm" onclick="TradeDetail.open(${t.id})" title="Open Full Details & Chart">
+            📊 Full Details
           </button>
           <button class="btn btn-secondary btn-sm" onclick="Trades.openEditModal(${t.id})" title="Edit Trade">
             ✏️
@@ -363,13 +365,33 @@ const Trades = {
         </div>`
       : '';
 
+    let tpTargetsList = [];
+    if (trade.tp_targets) {
+      try {
+        const parsed = JSON.parse(trade.tp_targets);
+        if (Array.isArray(parsed)) tpTargetsList = parsed;
+      } catch (e) {}
+    }
+    const tpMarkup = tpTargetsList.length > 1
+      ? `<div class="trade-expanded-section">
+          <div class="trade-expanded-section-title">
+            Take Profit Targets (${tpTargetsList.length} Targets)
+          </div>
+          <div class="trade-expanded-partials">
+            ${tpTargetsList.map((t, idx) => `<div>
+              <span><strong style="color:#10b981;">TP${t.index || (idx + 1)}: ${t.price}</strong>${t.volume ? ` · <span style="color:#60a5fa;">${Number(t.volume).toFixed(2)} lots</span>` : ''}</span>
+              ${t.net_profit != null ? `<strong class="${Number(t.net_profit) >= 0 ? 'color-green' : 'color-red'}">${App.formatMoney(t.net_profit, tradeCurrency, { showSign: true })}</strong>` : ''}
+            </div>`).join('')}
+          </div>
+        </div>`
+      : '';
+
     return `
       <div class="trade-expanded-header">
         <div>
           <strong>${escape(trade.symbol)} · ${escape(trade.direction)}</strong>
           <span>${escape(trade.ticket || 'No Ticket')}</span>
         </div>
-        <button type="button" class="btn btn-secondary btn-sm" data-open-trade-detail>📊 Full Details</button>
       </div>
       <div class="trade-expanded-grid">
         <div><span>Open / Close</span><strong>${escape(trade.open_time || '—')} → ${escape(exitText)}</strong></div>
@@ -379,6 +401,7 @@ const Trades = {
         <div><span>Notes / Reflections</span><strong>${escape(trade.key_learnings || trade.post_trade_notes || trade.notes || 'No notes')}</strong></div>
       </div>
       ${groupedMarkup}
+      ${tpMarkup}
       <div class="trade-expanded-section">
         <div class="trade-expanded-section-title">Partial Exits <span>${escape(partialSummary)}</span></div>
         ${partialMarkup}
@@ -528,6 +551,14 @@ const Trades = {
       takeProfit = tpTargets[tpTargets.length - 1].price;
       const tfTpInput = document.getElementById('tfTakeProfit');
       if (tfTpInput) tfTpInput.value = takeProfit;
+
+      const sumV = tpTargets.reduce((acc, t) => acc + (t.volume > 0 ? t.volume : 0), 0);
+      if (sumV > 0 && tpTargets.some(t => t.volume > 0)) {
+        const volInput = document.getElementById('tfVolume');
+        if (volInput && (this.editingAllIds?.length > 1 || tpTargets.length > 1)) {
+          volInput.value = sumV.toFixed(2);
+        }
+      }
     }
 
     let r = null;
@@ -824,14 +855,33 @@ const Trades = {
 
   async openEditModal(tradeId) {
     this.activeEditingId = tradeId;
+    this.editingAllIds = null;
+    this.editingSubTrades = null;
     document.getElementById('tradeModalTitle').textContent = 'Edit Trade';
 
     try {
       const trade = await API.getTrade(tradeId);
       
       this.openAddModal(); // sets up dropdowns and resets
-      document.getElementById('tradeModalTitle').textContent = 'Edit Trade';
       this.activeEditingId = tradeId;
+
+      // Detect if this trade belongs to a merged group of sibling orders
+      const matchedGroup = (this.currentTrades && Array.isArray(this.currentTrades))
+        ? this.currentTrades.find(t => t.id === tradeId || (t.all_ids && t.all_ids.includes(tradeId)))
+        : null;
+
+      const subTrades = (trade.sub_trades && trade.sub_trades.length > 1)
+        ? trade.sub_trades
+        : (matchedGroup?.sub_trades && matchedGroup.sub_trades.length > 1 ? matchedGroup.sub_trades : []);
+
+      const isGrouped = subTrades.length > 1;
+      if (isGrouped) {
+        this.editingSubTrades = subTrades;
+        this.editingAllIds = subTrades.map(s => s.id);
+        document.getElementById('tradeModalTitle').textContent = `Edit Trade (${subTrades.length} Merged Orders)`;
+      } else {
+        document.getElementById('tradeModalTitle').textContent = 'Edit Trade';
+      }
 
       if (document.getElementById('tfAccount')) document.getElementById('tfAccount').value = trade.account_id;
       if (document.getElementById('tfSymbol')) document.getElementById('tfSymbol').value = trade.symbol;
@@ -839,14 +889,42 @@ const Trades = {
       if (document.getElementById('tfStatus')) {
         document.getElementById('tfStatus').value = trade.status || 'AUTO';
       }
-      if (document.getElementById('tfVolume')) document.getElementById('tfVolume').value = trade.volume;
+
+      // Populate Total Volume across all merged legs
+      const totalVolume = isGrouped
+        ? (trade.grouped_total_volume || subTrades.reduce((sum, leg) => sum + (parseFloat(leg.volume) || 0), 0))
+        : (parseFloat(trade.volume) || 0);
+      if (document.getElementById('tfVolume')) {
+        document.getElementById('tfVolume').value = totalVolume.toFixed(2);
+      }
+
       if (document.getElementById('tfOpenPrice')) document.getElementById('tfOpenPrice').value = trade.open_price;
       if (document.getElementById('tfClosePrice')) document.getElementById('tfClosePrice').value = trade.close_price ?? '';
       if (document.getElementById('tfStopLoss')) document.getElementById('tfStopLoss').value = trade.stop_loss ?? '';
       if (document.getElementById('tfTakeProfit')) document.getElementById('tfTakeProfit').value = trade.take_profit ?? '';
-      if (document.getElementById('tfNetProfit')) document.getElementById('tfNetProfit').value = trade.net_profit ?? 0;
-      if (document.getElementById('tfCommission')) document.getElementById('tfCommission').value = trade.commission ?? 0;
-      if (document.getElementById('tfSwap')) document.getElementById('tfSwap').value = trade.swap ?? 0;
+
+      // Populate Total Net Profit across all merged legs
+      const totalNetProfit = isGrouped && trade.grouped_net_profit !== undefined
+        ? trade.grouped_net_profit
+        : (isGrouped ? subTrades.reduce((sum, leg) => sum + (parseFloat(leg.net_profit) || 0), 0) : (trade.net_profit ?? 0));
+      if (document.getElementById('tfNetProfit')) {
+        document.getElementById('tfNetProfit').value = Number(totalNetProfit).toFixed(2);
+      }
+
+      const totalComm = isGrouped && trade.grouped_commission !== undefined
+        ? trade.grouped_commission
+        : (isGrouped ? subTrades.reduce((sum, leg) => sum + (parseFloat(leg.commission) || 0), 0) : (trade.commission ?? 0));
+      if (document.getElementById('tfCommission')) {
+        document.getElementById('tfCommission').value = Number(totalComm).toFixed(2);
+      }
+
+      const totalSwap = isGrouped && trade.grouped_swap !== undefined
+        ? trade.grouped_swap
+        : (isGrouped ? subTrades.reduce((sum, leg) => sum + (parseFloat(leg.swap) || 0), 0) : (trade.swap ?? 0));
+      if (document.getElementById('tfSwap')) {
+        document.getElementById('tfSwap').value = Number(totalSwap).toFixed(2);
+      }
+
       if (document.getElementById('tfOpenTime')) document.getElementById('tfOpenTime').value = (trade.open_time || '').substring(0, 16);
       if (document.getElementById('tfCloseTime')) document.getElementById('tfCloseTime').value = (trade.close_time || '').substring(0, 16);
       if (document.getElementById('tfSetup')) document.getElementById('tfSetup').value = trade.setup_id || '';
@@ -945,11 +1023,26 @@ const Trades = {
         }
       }
 
+      // Populate Dynamic Take Profit Targets & Lots
       const tpList = document.getElementById('tfDynamicTpList');
       if (tpList) {
         tpList.innerHTML = '';
         let loaded = false;
-        if (trade.tp_targets) {
+
+        // 1. If merged sibling orders, populate from each leg's TP and volume
+        if (isGrouped) {
+          subTrades.forEach(leg => {
+            this.addDynamicTpRow({
+              close_price: leg.take_profit || '',
+              volume: leg.volume ? parseFloat(leg.volume).toFixed(2) : '',
+              net_profit: leg.net_profit != null ? parseFloat(leg.net_profit).toFixed(2) : ''
+            });
+          });
+          loaded = true;
+        }
+
+        // 2. Otherwise check if tp_targets is set
+        if (!loaded && trade.tp_targets) {
           try {
             const targets = JSON.parse(trade.tp_targets);
             if (Array.isArray(targets) && targets.length > 0) {
@@ -960,16 +1053,21 @@ const Trades = {
             }
           } catch (e) {}
         }
+
+        // 3. Otherwise check partial_closes
         if (!loaded && trade.partial_closes && trade.partial_closes.length > 0) {
           trade.partial_closes.forEach(pc => {
             this.addDynamicTpRow(pc);
           });
           loaded = true;
         }
+
+        // 4. Otherwise single take_profit
         if (!loaded && trade.take_profit && trade.take_profit > 0) {
           this.addDynamicTpRow({ close_price: trade.take_profit, volume: trade.volume || '' });
           loaded = true;
         }
+
         if (!loaded) {
           this.addDynamicTpRow();
         }
@@ -1070,8 +1168,23 @@ const Trades = {
 
     try {
       if (this.activeEditingId) {
-        await API.updateTrade(this.activeEditingId, payload);
-        App.showToast('Trade updated successfully!', 'success');
+        if (this.editingAllIds && this.editingAllIds.length > 1) {
+          for (let i = 0; i < this.editingAllIds.length; i++) {
+            const legId = this.editingAllIds[i];
+            const legPayload = { ...payload };
+            if (dynamicTargets && dynamicTargets[i]) {
+              legPayload.take_profit = dynamicTargets[i].price;
+              if (dynamicTargets[i].volume && dynamicTargets[i].volume > 0) {
+                legPayload.volume = dynamicTargets[i].volume;
+              }
+            }
+            await API.updateTrade(legId, legPayload);
+          }
+          App.showToast(`All ${this.editingAllIds.length} merged trade orders updated successfully!`, 'success');
+        } else {
+          await API.updateTrade(this.activeEditingId, payload);
+          App.showToast('Trade updated successfully!', 'success');
+        }
       } else {
         await API.createTrade(payload);
         App.showToast('Trade created successfully!', 'success');

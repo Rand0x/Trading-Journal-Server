@@ -132,20 +132,180 @@ const TradeDetail = {
 
     const volText = isGrouped
       ? `${Number(trade.grouped_total_volume || trade.volume).toFixed(2)} lots (${trade.grouped_count} orders)`
-      : `${trade.volume} lots`;
+      : `${Number(trade.volume).toFixed(2)} lots`;
     document.getElementById('tdVolume').textContent = volText;
     document.getElementById('tdEntryPrice').textContent = trade.open_price;
     document.getElementById('tdSL').textContent = trade.stop_loss ? trade.stop_loss : 'None';
 
-    if (trade.multiple_tps && trade.multiple_tps.length > 1) {
-      document.getElementById('tdTP').innerHTML = trade.multiple_tps.map((tp, idx) => `<span style="color:#10b981;font-weight:600;margin-right:6px;">TP${idx + 1}: ${tp}</span>`).join(' ');
-    } else {
-      document.getElementById('tdTP').textContent = trade.take_profit ? trade.take_profit : 'None';
+    const openP = parseFloat(trade.open_price) || 0;
+    const slP = parseFloat(trade.stop_loss) || 0;
+    const isBuy = trade.direction === 'BUY';
+    const subTrades = Array.isArray(trade.sub_trades) ? trade.sub_trades : [];
+
+    // Parse all TP targets (from sub_trades, tp_targets, or multiple_tps)
+    let tpTargetsList = [];
+
+    if (isGrouped && subTrades.length > 1) {
+      subTrades.forEach((leg, idx) => {
+        const p = parseFloat(leg.take_profit);
+        if (p > 0 && (openP <= 0 || (p >= 0.05 * openP && p <= 20 * openP))) {
+          tpTargetsList.push({
+            index: idx + 1,
+            price: p,
+            volume: leg.volume ? parseFloat(leg.volume) : null,
+            net_profit: leg.net_profit != null ? parseFloat(leg.net_profit) : null,
+            ticket: leg.ticket || leg.id,
+            status: leg.status
+          });
+        }
+      });
+      if (openP > 0) {
+        tpTargetsList.sort((a, b) => Math.abs(a.price - openP) - Math.abs(b.price - openP));
+        tpTargetsList.forEach((t, i) => { t.index = i + 1; });
+      }
+    }
+
+    if (tpTargetsList.length === 0 && trade.tp_targets) {
+      try {
+        const parsed = JSON.parse(trade.tp_targets);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          parsed.forEach((t, idx) => {
+            const p = parseFloat(t.price || t.close_price || t.tp || t);
+            if (p > 0 && (openP <= 0 || (p >= 0.05 * openP && p <= 20 * openP))) {
+              tpTargetsList.push({
+                index: idx + 1,
+                price: p,
+                volume: t.volume != null ? parseFloat(t.volume) : (t.lots != null ? parseFloat(t.lots) : null),
+                net_profit: t.net_profit != null ? parseFloat(t.net_profit) : null,
+                ticket: t.ticket || null,
+                status: t.status || null
+              });
+            }
+          });
+        }
+      } catch (e) {}
+    }
+
+    if (tpTargetsList.length === 0 && trade.multiple_tps && trade.multiple_tps.length > 1) {
+      trade.multiple_tps.forEach((tp, idx) => {
+        const p = parseFloat(tp);
+        if (p > 0 && (openP <= 0 || (p >= 0.05 * openP && p <= 20 * openP))) {
+          tpTargetsList.push({
+            index: idx + 1,
+            price: p,
+            volume: null
+          });
+        }
+      });
+    }
+
+    const tdTpElement = document.getElementById('tdTP');
+    if (tdTpElement) {
+      if (tpTargetsList.length > 1) {
+        tdTpElement.innerHTML = tpTargetsList.map((t, idx) => `<div style="color:#10b981;font-weight:700;line-height:1.35;">TP${t.index || (idx + 1)}: ${t.price}</div>`).join('');
+      } else if (trade.multiple_tps && trade.multiple_tps.length > 1) {
+        tdTpElement.innerHTML = trade.multiple_tps.map((tp, idx) => `<div style="color:#10b981;font-weight:700;line-height:1.35;">TP${idx + 1}: ${tp}</div>`).join('');
+      } else {
+        tdTpElement.textContent = trade.take_profit ? trade.take_profit : 'None';
+      }
+    }
+
+    // Risk Distance & Target R:R Calculation
+    const riskDist = (openP > 0 && slP > 0 && openP !== slP) ? Math.abs(openP - slP) : 0;
+    const riskDistEl = document.getElementById('tdRiskDist');
+    if (riskDistEl) {
+      riskDistEl.textContent = riskDist > 0 ? `${riskDist < 1 ? riskDist.toFixed(5) : riskDist.toFixed(2)} pts` : '—';
+    }
+
+    let targetRR = null;
+    if (riskDist > 0) {
+      if (tpTargetsList.length > 0) {
+        const sumV = tpTargetsList.reduce((acc, t) => acc + (t.volume > 0 ? t.volume : 0), 0);
+        let weightedReward = 0;
+        tpTargetsList.forEach(t => {
+          const reward = isBuy ? (t.price - openP) : (openP - t.price);
+          const weight = sumV > 0 && t.volume > 0 ? (t.volume / sumV) : (1 / tpTargetsList.length);
+          weightedReward += reward * weight;
+        });
+        targetRR = weightedReward / riskDist;
+      } else if (trade.take_profit && parseFloat(trade.take_profit) > 0) {
+        const reward = isBuy ? (parseFloat(trade.take_profit) - openP) : (openP - parseFloat(trade.take_profit));
+        targetRR = reward / riskDist;
+      }
+    }
+
+    const targetRREl = document.getElementById('tdTargetRR');
+    if (targetRREl) {
+      if (targetRR !== null) {
+        targetRREl.textContent = `1 : ${targetRR.toFixed(2)}${tpTargetsList.length > 1 ? ' (avg)' : ''}`;
+        targetRREl.style.color = targetRR >= 1 ? '#10b981' : '#f59e0b';
+      } else {
+        targetRREl.textContent = '—';
+        targetRREl.style.color = '#9ca3af';
+      }
+    }
+
+    const rMultEl = document.getElementById('tdRMultiple');
+    if (rMultEl) {
+      if (trade.r_multiple != null) {
+        const rVal = parseFloat(trade.r_multiple);
+        rMultEl.textContent = `${rVal >= 0 ? '+' : ''}${rVal.toFixed(2)} R`;
+        rMultEl.style.color = rVal >= 0 ? '#10b981' : '#ef4444';
+      } else {
+        rMultEl.textContent = '—';
+        rMultEl.style.color = '#9ca3af';
+      }
     }
 
     document.getElementById('tdCommission').textContent = App.formatMoney((isGrouped && trade.grouped_commission !== undefined) ? trade.grouped_commission : (trade.commission || 0), tradeCurrency);
     document.getElementById('tdSwap').textContent = App.formatMoney((isGrouped && trade.grouped_swap !== undefined) ? trade.grouped_swap : (trade.swap || 0), tradeCurrency);
+    
+    const tfEl = document.getElementById('tdTimeframe');
+    if (tfEl) tfEl.textContent = trade.timeframe || this.currentTimeframe || 'M15';
+
+    const accEl = document.getElementById('tdAccount');
+    if (accEl) accEl.textContent = trade.account_name || ('Account #' + (trade.account_id || 1));
+
     document.getElementById('tdOpenTime').textContent = trade.open_time;
+
+    // Take Profit Targets & Lots card in modal
+    const tpCard = document.getElementById('tdTpTargetsCard');
+    const tpSummary = document.getElementById('tdTpTargetsSummary');
+    const tpList = document.getElementById('tdTpTargetsList');
+    if (tpCard && tpList) {
+      if (tpTargetsList.length > 0) {
+        tpCard.style.display = 'block';
+        if (tpSummary) {
+          const totalLots = tpTargetsList.reduce((acc, t) => acc + (t.volume > 0 ? t.volume : 0), 0);
+          tpSummary.textContent = `${tpTargetsList.length} Targets${totalLots > 0 ? ` · ${totalLots.toFixed(2)} lots total` : ''}`;
+        }
+        tpList.innerHTML = tpTargetsList.map((t, idx) => {
+          const rewardPts = openP > 0 ? (isBuy ? (t.price - openP) : (openP - t.price)) : 0;
+          const targetR = riskDist > 0 ? (rewardPts / riskDist) : null;
+          const rrStr = targetR !== null ? ` · <strong>1 : ${targetR.toFixed(2)} R</strong>` : '';
+          const volStr = t.volume ? ` · <span style="color:#60a5fa;font-weight:600;">${Number(t.volume).toFixed(2)} lots</span>` : '';
+          const pnlStr = t.net_profit != null && t.net_profit !== '' ? ` · <span style="color:${Number(t.net_profit) >= 0 ? '#10b981' : '#ef4444'};">${App.formatMoney(t.net_profit, tradeCurrency, { showSign: true })}</span>` : '';
+          const ticketStr = t.ticket ? ` <span style="font-size:11px;color:#6b7280;">(Ticket #${t.ticket})</span>` : '';
+
+          return `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:#0a0e17;border-radius:6px;border:1px solid #1e293b;">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <span class="badge" style="background:#1e293b;color:#10b981;font-weight:700;">TP${t.index || (idx + 1)}</span>
+                <span style="font-weight:700;color:#fff;">${t.price}</span>
+                <span style="font-size:12px;color:#9ca3af;">${rewardPts >= 0 ? '+' : ''}${rewardPts < 1 ? rewardPts.toFixed(5) : rewardPts.toFixed(2)} pts</span>
+                <span style="font-size:12px;color:#d1d5db;">${volStr}${rrStr}${pnlStr}${ticketStr}</span>
+              </div>
+              <div>
+                <span class="badge" style="background:#10b98122;color:#10b981;">Target</span>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } else {
+        tpCard.style.display = 'none';
+        tpList.innerHTML = '';
+      }
+    }
 
     // Grouped Orders list in modal
     const groupedCard = document.getElementById('tdGroupedOrdersCard');
@@ -154,27 +314,91 @@ const TradeDetail = {
     const groupedList = document.getElementById('tdGroupedOrdersList');
 
     if (groupedCard && groupedList) {
-      const subTrades = Array.isArray(trade.sub_trades) ? trade.sub_trades : [];
       if (isGrouped && subTrades.length > 1) {
         groupedCard.style.display = 'block';
         if (groupedBadge) groupedBadge.textContent = `${trade.grouped_count} Orders Merged`;
         if (groupedSummary) {
-          groupedSummary.textContent = `Total Volume: ${Number(trade.grouped_total_volume || trade.volume).toFixed(2)} lots across ${subTrades.length} open positions`;
+          groupedSummary.textContent = `Total Volume: ${Number(trade.grouped_total_volume || trade.volume).toFixed(2)} lots across ${subTrades.length} positions`;
         }
         groupedList.innerHTML = subTrades.map((leg, idx) => {
           const legPnl = Number(leg.net_profit || 0);
           const pnlColor = legPnl >= 0 ? '#10b981' : '#ef4444';
           const tpStr = leg.take_profit ? `TP${idx + 1}: ${leg.take_profit}` : 'No TP';
           const slStr = leg.stop_loss ? `SL: ${leg.stop_loss}` : 'No SL';
+          const statusCls = `badge badge-${(leg.status || 'open').toLowerCase()}`;
           return `
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;margin-bottom:5px;background:#0a0e17;border-radius:5px;">
-              <span>Ticket #${this.escapeHtml(leg.ticket || leg.id)} • ${Number(leg.volume).toFixed(2)} lots • Entry: ${leg.open_price} • <strong style="color:#10b981;">${tpStr}</strong> • <span style="color:#ef4444;">${slStr}</span></span>
-              <strong style="color:${pnlColor};">${App.formatMoney(legPnl, tradeCurrency, { showSign: true })}</strong>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:#0a0e17;border-radius:6px;border:1px solid #1e293b;">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <span class="${statusCls}" style="font-size:10px;">${this.escapeHtml(leg.status || 'OPEN')}</span>
+                <span style="color:#cbd5e1;font-weight:600;">Ticket #${this.escapeHtml(leg.ticket || leg.id)}</span>
+                <span style="color:#60a5fa;font-weight:700;">${Number(leg.volume).toFixed(2)} lots</span>
+                <span style="color:#9ca3af;">@ ${leg.open_price}</span>
+                <strong style="color:#10b981;">${tpStr}</strong>
+                <span style="color:#ef4444;">${slStr}</span>
+              </div>
+              <strong style="color:${pnlColor};font-size:13px;">${App.formatMoney(legPnl, tradeCurrency, { showSign: true })}</strong>
             </div>`;
         }).join('');
       } else {
         groupedCard.style.display = 'none';
         groupedList.innerHTML = '';
+      }
+    }
+
+    // Setup Signals & Confluence
+    const signalsCard = document.getElementById('tdSignalsCard');
+    const signalsList = document.getElementById('tdSignalsList');
+    const signalsCount = document.getElementById('tdSignalsCount');
+    if (signalsCard && signalsList) {
+      const sigs = (trade.signals || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (sigs.length > 0) {
+        signalsCard.style.display = 'block';
+        if (signalsCount) signalsCount.textContent = `${sigs.length} Signal${sigs.length > 1 ? 's' : ''}`;
+        signalsList.innerHTML = sigs.map(s => `<span class="chip-btn active" style="cursor:default;background:#3b82f622;color:#60a5fa;border-color:#3b82f655;">✓ ${this.escapeHtml(s)}</span>`).join('');
+      } else {
+        signalsCard.style.display = 'none';
+        signalsList.innerHTML = '';
+      }
+    }
+
+    // 2-Phase Emotions
+    const preEmoEl = document.getElementById('tdEmotionPreDisplay');
+    if (preEmoEl) {
+      const preList = (trade.emotion_pre || '').split(',').map(s => s.trim()).filter(Boolean);
+      preEmoEl.innerHTML = preList.length > 0
+        ? preList.map(e => `<span class="chip-btn active" style="cursor:default;">${this.escapeHtml(e)}</span>`).join('')
+        : '<span style="color:#6b7280;font-size:12px;">No pre-trade emotion logged</span>';
+    }
+
+    const duringEmoEl = document.getElementById('tdEmotionDuringDisplay');
+    if (duringEmoEl) {
+      const duringList = (trade.emotion_during || '').split(',').map(s => s.trim()).filter(Boolean);
+      duringEmoEl.innerHTML = duringList.length > 0
+        ? duringList.map(e => `<span class="chip-btn active" style="cursor:default;">${this.escapeHtml(e)}</span>`).join('')
+        : '<span style="color:#6b7280;font-size:12px;">No in-trade emotion logged</span>';
+    }
+
+    // Structured Notes
+    if (document.getElementById('tdPreNotesInput')) {
+      document.getElementById('tdPreNotesInput').value = trade.pre_trade_notes || '';
+    }
+    if (document.getElementById('tdPostNotesInput')) {
+      document.getElementById('tdPostNotesInput').value = trade.post_trade_notes || '';
+    }
+    if (document.getElementById('tdKeyLearningsInput')) {
+      document.getElementById('tdKeyLearningsInput').value = trade.key_learnings || '';
+    }
+    const legacyNotesEl = document.getElementById('tdNotesInput');
+    const legacyContainer = document.getElementById('tdLegacyNotesContainer');
+    if (legacyNotesEl) {
+      legacyNotesEl.value = trade.notes || '';
+      if (legacyContainer) {
+        const combined = [trade.pre_trade_notes, trade.post_trade_notes, trade.key_learnings].filter(Boolean).join('\n\n');
+        if (trade.notes && trade.notes !== combined) {
+          legacyContainer.style.display = 'block';
+        } else {
+          legacyContainer.style.display = 'none';
+        }
       }
     }
 
@@ -217,9 +441,12 @@ const TradeDetail = {
     }
 
     // Form inputs
-    document.getElementById('tdNotesInput').value = trade.notes || '';
-    document.getElementById('tdEmotionSelect').value = trade.emotions || 'Disciplined';
-    document.getElementById('tdRatingSelect').value = trade.rating || 5;
+    const tdNotesIn = document.getElementById('tdNotesInput');
+    if (tdNotesIn) tdNotesIn.value = trade.notes || '';
+    const tdEmoSel = document.getElementById('tdEmotionSelect');
+    if (tdEmoSel) tdEmoSel.value = trade.emotions || 'Disciplined';
+    const tdRatingSel = document.getElementById('tdRatingSelect');
+    if (tdRatingSel) tdRatingSel.value = trade.rating || 5;
 
     // Populate setups dropdown
     const setupSelect = document.getElementById('tdSetupSelect');
@@ -490,7 +717,10 @@ const TradeDetail = {
     const tpEl = document.getElementById('tdTP');
     if (tpEl && tpLines.length > 0) {
       if (tpLines.length > 1) {
-        tpEl.textContent = tpLines.map(l => `${l.title}: ${l.price}`).join(' • ');
+        tpEl.innerHTML = tpLines.map((l, idx) => {
+          const tpLabel = l.title.includes(':') ? l.title.split(':')[0].trim() : `TP${idx + 1}`;
+          return `<div style="color:#10b981;font-weight:700;line-height:1.35;">${this.escapeHtml(tpLabel)}: ${l.price}</div>`;
+        }).join('');
       } else {
         tpEl.textContent = tpLines[0].price;
       }
@@ -536,20 +766,35 @@ const TradeDetail = {
 
   async saveChanges() {
     if (!this.currentTradeId) return;
-    const notes = document.getElementById('tdNotesInput').value;
-    const setup_id = document.getElementById('tdSetupSelect').value ? parseInt(document.getElementById('tdSetupSelect').value) : null;
-    const mistake_id = document.getElementById('tdMistakeSelect').value ? parseInt(document.getElementById('tdMistakeSelect').value) : null;
-    const emotions = document.getElementById('tdEmotionSelect').value;
-    const rating = parseInt(document.getElementById('tdRatingSelect').value);
+    const pre_trade_notes = document.getElementById('tdPreNotesInput')?.value || '';
+    const post_trade_notes = document.getElementById('tdPostNotesInput')?.value || '';
+    const key_learnings = document.getElementById('tdKeyLearningsInput')?.value || '';
+    const legacyNotes = document.getElementById('tdNotesInput')?.value || '';
+    const notes = [pre_trade_notes, post_trade_notes, key_learnings].filter(Boolean).join('\n\n') || legacyNotes;
+
+    const setup_id = document.getElementById('tdSetupSelect')?.value ? parseInt(document.getElementById('tdSetupSelect').value) : null;
+    const mistake_id = document.getElementById('tdMistakeSelect')?.value ? parseInt(document.getElementById('tdMistakeSelect').value) : null;
+    const rating = parseInt(document.getElementById('tdRatingSelect')?.value || 5);
+
+    const updatePayload = {
+      notes,
+      pre_trade_notes,
+      post_trade_notes,
+      key_learnings,
+      setup_id,
+      mistake_id,
+      rating
+    };
 
     try {
-      await API.updateTrade(this.currentTradeId, {
-        notes,
-        setup_id,
-        mistake_id,
-        emotions,
-        rating
-      });
+      const subTrades = (this.currentTrade && Array.isArray(this.currentTrade.sub_trades)) ? this.currentTrade.sub_trades : [];
+      if (subTrades.length > 1) {
+        for (const leg of subTrades) {
+          await API.updateTrade(leg.id, updatePayload);
+        }
+      } else {
+        await API.updateTrade(this.currentTradeId, updatePayload);
+      }
       App.showToast('Trade notes and tags saved successfully!', 'success');
       App.refreshCurrentView();
     } catch (err) {

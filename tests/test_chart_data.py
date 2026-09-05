@@ -468,7 +468,44 @@ class TestChartData(unittest.TestCase):
         self.assertEqual(trade_info["multiple_tps"], [1.088, 1.092, 1.096])
         self.assertEqual(len(trade_info["sub_trades"]), 3)
 
+    def test_tp_targets_does_not_extract_timestamps_or_bogus_numbers(self):
+        # Verify JSON tp_targets with dates, volumes, tickets does NOT extract timestamps
+        complex_tp_targets = (
+            '[{"price": 80310.66, "lots": 0.18, "status": "OPEN", "close_time": "2026-09-05 13:27:57"}]'
+        )
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, open_price, stop_loss, take_profit, tp_targets,
+                    status, net_profit, created_at, updated_at
+                ) VALUES (?, 'btc_tp_test', 'BTCUSD', 'SELL', 0.18,
+                          '2026-09-05 13:27:57', 83363.85, 84500.00, 80310.66, ?,
+                          'PENDING', 0.0, '2026-09-05 13:27:57', '2026-09-05 13:27:57');
+                """,
+                (self.account_id, complex_tp_targets),
+            )
+            trade_id = cursor.lastrowid
+            conn.commit()
+
+            trade_info = _get_trade_with_partials(cursor, trade_id)
+
+        # Must only contain the real TP price 80310.66, NOT 2026, 27, 13, 0.18 etc.
+        self.assertEqual(trade_info["multiple_tps"], [80310.66])
+
+        chart_data = get_chart_data_for_trade(trade_id, timeframe="M15")
+        tp_lines = [pl for pl in chart_data.get("price_lines", []) if pl.get("title", "").startswith("TP")]
+        self.assertEqual(len(tp_lines), 1)
+        self.assertEqual(tp_lines[0]["price"], 80310.66)
+        # Ensure no bogus TP lines were added
+        bogus_prices = [2026.0, 27.0, 13.0, 9.0, 5.0, 1.0, 0.18]
+        for pl in chart_data.get("price_lines", []):
+            self.assertNotIn(pl["price"], bogus_prices)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

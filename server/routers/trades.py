@@ -17,6 +17,7 @@ from server.models import (
     TradeScreenshotCreate
 )
 from server.analytics import compute_r_multiple
+from server.connectors.market_data import parse_tp_targets_prices
 
 router = APIRouter(prefix="/api/trades", tags=["Trades"])
 
@@ -59,78 +60,84 @@ def _get_trade_with_partials(cursor, trade_id: int):
     result["multiple_tps"] = []
 
     if result.get("tp_targets"):
-        try:
-            targets = json.loads(result["tp_targets"])
-            if isinstance(targets, list):
-                result["multiple_tps"] = [round(float(t["price"]), 5) for t in targets if t.get("price") and float(t["price"]) > 0]
-        except Exception:
-            for part in re.findall(r"\d+(?:\.\d+)?", str(result["tp_targets"])):
-                try:
-                    val = round(float(part), 5)
-                    if val > 0 and val not in result["multiple_tps"]:
-                        result["multiple_tps"].append(val)
-                except ValueError:
-                    pass
+        result["multiple_tps"] = parse_tp_targets_prices(result["tp_targets"], open_price)
 
     if not result["multiple_tps"] and result.get("take_profit") and float(result["take_profit"]) > 0:
-        result["multiple_tps"] = [round(float(result["take_profit"]), 5)]
+        val = round(float(result["take_profit"]), 5)
+        if open_price <= 0 or (0.05 * open_price <= val <= 20 * open_price):
+            result["multiple_tps"] = [val]
 
-    if result.get("status") in ("OPEN", "PENDING"):
-        account_id = result.get("account_id")
-        symbol = result.get("symbol")
-        direction = result.get("direction")
-        if open_price > 0 and account_id and symbol and direction:
-            price_tol = max(0.0005 * open_price, 0.0001)
+    account_id = result.get("account_id")
+    symbol = result.get("symbol")
+    direction = result.get("direction")
+    if open_price > 0 and account_id and symbol and direction:
+        price_tol = max(0.0005 * open_price, 0.0001)
+        if result.get("status") in ("OPEN", "PENDING"):
             cursor.execute("""
-                SELECT t.id, t.ticket, t.volume, t.open_time, t.open_price,
-                       t.stop_loss, t.take_profit, t.commission, t.swap,
-                       t.gross_profit, t.net_profit, t.status
+                SELECT t.*
                 FROM trades t
                 WHERE t.account_id = ? AND t.symbol = ? AND t.direction = ?
-                  AND t.status = ? AND t.id != ?
+                  AND t.status IN ('OPEN', 'PENDING') AND t.id != ?
                   AND ABS(t.open_price - ?) <= ?;
-            """, (account_id, symbol, direction, result["status"], trade_id, open_price, price_tol))
+            """, (account_id, symbol, direction, trade_id, open_price, price_tol))
             sibling_rows = [dict(r) for r in cursor.fetchall()]
-            if sibling_rows:
-                current_leg = {
-                    "id": result["id"],
-                    "ticket": result.get("ticket"),
-                    "volume": float(result.get("volume") or 0.0),
-                    "open_time": result.get("open_time"),
-                    "open_price": open_price,
-                    "stop_loss": result.get("stop_loss"),
-                    "take_profit": result.get("take_profit"),
-                    "commission": float(result.get("commission") or 0.0),
-                    "swap": float(result.get("swap") or 0.0),
-                    "gross_profit": float(result.get("gross_profit") or 0.0),
-                    "net_profit": float(result.get("net_profit") or 0.0),
-                    "status": result.get("status")
-                }
-                all_legs = [current_leg] + sibling_rows
-                all_legs.sort(key=lambda x: x["id"])
+        else:
+            cursor.execute("""
+                SELECT t.*
+                FROM trades t
+                WHERE t.account_id = ? AND t.symbol = ? AND t.direction = ?
+                  AND t.id != ?
+                  AND ABS(t.open_price - ?) <= ?
+                  AND SUBSTR(t.open_time, 1, 16) = SUBSTR(?, 1, 16);
+            """, (account_id, symbol, direction, trade_id, open_price, price_tol, result.get("open_time") or ""))
+            sibling_rows = [dict(r) for r in cursor.fetchall()]
 
-                tps = set()
-                for leg in all_legs:
-                    tp = leg.get("take_profit")
-                    if tp and float(tp) > 0:
-                        tps.add(round(float(tp), 5))
+        if sibling_rows:
+            current_leg = dict(result)
+            # Remove recursive/internal keys from current_leg
+            for k in ("sub_trades", "multiple_tps", "is_grouped", "grouped_count"):
+                current_leg.pop(k, None)
+
+            all_legs = [current_leg] + sibling_rows
+
+            tps = set()
+            for leg in all_legs:
+                tp = leg.get("take_profit")
+                if tp and float(tp) > 0:
+                    val = round(float(tp), 5)
+                    if open_price <= 0 or (0.05 * open_price <= val <= 20 * open_price):
+                        tps.add(val)
+                if leg.get("tp_targets"):
+                    for val in parse_tp_targets_prices(leg["tp_targets"], open_price):
+                        tps.add(val)
+
+            if open_price > 0:
+                tps.discard(round(open_price, 5))
                 sorted_tps = sorted(list(tps), key=lambda p: abs(p - open_price))
+            else:
+                sorted_tps = sorted(list(tps))
 
-                total_vol = sum(float(leg.get("volume") or 0.0) for leg in all_legs)
-                total_net = sum(float(leg.get("net_profit") or 0.0) for leg in all_legs)
-                total_gross = sum(float(leg.get("gross_profit") or 0.0) for leg in all_legs)
-                total_comm = sum(float(leg.get("commission") or 0.0) for leg in all_legs)
-                total_swap = sum(float(leg.get("swap") or 0.0) for leg in all_legs)
+            # Sort legs: legs with lower TP distance first, then by ID
+            all_legs.sort(key=lambda x: (
+                abs(float(x.get("take_profit") or 0.0) - open_price) if float(x.get("take_profit") or 0.0) > 0 else 999999,
+                x["id"]
+            ))
 
-                result["is_grouped"] = True
-                result["grouped_count"] = len(all_legs)
-                result["multiple_tps"] = sorted_tps
-                result["sub_trades"] = all_legs
-                result["grouped_total_volume"] = round(total_vol, 4)
-                result["grouped_net_profit"] = round(total_net, 2)
-                result["grouped_gross_profit"] = round(total_gross, 2)
-                result["grouped_commission"] = round(total_comm, 2)
-                result["grouped_swap"] = round(total_swap, 2)
+            total_vol = sum(float(leg.get("volume") or 0.0) for leg in all_legs)
+            total_net = sum(float(leg.get("net_profit") or 0.0) for leg in all_legs)
+            total_gross = sum(float(leg.get("gross_profit") or 0.0) for leg in all_legs)
+            total_comm = sum(float(leg.get("commission") or 0.0) for leg in all_legs)
+            total_swap = sum(float(leg.get("swap") or 0.0) for leg in all_legs)
+
+            result["is_grouped"] = True
+            result["grouped_count"] = len(all_legs)
+            result["multiple_tps"] = sorted_tps
+            result["sub_trades"] = all_legs
+            result["grouped_total_volume"] = round(total_vol, 4)
+            result["grouped_net_profit"] = round(total_net, 2)
+            result["grouped_gross_profit"] = round(total_gross, 2)
+            result["grouped_commission"] = round(total_comm, 2)
+            result["grouped_swap"] = round(total_swap, 2)
 
     return result
 

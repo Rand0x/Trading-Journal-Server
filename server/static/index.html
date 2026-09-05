@@ -730,8 +730,8 @@
       </div>
 
       <div class="modal-body" style="padding:16px 24px;">
-        <!-- Chart Controls Toolbar (Sticky) -->
-        <div class="chart-controls-toolbar" style="display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:20;background:var(--bg-card,#0f172a);padding:4px 0 10px;margin-bottom:8px;border-bottom:1px solid #1a2233;">
+        <!-- Chart Controls Toolbar (Non-Sticky, flows cleanly above chart) -->
+        <div class="chart-controls-toolbar" style="display:flex;justify-content:space-between;align-items:center;position:relative;background:transparent;padding:6px 0;margin-bottom:8px;border-bottom:1px solid #1a2233;">
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
             <button id="tdBtnAuto" class="btn btn-primary btn-sm tf-btn" data-tf="AUTO" onclick="TradeDetail.switchTimeframe('AUTO')">Auto</button>
             <button class="btn btn-secondary btn-sm tf-btn" data-tf="M1" onclick="TradeDetail.switchTimeframe('M1')">1m</button>
@@ -752,7 +752,7 @@
         <!-- TradingView Lightweight Charts Container -->
         <div id="tvChartContainer" class="tv-chart-box"></div>
 
-        <!-- Execution KPIs Row -->
+        <!-- Execution & Risk KPIs Grid -->
         <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(110px, 1fr));gap:8px;margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
           <div>
             <span style="font-size:11px;color:#6b7280;display:block;">VOLUME</span>
@@ -775,6 +775,18 @@
             <span id="tdTP" style="font-weight:700;color:#10b981;">None</span>
           </div>
           <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">TARGET R:R</span>
+            <span id="tdTargetRR" style="font-weight:700;color:#10b981;">—</span>
+          </div>
+          <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">REALIZED R</span>
+            <span id="tdRMultiple" style="font-weight:700;color:#60a5fa;">—</span>
+          </div>
+          <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">RISK DISTANCE</span>
+            <span id="tdRiskDist" style="font-weight:600;color:#9ca3af;">—</span>
+          </div>
+          <div>
             <span style="font-size:11px;color:#6b7280;display:block;">COMMISSION</span>
             <span id="tdCommission" style="color:#9ca3af;">0.00</span>
           </div>
@@ -782,18 +794,47 @@
             <span style="font-size:11px;color:#6b7280;display:block;">SWAP</span>
             <span id="tdSwap" style="color:#9ca3af;">0.00</span>
           </div>
+          <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">TIMEFRAME</span>
+            <span id="tdTimeframe" style="font-weight:600;color:#cbd5e1;">M15</span>
+          </div>
+          <div>
+            <span style="font-size:11px;color:#6b7280;display:block;">ACCOUNT</span>
+            <span id="tdAccount" style="font-weight:600;color:#cbd5e1;">—</span>
+          </div>
         </div>
 
-        <!-- Grouped Orders Section (shown when multiple open orders are merged) -->
+        <!-- Take Profit Targets & Lots Section (shown when multiple TPs or tp_targets exist) -->
+        <div id="tdTpTargetsCard" style="display:none;margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="form-label" style="margin:0;font-weight:700;color:#10b981;">🎯 Take Profit Targets & Lots</span>
+              <span style="font-size:11px;color:#9ca3af;">Individual targets, lot sizes, and weighted reward ratios</span>
+            </div>
+            <span id="tdTpTargetsSummary" style="font-size:11px;color:#10b981;font-weight:600;"></span>
+          </div>
+          <div id="tdTpTargetsList" style="display:flex;flex-direction:column;gap:6px;"></div>
+        </div>
+
+        <!-- Grouped Orders Section (shown when multiple orders are merged) -->
         <div id="tdGroupedOrdersCard" style="display:none;margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
             <div>
-              <span class="form-label" style="margin:0;color:#818cf8;">Grouped Orders (Multiple TPs)</span>
-              <div id="tdGroupedSummary" style="font-size:11px;color:#6b7280;margin-top:2px;"></div>
+              <span class="form-label" style="margin:0;color:#818cf8;font-weight:700;">🔗 Grouped Orders (Merged Sibling Positions)</span>
+              <div id="tdGroupedSummary" style="font-size:11px;color:#9ca3af;margin-top:2px;"></div>
             </div>
             <span class="badge badge-grouped" id="tdGroupedBadge">Grouped Trade</span>
           </div>
-          <div id="tdGroupedOrdersList" style="font-size:12px;color:#d1d5db;"></div>
+          <div id="tdGroupedOrdersList" style="font-size:12px;color:#d1d5db;display:flex;flex-direction:column;gap:6px;"></div>
+        </div>
+
+        <!-- Setup Signals & Confluence Section -->
+        <div id="tdSignalsCard" style="margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <span class="form-label" style="margin:0;font-weight:700;color:#60a5fa;">⚡ Setup Signals & Confluences</span>
+            <span id="tdSignalsCount" style="font-size:11px;color:#9ca3af;"></span>
+          </div>
+          <div id="tdSignalsList" class="chip-group" style="margin:0;"></div>
         </div>
 
         <!-- Partial exit / scale-out section -->
@@ -855,29 +896,17 @@
           </div>
         </div>
 
-        <!-- Trade Tags & Notes Section -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px;">
-          <div class="form-group">
+        <!-- Playbook, Mistake, Rating Row -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:14px;margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
+          <div class="form-group" style="margin-bottom:0;">
             <label class="form-label">Assigned Playbook / Setup</label>
             <select id="tdSetupSelect" class="form-select"></select>
           </div>
-          <div class="form-group">
+          <div class="form-group" style="margin-bottom:0;">
             <label class="form-label">Identified Mistake</label>
             <select id="tdMistakeSelect" class="form-select"></select>
           </div>
-          <div class="form-group">
-            <label class="form-label">Psychology & Emotions</label>
-            <select id="tdEmotionSelect" class="form-select">
-              <option value="Disciplined">Disciplined</option>
-              <option value="Confident">Confident</option>
-              <option value="Patient">Patient</option>
-              <option value="FOMO">FOMO / Impulse</option>
-              <option value="Anxious">Anxious / Hesitant</option>
-              <option value="Greedy">Greedy</option>
-              <option value="Frustrated">Frustrated / Revenge</option>
-            </select>
-          </div>
-          <div class="form-group">
+          <div class="form-group" style="margin-bottom:0;">
             <label class="form-label">Execution Rating (1-5)</label>
             <select id="tdRatingSelect" class="form-select">
               <option value="5">★★★★★ (5 - Flawless Execution)</option>
@@ -889,13 +918,43 @@
           </div>
         </div>
 
-        <div class="form-group" style="margin-top:12px;">
-          <label class="form-label">Trade Notes & Reflections</label>
-          <textarea id="tdNotesInput" class="form-textarea" placeholder="Why did you enter? What went right or wrong?"></textarea>
+        <!-- 2-Phase Emotions Section -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
+          <div>
+            <label class="form-label" style="margin-bottom:6px;display:block;">Emotion BEFORE Trade (Pre-Trade)</label>
+            <div id="tdEmotionPreDisplay" class="chip-group" style="margin:0;"></div>
+          </div>
+          <div>
+            <label class="form-label" style="margin-bottom:6px;display:block;">Emotion DURING Trade (In-Trade)</label>
+            <div id="tdEmotionDuringDisplay" class="chip-group" style="margin:0;"></div>
+          </div>
         </div>
 
-        <div style="font-size:11px;color:#6b7280;margin-top:8px;">
-          Open Time: <span id="tdOpenTime"></span> • Close Time: <span id="tdCloseTime"></span>
+        <!-- Structured Trade Notes & Reflections -->
+        <div style="margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
+          <span class="form-label" style="font-weight:700;margin-bottom:10px;display:block;">📝 Structured Notes & Reflections</span>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div class="form-group" style="margin:0;">
+              <label class="form-label" style="color:#9ca3af;font-size:11px;">1. Pre-Trade Reasoning (Why the entry? Setup, HTF bias)</label>
+              <textarea id="tdPreNotesInput" class="form-textarea" rows="2" placeholder="Entry reasoning, catalyst, HTF bias..."></textarea>
+            </div>
+            <div class="form-group" style="margin:0;">
+              <label class="form-label" style="color:#9ca3af;font-size:11px;">2. Post-Trade Analysis (What went well or bad? Execution, exit timing)</label>
+              <textarea id="tdPostNotesInput" class="form-textarea" rows="2" placeholder="Execution review, exit timing, trade management..."></textarea>
+            </div>
+            <div class="form-group" style="margin:0;">
+              <label class="form-label" style="color:#9ca3af;font-size:11px;">3. Key Takeaway (Most important lesson for the future)</label>
+              <textarea id="tdKeyLearningsInput" class="form-textarea" rows="2" placeholder="Key takeaways and rules to remember..."></textarea>
+            </div>
+            <div id="tdLegacyNotesContainer" class="form-group" style="margin:0;display:none;">
+              <label class="form-label" style="color:#9ca3af;font-size:11px;">General Notes</label>
+              <textarea id="tdNotesInput" class="form-textarea" rows="2" placeholder="General notes..."></textarea>
+            </div>
+          </div>
+        </div>
+
+        <div style="font-size:11px;color:#6b7280;margin-top:10px;">
+          Open Time: <span id="tdOpenTime" style="color:#cbd5e1;"></span> • Close Time: <span id="tdCloseTime" style="color:#cbd5e1;"></span>
         </div>
       </div>
 

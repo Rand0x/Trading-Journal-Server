@@ -1256,6 +1256,62 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(updated_data["status"], "OPEN")
         self.assertEqual(updated_data["multiple_tps"], [1.086, 1.092])
 
+    def test_sibling_orders_aggregation_and_detail_fetching(self):
+        # Create two sibling open trades with same entry price & direction
+        t1_res = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "ticket": "sibling-leg-1",
+            "symbol": "EURUSD",
+            "direction": "BUY",
+            "volume": 0.5,
+            "open_time": "2026-09-05 14:00:00",
+            "open_price": 1.1000,
+            "stop_loss": 1.0950,
+            "take_profit": 1.1050,
+            "status": "OPEN"
+        })
+        self.assertEqual(t1_res.status_code, 200)
+        t1_id = t1_res.json()["id"]
+
+        t2_res = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "ticket": "sibling-leg-2",
+            "symbol": "EURUSD",
+            "direction": "BUY",
+            "volume": 0.5,
+            "open_time": "2026-09-05 14:00:00",
+            "open_price": 1.1000,
+            "stop_loss": 1.0950,
+            "take_profit": 1.1100,
+            "status": "OPEN"
+        })
+        self.assertEqual(t2_res.status_code, 200)
+        t2_id = t2_res.json()["id"]
+
+        # Fetch detail for leg 1
+        detail_res = self.client.get(f"/api/trades/{t1_id}")
+        self.assertEqual(detail_res.status_code, 200)
+        detail = detail_res.json()
+
+        self.assertTrue(detail["is_grouped"])
+        self.assertEqual(detail["grouped_count"], 2)
+        self.assertEqual(detail["grouped_total_volume"], 1.0)
+        self.assertEqual(detail["multiple_tps"], [1.105, 1.11])
+        self.assertEqual(len(detail["sub_trades"]), 2)
+        tickets = [s["ticket"] for s in detail["sub_trades"]]
+        self.assertIn("sibling-leg-1", tickets)
+        self.assertIn("sibling-leg-2", tickets)
+
+        # Check chart price lines include both TPs
+        chart_res = self.client.get(f"/api/sync/chart-data/{t1_id}")
+        self.assertEqual(chart_res.status_code, 200)
+        chart_data = chart_res.json()
+        tp_lines = [pl for pl in chart_data.get("price_lines", []) if pl.get("title", "").startswith("TP")]
+        self.assertEqual(len(tp_lines), 2)
+        tp_prices = [pl["price"] for pl in tp_lines]
+        self.assertIn(1.105, tp_prices)
+        self.assertIn(1.11, tp_prices)
+
 
 if __name__ == "__main__":
     unittest.main()

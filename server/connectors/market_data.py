@@ -6,6 +6,7 @@ MetaTrader/cTrader or explicitly reports that real data is not available yet.
 """
 
 import re
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -206,7 +207,7 @@ def _load_best_candles(
 
     target_interval = _timeframe_to_seconds(target_tf)
     end_ts = close_ts + CONTEXT_BARS * target_interval
-    start_ts = min(open_ts - CONTEXT_BARS * target_interval, end_ts - (num_bars + CONTEXT_BARS) * target_interval)
+    start_ts = min(open_ts - CONTEXT_BARS * target_interval, end_ts - (num_bars + CONTEXT_BARS + 2) * target_interval)
 
     # 1. Direct query for target timeframe
     candles = _fetch_raw_candles(cursor, symbol, target_tf, start_ts, end_ts)
@@ -314,13 +315,58 @@ def _build_markers(trade, candles: List[Dict[str, Any]], open_ts: int, close_ts:
     return sorted(markers, key=lambda marker: marker["time"])
 
 
+def parse_tp_targets_prices(raw_val: Any, open_price: float = 0.0) -> List[float]:
+    """Safely extract valid TP prices from a JSON or string tp_targets value, ignoring timestamps/lots/numbers."""
+    if not raw_val:
+        return []
+
+    parsed = None
+    if isinstance(raw_val, (list, tuple)):
+        parsed = raw_val
+    elif isinstance(raw_val, str):
+        raw_str = raw_val.strip()
+        if not raw_str:
+            return []
+        try:
+            parsed = json.loads(raw_str)
+        except Exception:
+            # Fallback regex ONLY targeting JSON "price": <number>
+            matches = re.findall(r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)', raw_str)
+            if matches:
+                parsed = [float(m) for m in matches]
+            else:
+                return []
+
+    prices: List[float] = []
+    if isinstance(parsed, list):
+        for item in parsed:
+            p = None
+            if isinstance(item, dict):
+                p = item.get("price") or item.get("close_price") or item.get("tp")
+            elif isinstance(item, (int, float)):
+                p = item
+            if p is not None:
+                try:
+                    val = round(float(p), 5)
+                    if val > 0:
+                        if open_price > 0:
+                            if 0.05 * open_price <= val <= 20 * open_price:
+                                prices.append(val)
+                        else:
+                            prices.append(val)
+                except (ValueError, TypeError):
+                    pass
+    return prices
+
+
 def _extract_all_take_profits(trade: Any, cursor=None) -> List[float]:
     """
     Extracts all Take Profit levels belonging to this trade / setup:
     1. Primary trade['take_profit']
-    2. Any partial close prices in trade_partial_closes
-    3. Any TPs explicitly written in trade['notes'] or comment (e.g. TP1: ..., TP2: ...)
-    4. Any related multi-order legs in the trades table (same account, symbol, direction, entry price & time)
+    2. Any dynamic targets in trade['tp_targets']
+    3. Any partial close prices in trade_partial_closes
+    4. Any TPs explicitly written in trade['notes'] or comment (e.g. TP1: ..., TP2: ...)
+    5. Any related multi-order legs in the trades table (same account, symbol, direction, entry price & time)
     """
     trade_dict = dict(trade) if hasattr(trade, "keys") else (trade or {})
     tps = set()
@@ -329,24 +375,18 @@ def _extract_all_take_profits(trade: Any, cursor=None) -> List[float]:
 
     # 1. Primary take_profit column
     if trade_dict.get("take_profit") is not None:
-        tp_raw = str(trade_dict["take_profit"]).strip()
-        for part in re.findall(r"\d+(?:\.\d+)?", tp_raw):
-            try:
-                val = round(float(part), 5)
-                if val > 0:
+        try:
+            val = round(float(trade_dict["take_profit"]), 5)
+            if val > 0:
+                if open_price <= 0 or (0.05 * open_price <= val <= 20 * open_price):
                     tps.add(val)
-            except ValueError:
-                pass
+        except (ValueError, TypeError):
+            pass
 
     # 1b. Dynamic TP targets column
     if trade_dict.get("tp_targets"):
-        for part in re.findall(r"\d+(?:\.\d+)?", str(trade_dict["tp_targets"])):
-            try:
-                val = round(float(part), 5)
-                if val > 0:
-                    tps.add(val)
-            except ValueError:
-                pass
+        for val in parse_tp_targets_prices(trade_dict["tp_targets"], open_price):
+            tps.add(val)
 
     # 2. Extract from notes or comment (e.g. "TP1: 80075.19, TP2: 78500", "TP: 80000, 79000")
     notes_str = f"{trade_dict.get('notes') or ''} {trade_dict.get('comment') or ''}"
@@ -356,7 +396,8 @@ def _extract_all_take_profits(trade: Any, cursor=None) -> List[float]:
             try:
                 val = round(float(match.group(1)), 5)
                 if val > 0:
-                    tps.add(val)
+                    if open_price <= 0 or (0.05 * open_price <= val <= 20 * open_price):
+                        tps.add(val)
             except ValueError:
                 pass
 
@@ -371,7 +412,8 @@ def _extract_all_take_profits(trade: Any, cursor=None) -> List[float]:
                 if row["close_price"]:
                     val = round(float(row["close_price"]), 5)
                     if val > 0:
-                        tps.add(val)
+                        if open_price <= 0 or (0.05 * open_price <= val <= 20 * open_price):
+                            tps.add(val)
         except Exception:
             pass
 
@@ -381,27 +423,34 @@ def _extract_all_take_profits(trade: Any, cursor=None) -> List[float]:
             trade_open_ts = int(_parse_dt(trade_dict.get("open_time") or "").timestamp())
             cursor.execute(
                 """
-                SELECT id, take_profit, open_price, open_time
+                SELECT id, take_profit, tp_targets, open_price, open_time, status
                 FROM trades
                 WHERE account_id = ? AND symbol = ? AND direction = ?
-                  AND id != ? AND take_profit IS NOT NULL AND take_profit > 0;
+                  AND id != ?;
                 """,
                 (trade_dict["account_id"], trade_dict["symbol"], trade_dict["direction"], trade_dict["id"]),
             )
-            for rel in cursor.fetchall():
-                rel_price = float(rel["open_price"] or 0.0)
+            for row in cursor.fetchall():
+                rel = dict(row)
+                rel_price = float(rel.get("open_price") or 0.0)
                 if abs(rel_price - open_price) <= max(0.0005 * open_price, 0.0001):
-                    rel_ts = int(_parse_dt(rel["open_time"] or "").timestamp())
-                    if abs(rel_ts - trade_open_ts) <= 900:
-                        val = round(float(rel["take_profit"]), 5)
-                        if val > 0:
-                            tps.add(val)
+                    rel_ts = int(_parse_dt(rel.get("open_time") or "").timestamp())
+                    same_open_pending = (trade_dict.get("status") in ("OPEN", "PENDING") and rel.get("status") in ("OPEN", "PENDING"))
+                    if same_open_pending or abs(rel_ts - trade_open_ts) <= 900:
+                        if rel.get("take_profit") and float(rel["take_profit"]) > 0:
+                            val = round(float(rel["take_profit"]), 5)
+                            if 0.05 * open_price <= val <= 20 * open_price:
+                                tps.add(val)
+                        if rel.get("tp_targets"):
+                            for val in parse_tp_targets_prices(rel["tp_targets"], open_price):
+                                tps.add(val)
         except Exception:
             pass
 
     # Discard open_price or stop_loss if mistakenly picked up
     if open_price > 0:
         tps.discard(round(open_price, 5))
+        tps = {p for p in tps if 0.05 * open_price <= p <= 20 * open_price}
     if sl_val > 0:
         tps.discard(round(sl_val, 5))
 
