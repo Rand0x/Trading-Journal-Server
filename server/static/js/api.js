@@ -48,6 +48,10 @@ const API = {
     return this.request(`/api/trades?${q}`);
   },
   getTrade(id) { return this.request(`/api/trades/${id}`); },
+  getSimilarTrades(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/api/trades/similar?${q}`);
+  },
   createTrade(data) { return this.request('/api/trades', { method: 'POST', body: JSON.stringify(data) }); },
   updateTrade(id, data) { return this.request(`/api/trades/${id}`, { method: 'PUT', body: JSON.stringify(data) }); },
   addPartialClose(id, data) { return this.request(`/api/trades/${id}/partials`, { method: 'POST', body: JSON.stringify(data) }); },
@@ -65,6 +69,10 @@ const API = {
   getAnalyticsOverview(params = {}) {
     const q = new URLSearchParams(params).toString();
     return this.request(`/api/analytics/overview?${q}`);
+  },
+  getWeeklyReview(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return this.request(`/api/analytics/weekly-review?${q}`);
   },
 
   // Playbooks & Mistakes

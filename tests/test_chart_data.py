@@ -8,8 +8,10 @@ from datetime import datetime, timezone
 from server.connectors.market_data import (
     _aggregate_candles,
     _select_auto_timeframe,
+    _parse_dt,
     get_chart_data_for_trade,
 )
+from server.routers.trades import _get_trade_with_partials
 from server.database import get_connection, init_db
 
 
@@ -358,6 +360,113 @@ class TestChartData(unittest.TestCase):
         self.assertIn("TP1: 80075.19", titles)
         self.assertIn("TP2: 78500.0", titles)
         self.assertIn("TP3: 76000.0", titles)
+
+    def test_parse_dt_with_metatrader_dot_dates(self):
+        # MT4/MT5 format with dots: YYYY.MM.DD HH:MM:SS
+        dt1 = _parse_dt("2026.09.05 13:27:57")
+        self.assertEqual(dt1.year, 2026)
+        self.assertEqual(dt1.month, 9)
+        self.assertEqual(dt1.day, 5)
+        self.assertEqual(dt1.hour, 13)
+        self.assertEqual(dt1.minute, 27)
+        self.assertEqual(dt1.second, 57)
+
+        # Standard ISO format with dashes
+        dt2 = _parse_dt("2026-09-05 13:27:57")
+        self.assertEqual(dt2.year, 2026)
+        self.assertEqual(dt2.month, 9)
+        self.assertEqual(dt2.day, 5)
+
+        # ISO with T
+        dt3 = _parse_dt("2026-09-05T13:27:57Z")
+        self.assertEqual(dt3.year, 2026)
+        self.assertEqual(dt3.month, 9)
+
+        # Dot format date only
+        dt4 = _parse_dt("2026.09.05")
+        self.assertEqual(dt4.year, 2026)
+        self.assertEqual(dt4.month, 9)
+
+    def test_chart_data_with_dot_date_trade(self):
+        # Verify get_chart_data_for_trade handles MT5 dot dates without crashing
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, close_time, open_price, close_price,
+                    net_profit, status, created_at, updated_at
+                ) VALUES (?, 'mt5_dot_date_ticket', 'EURUSD', 'BUY', 0.5,
+                          '2026.09.05 13:27:57', '2026.09.05 14:15:00', 1.0850, 1.0890,
+                          20.0, 'WIN', '2026-09-05 14:15:00', '2026-09-05 14:15:00');
+                """,
+                (self.account_id,),
+            )
+            trade_id = cursor.lastrowid
+            conn.commit()
+
+        # Must not raise ValueError
+        data = get_chart_data_for_trade(trade_id, timeframe="M15")
+        self.assertIsNotNone(data)
+        self.assertEqual(data["symbol"], "EURUSD")
+
+    def test_open_trades_grouping_with_multiple_tps(self):
+        # Verify sibling open trades with same entry and direction are grouped
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            # Order 1 (TP1)
+            cursor.execute(
+                """
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, open_price, stop_loss, take_profit,
+                    status, net_profit, created_at, updated_at
+                ) VALUES (?, 'mt5_open_1', 'EURUSD', 'BUY', 0.5,
+                          '2026-09-05 13:27:57', 1.08500, 1.08200, 1.08800,
+                          'OPEN', 10.0, '2026-09-05 13:27:57', '2026-09-05 13:27:57');
+                """,
+                (self.account_id,),
+            )
+            trade_id_1 = cursor.lastrowid
+
+            # Order 2 (TP2)
+            cursor.execute(
+                """
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, open_price, stop_loss, take_profit,
+                    status, net_profit, created_at, updated_at
+                ) VALUES (?, 'mt5_open_2', 'EURUSD', 'BUY', 0.5,
+                          '2026-09-05 13:27:57', 1.08500, 1.08200, 1.09200,
+                          'OPEN', 10.0, '2026-09-05 13:27:57', '2026-09-05 13:27:57');
+                """,
+                (self.account_id,),
+            )
+
+            # Order 3 (TP3)
+            cursor.execute(
+                """
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, open_price, stop_loss, take_profit,
+                    status, net_profit, created_at, updated_at
+                ) VALUES (?, 'mt5_open_3', 'EURUSD', 'BUY', 0.5,
+                          '2026-09-05 13:27:57', 1.08500, 1.08200, 1.09600,
+                          'OPEN', 10.0, '2026-09-05 13:27:57', '2026-09-05 13:27:57');
+                """,
+                (self.account_id,),
+            )
+            conn.commit()
+
+            trade_info = _get_trade_with_partials(cursor, trade_id_1)
+
+        self.assertTrue(trade_info["is_grouped"])
+        self.assertEqual(trade_info["grouped_count"], 3)
+        self.assertEqual(trade_info["grouped_total_volume"], 1.5)
+        self.assertEqual(trade_info["grouped_net_profit"], 30.0)
+        self.assertEqual(trade_info["multiple_tps"], [1.088, 1.092, 1.096])
+        self.assertEqual(len(trade_info["sub_trades"]), 3)
 
 
 if __name__ == "__main__":

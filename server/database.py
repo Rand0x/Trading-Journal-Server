@@ -169,6 +169,16 @@ def init_db():
             timeframe TEXT DEFAULT 'M15',
             order_id TEXT DEFAULT '',
             order_type TEXT DEFAULT '',
+            r_multiple REAL DEFAULT NULL,
+            initial_risk REAL DEFAULT NULL,
+            risk_mode TEXT DEFAULT 'CURRENCY',
+            is_missed INTEGER DEFAULT 0,
+            pre_trade_notes TEXT DEFAULT '',
+            post_trade_notes TEXT DEFAULT '',
+            key_learnings TEXT DEFAULT '',
+            emotion_pre TEXT DEFAULT '',
+            emotion_during TEXT DEFAULT '',
+            signals TEXT DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(account_id, ticket) ON CONFLICT IGNORE
@@ -181,6 +191,16 @@ def init_db():
         new_trade_cols = [
             ("order_id", "TEXT DEFAULT ''"),
             ("order_type", "TEXT DEFAULT ''"),
+            ("r_multiple", "REAL DEFAULT NULL"),
+            ("initial_risk", "REAL DEFAULT NULL"),
+            ("risk_mode", "TEXT DEFAULT 'CURRENCY'"),
+            ("is_missed", "INTEGER DEFAULT 0"),
+            ("pre_trade_notes", "TEXT DEFAULT ''"),
+            ("post_trade_notes", "TEXT DEFAULT ''"),
+            ("key_learnings", "TEXT DEFAULT ''"),
+            ("emotion_pre", "TEXT DEFAULT ''"),
+            ("emotion_during", "TEXT DEFAULT ''"),
+            ("signals", "TEXT DEFAULT ''"),
         ]
         for col_name, col_type in new_trade_cols:
             if col_name not in existing_trade_cols:
@@ -246,6 +266,7 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_setup ON trades(setup_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_mistake ON trades(mistake_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_missed ON trades(is_missed);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_partial_closes_trade ON trade_partial_closes(trade_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_screenshots_trade ON trade_screenshots(trade_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_equity_account_time ON equity_history(account_id, timestamp);")
@@ -306,6 +327,26 @@ def init_db():
         cursor.execute("DELETE FROM market_candles WHERE timeframe = 'M5' AND (timestamp % 300 != 0);")
         cursor.execute("DELETE FROM market_candles WHERE timeframe = 'H1' AND (timestamp % 3600 != 0);")
         cursor.execute("DELETE FROM market_candles WHERE timeframe = 'H4' AND (timestamp % 14400 != 0);")
+
+        # Normalize legacy MT4/MT5 dot-separated dates (YYYY.MM.DD) to ISO dashes (YYYY-MM-DD)
+        try:
+            cursor.execute("""
+                UPDATE trades
+                SET open_time = REPLACE(SUBSTR(open_time, 1, 10), '.', '-') || SUBSTR(open_time, 11)
+                WHERE open_time IS NOT NULL AND SUBSTR(open_time, 5, 1) = '.';
+            """)
+            cursor.execute("""
+                UPDATE trades
+                SET close_time = REPLACE(SUBSTR(close_time, 1, 10), '.', '-') || SUBSTR(close_time, 11)
+                WHERE close_time IS NOT NULL AND SUBSTR(close_time, 5, 1) = '.';
+            """)
+            cursor.execute("""
+                UPDATE trade_partial_closes
+                SET close_time = REPLACE(SUBSTR(close_time, 1, 10), '.', '-') || SUBSTR(close_time, 11)
+                WHERE close_time IS NOT NULL AND SUBSTR(close_time, 5, 1) = '.';
+            """)
+        except Exception as e:
+            logger.warning("Could not normalize legacy dates: %s", e)
 
         conn.commit()
         logger.info("Database initialized successfully with WAL mode.")

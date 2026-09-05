@@ -995,6 +995,233 @@ class TestAPI(unittest.TestCase):
             leaked = conn.execute("SELECT COUNT(*) FROM market_candles WHERE symbol = 'BTCUSD' AND timeframe = 'M15' AND timestamp % 900 != 0;").fetchone()[0]
             self.assertEqual(leaked, 0)
 
+    def test_advanced_trade_fields_and_missed_trades(self):
+        # 1. Create a missed trade
+        res_missed = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "symbol": "USDJPY",
+            "direction": "BUY",
+            "volume": 1.0,
+            "open_price": 150.00,
+            "open_time": "2026-09-01T10:00:00Z",
+            "stop_loss": 149.50,
+            "take_profit": 151.00,
+            "is_missed": True,
+            "r_multiple": 2.0,
+            "signals": "Breakout,Support Bounce",
+            "pre_trade_notes": "Identified clean H4 retest but was away from desk",
+            "emotion_pre": "Calm",
+            "emotion_during": "Neutral"
+        })
+        self.assertEqual(res_missed.status_code, 200)
+        missed_id = res_missed.json()["id"]
+
+        # 2. Filter by is_missed=True
+        res_list_missed = self.client.get("/api/trades?is_missed=true")
+        self.assertEqual(res_list_missed.status_code, 200)
+        trades_missed = res_list_missed.json()["trades"]
+        self.assertTrue(any(t["id"] == missed_id for t in trades_missed))
+        for t in trades_missed:
+            self.assertTrue(t["is_missed"])
+
+        # 3. Filter by is_missed=False
+        res_list_active = self.client.get("/api/trades?is_missed=false")
+        self.assertEqual(res_list_active.status_code, 200)
+        trades_active = res_list_active.json()["trades"]
+        self.assertFalse(any(t["id"] == missed_id for t in trades_active))
+
+    def test_dynamic_tps_and_r_multiple_calculation(self):
+        # Create trade with 4 partial closes (unlimited TPs: TP1..TP4)
+        trade_res = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "symbol": "NAS100",
+            "direction": "BUY",
+            "volume": 4.0,
+            "open_price": 20000.0,
+            "open_time": "2026-09-02T14:30:00Z",
+            "stop_loss": 19950.0,  # 50 pts risk distance
+            "initial_risk": 200.0,
+            "risk_mode": "CURRENCY",
+            "signals": "FVG,OB,Liquidity Sweep"
+        })
+        self.assertEqual(trade_res.status_code, 200)
+        trade_id = trade_res.json()["id"]
+
+        # Add 4 partial closes
+        # TP1: 1 lot closed at 20050 (+50 pts = +1R for 0.25 vol) -> profit 50
+        self.client.post(f"/api/trades/{trade_id}/partials", json={
+            "volume": 1.0,
+            "close_price": 20050.0,
+            "close_time": "2026-09-02T15:00:00Z",
+            "net_profit": 50.0
+        })
+        # TP2: 1 lot closed at 20100 (+100 pts = +2R for 0.25 vol) -> profit 100
+        self.client.post(f"/api/trades/{trade_id}/partials", json={
+            "volume": 1.0,
+            "close_price": 20100.0,
+            "close_time": "2026-09-02T15:30:00Z",
+            "net_profit": 100.0
+        })
+        # TP3: 1 lot closed at 20150 (+150 pts = +3R for 0.25 vol) -> profit 150
+        self.client.post(f"/api/trades/{trade_id}/partials", json={
+            "volume": 1.0,
+            "close_price": 20150.0,
+            "close_time": "2026-09-02T16:00:00Z",
+            "net_profit": 150.0
+        })
+        # TP4: 1 lot closed at 20200 (+200 pts = +4R for 0.25 vol) -> profit 200
+        self.client.post(f"/api/trades/{trade_id}/partials", json={
+            "volume": 1.0,
+            "close_price": 20200.0,
+            "close_time": "2026-09-02T16:30:00Z",
+            "net_profit": 200.0
+        })
+
+        # Fetch trade and verify dynamic TPs & recalculation
+        trade_get = self.client.get(f"/api/trades/{trade_id}")
+        self.assertEqual(trade_get.status_code, 200)
+        t_data = trade_get.json()
+        self.assertEqual(len(t_data["partial_closes"]), 4)
+        self.assertEqual(t_data["status"], "WIN")
+        self.assertEqual(t_data["net_profit"], 500.0)
+        self.assertIsNotNone(t_data["r_multiple"])
+        # Net profit 500 / initial risk 200 = 2.5 R
+        self.assertAlmostEqual(t_data["r_multiple"], 2.5, places=2)
+
+    def test_similar_trades_twin_detection(self):
+        res = self.client.get("/api/trades/similar?symbol=NAS100&direction=BUY&signals=FVG,OB")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("count", data)
+        self.assertIn("similar_trades", data)
+        self.assertIsInstance(data["similar_trades"], list)
+        if data["similar_trades"]:
+            self.assertIn("symbol", data["similar_trades"][0])
+
+    def test_analytics_deep_breakdown_routes(self):
+        # 1. Overview
+        res_overview = self.client.get("/api/analytics/overview")
+        self.assertEqual(res_overview.status_code, 200)
+        overview = res_overview.json()
+        self.assertIn("take_profit", overview)
+        self.assertIn("signal_combinations", overview)
+        self.assertIn("psychology", overview)
+
+        # 2. Take-profit endpoint
+        res_tp = self.client.get("/api/analytics/take-profit")
+        self.assertEqual(res_tp.status_code, 200)
+        tp_data = res_tp.json()
+        self.assertIn("levels", tp_data)
+        self.assertIn("total_closed", tp_data)
+
+        # 3. Signal combinations endpoint
+        res_signals = self.client.get("/api/analytics/signal-combinations")
+        self.assertEqual(res_signals.status_code, 200)
+        signals_data = res_signals.json()
+        self.assertIn("solo", signals_data)
+        self.assertIn("combinations", signals_data)
+
+        # 4. Psychology endpoint
+        res_psy = self.client.get("/api/analytics/psychology")
+        self.assertEqual(res_psy.status_code, 200)
+        psy_data = res_psy.json()
+        self.assertIn("emotion_pre", psy_data)
+        self.assertIn("emotion_during", psy_data)
+
+        # 5. Weekly review endpoint
+        res_rev = self.client.get("/api/analytics/weekly-review?week_offset=0")
+        self.assertEqual(res_rev.status_code, 200)
+        rev_data = res_rev.json()
+        self.assertIn("week_label", rev_data)
+        self.assertIn("net_profit", rev_data)
+        self.assertIn("total_r", rev_data)
+        self.assertIn("missed_trades", rev_data)
+
+    def test_update_trade_with_dynamic_tps(self):
+        # Create a trade without partial closes
+        create_res = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "symbol": "USDCHF",
+            "direction": "SELL",
+            "volume": 2.0,
+            "open_price": 0.9000,
+            "open_time": "2026-09-04T12:00:00Z",
+            "stop_loss": 0.9050,
+            "initial_risk": 100.0
+        })
+        self.assertEqual(create_res.status_code, 200)
+        t_id = create_res.json()["id"]
+
+        # User edits the trade in the modal and adds 2 dynamic TP scale-outs
+        update_res = self.client.put(f"/api/trades/{t_id}", json={
+            "partial_closes": [
+                {
+                    "volume": 1.0,
+                    "close_price": 0.8950,
+                    "close_time": "2026-09-04T13:00:00Z",
+                    "net_profit": 50.0
+                },
+                {
+                    "volume": 1.0,
+                    "close_price": 0.8900,
+                    "close_time": "2026-09-04T14:00:00Z",
+                    "net_profit": 100.0
+                }
+            ],
+            "notes": "Updated with dynamic TP scale-outs"
+        })
+        self.assertEqual(update_res.status_code, 200)
+        updated_data = update_res.json()
+        self.assertEqual(len(updated_data["partial_closes"]), 2)
+        self.assertEqual(updated_data["net_profit"], 150.0)
+        self.assertEqual(updated_data["status"], "WIN")
+        self.assertAlmostEqual(updated_data["r_multiple"], 1.5, places=2)
+        self.assertEqual(updated_data["notes"], "Updated with dynamic TP scale-outs")
+
+    def test_compute_r_multiple_edge_cases(self):
+        from server.analytics import compute_r_multiple
+        # 1. Zero stop loss -> must return None, not divide by open price
+        self.assertIsNone(compute_r_multiple("BUY", 1.0800, 0.0, close_price=1.0850, net_profit=100.0))
+        self.assertIsNone(compute_r_multiple("BUY", 1.0800, None, close_price=1.0850, net_profit=100.0))
+
+        # 2. Initial risk given > 0 takes priority 1
+        r1 = compute_r_multiple("BUY", 1.0800, 1.0700, close_price=1.0900, net_profit=300.0, initial_risk=100.0)
+        self.assertEqual(r1, 3.0)
+
+        # 3. Stop loss distance used when initial_risk is None
+        r2 = compute_r_multiple("BUY", 100.0, 95.0, close_price=110.0)
+        self.assertEqual(r2, 2.0)
+
+        # 4. Short trade with distance
+        r3 = compute_r_multiple("SELL", 100.0, 105.0, close_price=90.0)
+        self.assertEqual(r3, 2.0)
+
+        # 5. Open price == stop loss -> returns None
+        self.assertIsNone(compute_r_multiple("BUY", 100.0, 100.0, close_price=105.0))
+
+    def test_tp_analysis_excludes_loss_partials_from_tp_reached(self):
+        from server.analytics import get_take_profit_analysis
+        # Trade with 2 partial closes: 1 in profit (TP1), 1 at loss (SL stop out)
+        trades = [{
+            "id": 1,
+            "status": "WIN",
+            "open_price": 100.0,
+            "stop_loss": 95.0,
+            "volume": 2.0,
+            "direction": "BUY",
+            "net_profit": 50.0,
+            "r_multiple": 1.0,
+            "partial_closes": [
+                {"volume": 1.0, "close_price": 110.0, "net_profit": 100.0}, # profit
+                {"volume": 1.0, "close_price": 95.0, "net_profit": -50.0}   # loss
+            ]
+        }]
+        analysis = get_take_profit_analysis(trades)
+        tp1 = next(l for l in analysis["levels"] if l["level"] == 1)
+        tp2 = next(l for l in analysis["levels"] if l["level"] == 2)
+        self.assertEqual(tp1["reached_count"], 1)
+        # TP2 must NOT be counted as reached because it was closed at a loss!
+        self.assertEqual(tp2["reached_count"], 0)
 
 
 if __name__ == "__main__":

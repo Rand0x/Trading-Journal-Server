@@ -77,6 +77,7 @@ namespace cAlgo.Robots
                 PendingOrders.Modified += args => SyncAccount();
                 Positions.Opened += args => SyncAccount();
                 Positions.Closed += args => SyncAccount();
+                Positions.Modified += args => SyncAccount();
 
                 var syncButton = new Button
                 {

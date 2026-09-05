@@ -66,7 +66,7 @@ def get_dashboard_summary(
         trades = [dict(r) for r in cursor.fetchall()]
 
     metrics = calculate_trade_metrics(trades, initial_balance)
-    calendar = get_calendar_heatmap(trades)
+    calendar = get_calendar_heatmap(trades, initial_balance)
     equity_curve = get_equity_curve(trades, initial_balance)
 
     return {

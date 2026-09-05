@@ -133,6 +133,14 @@ class MistakeResponse(MistakeBase):
     occurrence_count: Optional[int] = 0
     total_loss: Optional[float] = 0.0
 
+def _normalize_datetime_str(v: Any) -> Any:
+    if not v:
+        return v
+    s = str(v).strip()
+    if len(s) >= 10 and s[4] == "." and s[7] == ".":
+        s = s[:4] + "-" + s[5:7] + "-" + s[8:]
+    return s
+
 # ================= TRADE SCHEMAS =================
 class TradePartialCloseBase(BaseModel):
     ticket: Optional[str] = None
@@ -143,6 +151,11 @@ class TradePartialCloseBase(BaseModel):
     swap: Optional[float] = 0.0
     gross_profit: Optional[float] = None
     net_profit: float = 0.0
+
+    @field_validator("close_time", mode="before")
+    @classmethod
+    def normalize_close_time(cls, v):
+        return _normalize_datetime_str(v)
 
 class TradePartialCloseCreate(TradePartialCloseBase):
     pass
@@ -188,7 +201,22 @@ class TradeBase(BaseModel):
     rating: Optional[int] = Field(default=5, ge=1, le=5)
     tags: Optional[str] = ""
     timeframe: Optional[str] = "M15"
+    r_multiple: Optional[float] = None
+    initial_risk: Optional[float] = None
+    risk_mode: Optional[str] = "CURRENCY"
+    is_missed: Optional[bool] = False
+    pre_trade_notes: Optional[str] = ""
+    post_trade_notes: Optional[str] = ""
+    key_learnings: Optional[str] = ""
+    emotion_pre: Optional[str] = ""
+    emotion_during: Optional[str] = ""
+    signals: Optional[str] = ""
     partial_closes: List[TradePartialCloseCreate] = Field(default_factory=list)
+
+    @field_validator("open_time", "close_time", mode="before")
+    @classmethod
+    def normalize_trade_datetimes(cls, v):
+        return _normalize_datetime_str(v)
 
 class TradeCreate(TradeBase):
     pass
@@ -216,6 +244,22 @@ class TradeUpdate(BaseModel):
     rating: Optional[int] = Field(default=None, ge=1, le=5)
     tags: Optional[str] = None
     timeframe: Optional[str] = None
+    r_multiple: Optional[float] = None
+    initial_risk: Optional[float] = None
+    risk_mode: Optional[str] = None
+    is_missed: Optional[bool] = None
+    pre_trade_notes: Optional[str] = None
+    post_trade_notes: Optional[str] = None
+    key_learnings: Optional[str] = None
+    emotion_pre: Optional[str] = None
+    emotion_during: Optional[str] = None
+    signals: Optional[str] = None
+    partial_closes: Optional[List[TradePartialCloseCreate]] = None
+
+    @field_validator("open_time", "close_time", mode="before")
+    @classmethod
+    def normalize_update_datetimes(cls, v):
+        return _normalize_datetime_str(v)
 
 class TradeResponse(TradeBase):
     id: int
@@ -258,6 +302,11 @@ class MQLTradeItem(BaseModel):
     comment: Optional[str] = ""
     candles: Optional[List[MQLCandleBar]] = None
     partial_closes: Optional[List[TradePartialCloseBase]] = None
+
+    @field_validator("open_time", "close_time", mode="before")
+    @classmethod
+    def normalize_mql_datetime(cls, v):
+        return _normalize_datetime_str(v)
 
 class MQLSyncPayload(BaseModel):
     source: Literal["mql", "ctrader-cbot"] = "mql"

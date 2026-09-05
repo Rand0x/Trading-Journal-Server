@@ -75,19 +75,23 @@ const TradeDetail = {
     dirBadge.textContent = trade.direction;
     dirBadge.className = `badge ${trade.direction === 'BUY' ? 'badge-buy' : 'badge-sell'}`;
 
-    const pnl = parseFloat(trade.net_profit || 0);
+    const isGrouped = trade.is_grouped && trade.grouped_count > 1;
+    const pnl = parseFloat((isGrouped && trade.grouped_net_profit !== undefined) ? trade.grouped_net_profit : (trade.net_profit || 0));
     const pnlEl = document.getElementById('tdPnl');
 
     const statusBadge = document.getElementById('tdStatusBadge');
     if (statusBadge) {
-      if (trade.status === 'PENDING') {
-        statusBadge.textContent = 'PENDING LIMIT';
+      if (trade.is_missed) {
+        statusBadge.textContent = 'MISSED';
+        statusBadge.className = 'badge badge-missed';
+      } else if (trade.status === 'PENDING') {
+        statusBadge.textContent = isGrouped ? `LIMIT (${trade.grouped_count} TPs)` : 'PENDING LIMIT';
         statusBadge.className = 'badge badge-pending';
       } else if (trade.status === 'CANCELLED') {
         statusBadge.textContent = 'CANCELLED';
         statusBadge.className = 'badge badge-cancelled';
       } else if (trade.status === 'OPEN') {
-        statusBadge.textContent = 'OPEN';
+        statusBadge.textContent = isGrouped ? `OPEN (${trade.grouped_count} TPs)` : 'OPEN';
         statusBadge.className = 'badge badge-open';
       } else if (trade.status) {
         statusBadge.textContent = trade.status;
@@ -103,7 +107,12 @@ const TradeDetail = {
       entryLabel.textContent = (trade.status === 'PENDING') ? 'LIMIT PRICE' : 'ENTRY';
     }
 
-    if (trade.status === 'PENDING') {
+    if (trade.is_missed) {
+      pnlEl.textContent = '— (Missed)';
+      pnlEl.className = 'metric-value color-muted';
+      document.getElementById('tdExitPrice').textContent = trade.close_price || '—';
+      document.getElementById('tdCloseTime').textContent = trade.close_time || '—';
+    } else if (trade.status === 'PENDING') {
       pnlEl.textContent = '—';
       pnlEl.className = 'metric-value color-muted';
       document.getElementById('tdExitPrice').textContent = 'Waiting for fill';
@@ -114,19 +123,60 @@ const TradeDetail = {
       document.getElementById('tdExitPrice').textContent = 'Cancelled';
       document.getElementById('tdCloseTime').textContent = trade.close_time || 'Cancelled';
     } else {
-      pnlEl.textContent = App.formatMoney(pnl, tradeCurrency, { showSign: true });
+      const rStr = trade.r_multiple != null ? ` (${Number(trade.r_multiple) >= 0 ? '+' : ''}${Number(trade.r_multiple).toFixed(2)} R)` : '';
+      pnlEl.textContent = `${App.formatMoney(pnl, tradeCurrency, { showSign: true })}${rStr}`;
       pnlEl.className = `metric-value ${pnl >= 0 ? 'color-green' : 'color-red'}`;
       document.getElementById('tdExitPrice').textContent = trade.close_price || 'Active';
       document.getElementById('tdCloseTime').textContent = trade.close_time || 'Open';
     }
 
-    document.getElementById('tdVolume').textContent = `${trade.volume} lots`;
+    const volText = isGrouped
+      ? `${Number(trade.grouped_total_volume || trade.volume).toFixed(2)} lots (${trade.grouped_count} orders)`
+      : `${trade.volume} lots`;
+    document.getElementById('tdVolume').textContent = volText;
     document.getElementById('tdEntryPrice').textContent = trade.open_price;
     document.getElementById('tdSL').textContent = trade.stop_loss ? trade.stop_loss : 'None';
-    document.getElementById('tdTP').textContent = trade.take_profit ? trade.take_profit : 'None';
-    document.getElementById('tdCommission').textContent = App.formatMoney(trade.commission || 0, tradeCurrency);
-    document.getElementById('tdSwap').textContent = App.formatMoney(trade.swap || 0, tradeCurrency);
+
+    if (trade.multiple_tps && trade.multiple_tps.length > 1) {
+      document.getElementById('tdTP').innerHTML = trade.multiple_tps.map((tp, idx) => `<span style="color:#10b981;font-weight:600;margin-right:6px;">TP${idx + 1}: ${tp}</span>`).join(' ');
+    } else {
+      document.getElementById('tdTP').textContent = trade.take_profit ? trade.take_profit : 'None';
+    }
+
+    document.getElementById('tdCommission').textContent = App.formatMoney((isGrouped && trade.grouped_commission !== undefined) ? trade.grouped_commission : (trade.commission || 0), tradeCurrency);
+    document.getElementById('tdSwap').textContent = App.formatMoney((isGrouped && trade.grouped_swap !== undefined) ? trade.grouped_swap : (trade.swap || 0), tradeCurrency);
     document.getElementById('tdOpenTime').textContent = trade.open_time;
+
+    // Grouped Orders list in modal
+    const groupedCard = document.getElementById('tdGroupedOrdersCard');
+    const groupedSummary = document.getElementById('tdGroupedSummary');
+    const groupedBadge = document.getElementById('tdGroupedBadge');
+    const groupedList = document.getElementById('tdGroupedOrdersList');
+
+    if (groupedCard && groupedList) {
+      const subTrades = Array.isArray(trade.sub_trades) ? trade.sub_trades : [];
+      if (isGrouped && subTrades.length > 1) {
+        groupedCard.style.display = 'block';
+        if (groupedBadge) groupedBadge.textContent = `${trade.grouped_count} Orders Merged`;
+        if (groupedSummary) {
+          groupedSummary.textContent = `Total Volume: ${Number(trade.grouped_total_volume || trade.volume).toFixed(2)} lots across ${subTrades.length} open positions`;
+        }
+        groupedList.innerHTML = subTrades.map((leg, idx) => {
+          const legPnl = Number(leg.net_profit || 0);
+          const pnlColor = legPnl >= 0 ? '#10b981' : '#ef4444';
+          const tpStr = leg.take_profit ? `TP${idx + 1}: ${leg.take_profit}` : 'No TP';
+          const slStr = leg.stop_loss ? `SL: ${leg.stop_loss}` : 'No SL';
+          return `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;margin-bottom:5px;background:#0a0e17;border-radius:5px;">
+              <span>Ticket #${this.escapeHtml(leg.ticket || leg.id)} • ${Number(leg.volume).toFixed(2)} lots • Entry: ${leg.open_price} • <strong style="color:#10b981;">${tpStr}</strong> • <span style="color:#ef4444;">${slStr}</span></span>
+              <strong style="color:${pnlColor};">${App.formatMoney(legPnl, tradeCurrency, { showSign: true })}</strong>
+            </div>`;
+        }).join('');
+      } else {
+        groupedCard.style.display = 'none';
+        groupedList.innerHTML = '';
+      }
+    }
 
     const partials = Array.isArray(trade.partial_closes) ? trade.partial_closes : [];
     const partialList = document.getElementById('tdPartialClosesList');

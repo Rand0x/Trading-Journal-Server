@@ -475,11 +475,22 @@ def _price_lines(trade, cursor=None) -> List[Dict[str, Any]]:
 
 
 def _parse_dt(value: str) -> datetime:
-    clean = value.replace("T", " ").replace("Z", "+00:00")[:26]
+    if not value:
+        return datetime.now(timezone.utc)
+    clean = str(value).replace("T", " ").replace("Z", "+00:00").strip()[:26]
+    # Normalize YYYY.MM.DD to YYYY-MM-DD (standard MT4/MT5 date format)
+    if len(clean) >= 10 and clean[4] == "." and clean[7] == ".":
+        clean = clean[:4] + "-" + clean[5:7] + "-" + clean[8:]
     try:
         parsed = datetime.fromisoformat(clean)
     except ValueError:
-        parsed = datetime.strptime(clean[:19], "%Y-%m-%d %H:%M:%S")
+        try:
+            parsed = datetime.strptime(clean[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            try:
+                parsed = datetime.strptime(clean[:19], "%Y.%m.%d %H:%M:%S")
+            except ValueError:
+                parsed = datetime.strptime(clean[:10], "%Y-%m-%d")
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)

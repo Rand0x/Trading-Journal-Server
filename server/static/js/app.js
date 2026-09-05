@@ -177,6 +177,9 @@ const App = {
       case 'accounts':
         Accounts.load();
         break;
+      case 'review':
+        if (window.Review) Review.load();
+        break;
     }
   },
 

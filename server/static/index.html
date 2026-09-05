@@ -45,6 +45,11 @@
           </a>
         </li>
         <li class="nav-item">
+          <a href="#" data-view="review">
+            <span>📅</span> Weekly Review
+          </a>
+        </li>
+        <li class="nav-item">
           <a href="#" data-view="accounts">
             <span>🔄</span> Accounts & Sync
           </a>
@@ -127,6 +132,16 @@
             <span id="dashDrawdown" class="metric-value color-red">0.00 (0.0%)</span>
             <span id="dashStreaks" class="metric-sub">Streaks: W: 0 / L: 0</span>
           </div>
+          <div class="metric-card">
+            <span class="metric-label">Current Drawdown</span>
+            <span id="dashCurrentDrawdown" class="metric-value color-red">0.00 (0.0%)</span>
+            <span id="dashCurrentDrawdownR" class="metric-sub">0.00 R from ATH</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Current Streak</span>
+            <span id="dashCurrentStreak" class="metric-value">None</span>
+            <span id="dashCurrentStreakSub" class="metric-sub">Active streak</span>
+          </div>
         </div>
 
         <!-- TradeZella-Style Interactive Calendar Heatmap -->
@@ -136,10 +151,17 @@
               <h2 class="calendar-month-title" id="calendarMonthLabel">Calendar Heatmap</h2>
               <span class="section-subtitle">Click any day with trades to filter log</span>
             </div>
-            <div class="calendar-nav">
-              <button class="btn btn-secondary btn-sm" onclick="Dashboard.calendarPrevMonth()">◀ Prev</button>
-              <button class="btn btn-secondary btn-sm" onclick="Dashboard.calendarToday()">Today</button>
-              <button class="btn btn-secondary btn-sm" onclick="Dashboard.calendarNextMonth()">Next ▶</button>
+            <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+              <div class="calendar-mode-toggle" style="display:flex;gap:4px;background:#0d131f;padding:3px;border-radius:6px;border:1px solid #1e293b;">
+                <button id="calModeCurrency" class="btn btn-primary btn-sm cal-mode-btn" onclick="Dashboard.setCalendarMode('currency')">Currency</button>
+                <button id="calModeR" class="btn btn-secondary btn-sm cal-mode-btn" onclick="Dashboard.setCalendarMode('r')">R-Multiple</button>
+                <button id="calModePct" class="btn btn-secondary btn-sm cal-mode-btn" onclick="Dashboard.setCalendarMode('pct')">% Return</button>
+              </div>
+              <div class="calendar-nav">
+                <button class="btn btn-secondary btn-sm" onclick="Dashboard.calendarPrevMonth()">◀ Prev</button>
+                <button class="btn btn-secondary btn-sm" onclick="Dashboard.calendarToday()">Today</button>
+                <button class="btn btn-secondary btn-sm" onclick="Dashboard.calendarNextMonth()">Next ▶</button>
+              </div>
             </div>
           </div>
 
@@ -148,6 +170,26 @@
           </div>
           <div id="calendarDaysGrid" class="calendar-grid">
             <!-- Rendered dynamically -->
+          </div>
+
+          <!-- Calendar Month Summary Bar -->
+          <div id="calendarMonthSummary" class="calendar-month-summary" style="margin-top:14px;background:#0d131f;padding:12px 18px;border-radius:8px;border:1px solid #1a2233;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;">
+            <div>
+              <span style="font-size:11px;color:#9ca3af;display:block;">MONTH P&L</span>
+              <span id="calSummaryPnl" style="font-size:17px;font-weight:700;" class="color-green">+0.00</span>
+            </div>
+            <div>
+              <span style="font-size:11px;color:#9ca3af;display:block;">TOTAL R</span>
+              <span id="calSummaryR" style="font-size:17px;font-weight:700;color:#60a5fa;">+0.00 R</span>
+            </div>
+            <div>
+              <span style="font-size:11px;color:#9ca3af;display:block;">WIN / BE / LOSS</span>
+              <span id="calSummaryWBL" style="font-size:14px;font-weight:600;color:#fff;">0W · 0BE · 0L</span>
+            </div>
+            <div>
+              <span style="font-size:11px;color:#9ca3af;display:block;">RETURN</span>
+              <span id="calSummaryPct" style="font-size:17px;font-weight:700;color:#10b981;">+0.0%</span>
+            </div>
           </div>
         </section>
 
@@ -337,6 +379,83 @@
             </div>
           </div>
         </div>
+
+        <!-- Take-Profit Scale-Out Performance (Dynamic TPs) -->
+        <div class="table-card" style="margin-bottom:24px;">
+          <div class="table-header-bar">
+            <div>
+              <span class="chart-title">Take-Profit Scale-Out Analysis (Dynamic TPs)</span>
+              <span class="section-subtitle">Hit rate and average R contribution across all partial exit levels (TP1 .. TPn)</span>
+            </div>
+          </div>
+          <div id="analyticsTpCardsContainer" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;padding:16px;">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Signal-Kombinationen & Konfluenz-Matrix -->
+        <div class="table-card" style="margin-bottom:24px;">
+          <div class="table-header-bar">
+            <div>
+              <span class="chart-title">Signal Combinations & Confluence Matrix</span>
+              <span class="section-subtitle">Statistical edge of setup combinations compared to individual signals (Uplift vs. Solo)</span>
+            </div>
+          </div>
+          <div class="data-table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Signal Combination</th>
+                  <th>Trades</th>
+                  <th>Win Rate</th>
+                  <th>Total P&L</th>
+                  <th>Expectancy (EV in R)</th>
+                  <th>Uplift vs. Solo</th>
+                </tr>
+              </thead>
+              <tbody id="analyticsSignalsTableBody">
+                <!-- Rendered dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Psychologie & Emotions-Performance Matrix -->
+        <div class="charts-grid-2" style="margin-bottom:24px;">
+          <div class="table-card">
+            <div class="table-header-bar">
+              <div>
+                <span class="chart-title">Pre-Trade Psychology</span>
+                <span class="section-subtitle">Performance by mindset before trade entry</span>
+              </div>
+            </div>
+            <div class="data-table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr><th>Emotion</th><th>Trades</th><th>Win Rate</th><th>Net P&L</th><th>Total R</th></tr>
+                </thead>
+                <tbody id="analyticsEmotionPreTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="table-card">
+            <div class="table-header-bar">
+              <div>
+                <span class="chart-title">In-Trade Psychology</span>
+                <span class="section-subtitle">Performance by mindset during trade</span>
+              </div>
+            </div>
+            <div class="data-table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr><th>Emotion</th><th>Trades</th><th>Win Rate</th><th>Net P&L</th><th>Total R</th></tr>
+                </thead>
+                <tbody id="analyticsEmotionDuringTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </main>
 
       <!-- ================= VIEW: PLAYBOOKS ================= -->
@@ -362,6 +481,102 @@
           </button>
         </div>
         <div id="mistakesListContainer" class="cards-grid"></div>
+      </main>
+
+      <!-- ================= VIEW: WEEKLY REVIEW ================= -->
+      <main id="view-review" class="view-container">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">Weekly Review</h2>
+            <span class="section-subtitle">Weekend reflection: trade discipline, performance, and psychological errors</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="Review.prevWeek()">◀ Previous Week</button>
+            <button class="btn btn-secondary btn-sm" onclick="Review.currentWeek()">Current Week</button>
+            <button class="btn btn-secondary btn-sm" onclick="Review.nextWeek()">Next Week ▶</button>
+            <span id="reviewWeekLabel" class="badge" style="background:#1e293b;color:#60a5fa;padding:6px 12px;font-size:13px;font-weight:600;">CW</span>
+          </div>
+        </div>
+
+        <!-- Weekly Summary Cards -->
+        <div class="metrics-grid" style="margin-bottom:24px;">
+          <div class="metric-card">
+            <span class="metric-label">Week P&L</span>
+            <span id="revNetPnl" class="metric-value color-green">0.00</span>
+            <span id="revTotalR" class="metric-sub">+0.00 R</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Win Rate</span>
+            <span id="revWinRate" class="metric-value color-blue">0.0%</span>
+            <span id="revWinLossCount" class="metric-sub">0W - 0L (0 BE)</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Total Trades</span>
+            <span id="revTotalTrades" class="metric-value">0</span>
+            <span id="revMissingR" class="metric-sub">0 without R-Multiple</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Longest Streak</span>
+            <span id="revStreaks" class="metric-value" style="font-size:18px;">W: 0 / L: 0</span>
+            <span class="metric-sub">Consecutive Wins / Losses</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Top Loss Emotion</span>
+            <span id="revLossEmotion" class="metric-value color-red" style="font-size:16px;">None</span>
+            <span class="metric-sub">Before losing trades</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Top Playbook</span>
+            <span id="revTopPlaybook" class="metric-value color-blue" style="font-size:16px;">None</span>
+            <span class="metric-sub">Most traded setup</span>
+          </div>
+        </div>
+
+        <!-- Best vs Worst Trade Comparison Grid -->
+        <div class="charts-grid-2" style="margin-bottom:24px;">
+          <!-- Best Trade Card -->
+          <div class="chart-card" id="revBestTradeCard">
+            <div class="chart-header">
+              <span class="chart-title" style="color:#10b981;">🏆 Best Trade of the Week</span>
+              <span id="revBestBadge" class="badge"></span>
+            </div>
+            <div id="revBestTradeContent" style="padding:14px 0;">
+              <div style="color:#9ca3af;font-size:13px;">No closed trades this week.</div>
+            </div>
+          </div>
+
+          <!-- Worst Trade Card -->
+          <div class="chart-card" id="revWorstTradeCard">
+            <div class="chart-header">
+              <span class="chart-title" style="color:#ef4444;">⚠️ Biggest Loss of the Week</span>
+              <span id="revWorstBadge" class="badge"></span>
+            </div>
+            <div id="revWorstTradeContent" style="padding:14px 0;">
+              <div style="color:#9ca3af;font-size:13px;">No closed trades this week.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Missed Trades of the Week Section -->
+        <div class="table-card" style="margin-bottom:24px;">
+          <div class="table-header-bar">
+            <div>
+              <span class="chart-title">Missed Trades of the Week (Missed Setups)</span>
+              <span class="section-subtitle">Setups analyzed but not executed or entered late</span>
+            </div>
+            <span id="revMissedCountBadge" class="badge badge-missed">0 Missed</span>
+          </div>
+          <div class="data-table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr><th>Date</th><th>Symbol</th><th>Direction</th><th>Setup</th><th>Planned R</th><th>Reason / Notes</th></tr>
+              </thead>
+              <tbody id="revMissedTableBody">
+                <tr><td colspan="6" style="text-align:center;color:#6b7280;padding:20px;">No missed trades this week.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </main>
 
       <!-- ================= VIEW: ACCOUNTS & SYNC ================= -->
@@ -569,6 +784,18 @@
           </div>
         </div>
 
+        <!-- Grouped Orders Section (shown when multiple open orders are merged) -->
+        <div id="tdGroupedOrdersCard" style="display:none;margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
+            <div>
+              <span class="form-label" style="margin:0;color:#818cf8;">Grouped Orders (Multiple TPs)</span>
+              <div id="tdGroupedSummary" style="font-size:11px;color:#6b7280;margin-top:2px;"></div>
+            </div>
+            <span class="badge badge-grouped" id="tdGroupedBadge">Grouped Trade</span>
+          </div>
+          <div id="tdGroupedOrdersList" style="font-size:12px;color:#d1d5db;"></div>
+        </div>
+
         <!-- Partial exit / scale-out section -->
         <div style="margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
@@ -673,8 +900,9 @@
       </div>
 
       <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="TradeDetail.close()">Close</button>
-        <button class="btn btn-primary" onclick="TradeDetail.saveChanges()">Save Changes</button>
+        <button type="button" class="btn btn-secondary" onclick="TradeDetail.close()">Close</button>
+        <button type="button" class="btn btn-secondary" onclick="TradeDetail.close(); Trades.openEditModal(TradeDetail.currentTradeId);" title="Open full trade editor">✏️ Edit Trade</button>
+        <button type="button" class="btn btn-primary" onclick="TradeDetail.saveChanges()">Save Changes</button>
       </div>
     </div>
   </div>
@@ -703,13 +931,20 @@
 
   <!-- ================= MODAL: ADD / EDIT TRADE ================= -->
   <div id="addTradeModal" class="modal-overlay">
-    <div class="modal-content">
+    <div class="modal-content modal-lg">
       <div class="modal-header">
-        <h2 id="tradeModalTitle" class="modal-title">Log New Trade</h2>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <h2 id="tradeModalTitle" class="modal-title">Log New Trade</h2>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;background:#0d131f;padding:4px 10px;border-radius:6px;border:1px solid #1e293b;">
+            <input type="checkbox" id="tfIsMissed" onchange="Trades.onMissedTradeToggle()">
+            <span style="color:#f59e0b;font-weight:600;">Missed Trade</span>
+          </label>
+        </div>
         <button class="modal-close" onclick="Trades.closeModal()">&times;</button>
       </div>
       <form id="tradeForm" onsubmit="Trades.saveTradeFromForm(event)">
-        <div class="modal-body">
+        <div class="modal-body" style="max-height:calc(85vh - 120px);overflow-y:auto;">
+          <!-- Core Trade Inputs Grid -->
           <div class="form-grid">
             <div class="form-group">
               <label class="form-label">Trading Account</label>
@@ -717,11 +952,11 @@
             </div>
             <div class="form-group">
               <label class="form-label">Symbol / Pair</label>
-              <input type="text" id="tfSymbol" class="form-input" placeholder="e.g. EURUSD, XAUUSD" required>
+              <input type="text" id="tfSymbol" class="form-input" placeholder="e.g. EURUSD, XAUUSD" required oninput="Trades.checkTwinTrades()">
             </div>
             <div class="form-group">
               <label class="form-label">Direction</label>
-              <select id="tfDirection" class="form-select" required>
+              <select id="tfDirection" class="form-select" required onchange="Trades.checkTwinTrades(); Trades.recalculateRMultiple();">
                 <option value="BUY">BUY / LONG</option>
                 <option value="SELL">SELL / SHORT</option>
               </select>
@@ -741,27 +976,27 @@
             </div>
             <div class="form-group">
               <label class="form-label">Volume (Lots)</label>
-              <input type="number" id="tfVolume" class="form-input" step="0.01" value="1.00" required>
+              <input type="number" id="tfVolume" class="form-input" step="0.01" value="1.00" required oninput="Trades.recalculateRMultiple()">
             </div>
             <div class="form-group">
               <label class="form-label">Open Price</label>
-              <input type="number" id="tfOpenPrice" class="form-input" step="any" required>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Close Price</label>
-              <input type="number" id="tfClosePrice" class="form-input" step="any">
+              <input type="number" id="tfOpenPrice" class="form-input" step="any" required oninput="Trades.recalculateRMultiple()">
             </div>
             <div class="form-group">
               <label class="form-label">Stop Loss</label>
-              <input type="number" id="tfStopLoss" class="form-input" step="any">
+              <input type="number" id="tfStopLoss" class="form-input" step="any" placeholder="SL Price" oninput="Trades.recalculateRMultiple()">
             </div>
             <div class="form-group">
               <label class="form-label">Take Profit</label>
-              <input type="number" id="tfTakeProfit" class="form-input" step="any">
+              <input type="number" id="tfTakeProfit" class="form-input" step="any" placeholder="TP Price" oninput="Trades.recalculateRMultiple()">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Close Price</label>
+              <input type="number" id="tfClosePrice" class="form-input" step="any" placeholder="Exit Price" oninput="Trades.recalculateRMultiple()">
             </div>
             <div class="form-group">
               <label class="form-label">Net P&L</label>
-              <input type="number" id="tfNetProfit" class="form-input" step="0.01" value="0.00" required>
+              <input type="number" id="tfNetProfit" class="form-input" step="0.01" value="0.00" required oninput="Trades.recalculateRMultiple()">
             </div>
             <div class="form-group">
               <label class="form-label">Commission</label>
@@ -780,17 +1015,123 @@
               <input type="datetime-local" id="tfCloseTime" class="form-input">
             </div>
             <div class="form-group">
-              <label class="form-label">Playbook / Setup</label>
-              <select id="tfSetup" class="form-select"></select>
+              <label class="form-label">Timeframe</label>
+              <select id="tfTimeframe" class="form-select" onchange="Trades.checkTwinTrades()">
+                <option value="M1">M1</option>
+                <option value="M5">M5</option>
+                <option value="M15" selected>M15</option>
+                <option value="H1">H1</option>
+                <option value="H4">H4</option>
+                <option value="D1">D1</option>
+              </select>
             </div>
             <div class="form-group">
-              <label class="form-label">Mistake</label>
-              <select id="tfMistake" class="form-select"></select>
+              <label class="form-label">Playbook / Setup</label>
+              <select id="tfSetup" class="form-select" onchange="Trades.checkTwinTrades()"></select>
             </div>
           </div>
-          <div class="form-group">
-            <label class="form-label">Notes & Observations</label>
-            <textarea id="tfNotes" class="form-textarea" placeholder="Trade entry rationale, execution commentary..."></textarea>
+
+          <!-- Risk & R-Multiple Info Section -->
+          <div style="margin-top:14px;background:#0d131f;padding:12px;border-radius:8px;border:1px solid #1a2233;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <span class="form-label" style="margin:0;font-weight:700;">Risk & R-Multiple</span>
+              <span style="font-size:11px;color:#9ca3af;">Auto-calculated from Entry, Stop Loss, Take Profit, and Close Price</span>
+            </div>
+            <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));">
+              <div class="form-group">
+                <label class="form-label">Risk Distance</label>
+                <div id="tfRiskDistDisplay" style="font-size:13px;font-weight:600;color:#9ca3af;padding:7px 0;">—</div>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Target R:R (TP/SL)</label>
+                <div id="tfTargetRRDisplay" style="font-size:13px;font-weight:700;color:#10b981;padding:7px 0;">—</div>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Realized R-Multiple</label>
+                <div style="display:flex;align-items:center;gap:6px;">
+                  <input type="number" id="tfRMultiple" class="form-input" step="0.01" placeholder="Auto (+2.40)">
+                  <span id="tfRMultipleCalcBadge" class="badge" style="background:#3b82f622;color:#60a5fa;white-space:nowrap;">Auto</span>
+                </div>
+              </div>
+            </div>
+            <!-- Hidden inputs for backward-compatible risk fields -->
+            <input type="hidden" id="tfInitialRisk" value="">
+            <input type="hidden" id="tfRiskMode" value="CURRENCY">
+          </div>
+
+          <!-- Live Twin Trades Box -->
+          <div id="tfTwinTradesBox" class="twin-trades-box" style="display:none;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <span style="font-size:12px;font-weight:700;color:#60a5fa;" id="tfTwinTradesTitle">🔗 Twin Trades (Similar Historical Trades)</span>
+              <span id="tfTwinTradesStats" style="font-size:11px;color:#9ca3af;"></span>
+            </div>
+            <div id="tfTwinTradesList" style="font-size:11px;color:#d1d5db;display:flex;flex-wrap:wrap;gap:8px;"></div>
+          </div>
+
+          <!-- Setup Signals & Confluence Tags -->
+          <div style="margin-top:14px;">
+            <label class="form-label">Setup Signals & Confluence (comma-separated)</label>
+            <input type="text" id="tfSignals" class="form-input" placeholder="e.g. FVG, Order Block, BOS, Liquidity Sweep" oninput="Trades.checkTwinTrades()">
+            <div class="chip-group">
+              <span class="chip-btn" onclick="Trades.toggleSignalTag('FVG')">+ FVG</span>
+              <span class="chip-btn" onclick="Trades.toggleSignalTag('Order Block')">+ Order Block</span>
+              <span class="chip-btn" onclick="Trades.toggleSignalTag('BOS')">+ BOS</span>
+              <span class="chip-btn" onclick="Trades.toggleSignalTag('Liquidity Sweep')">+ Liquidity Sweep</span>
+              <span class="chip-btn" onclick="Trades.toggleSignalTag('Trendline')">+ Trendline</span>
+              <span class="chip-btn" onclick="Trades.toggleSignalTag('Support/Resistance')">+ Support/Resistance</span>
+            </div>
+          </div>
+
+          <!-- 2-Phase Emotions (Multi-Select) -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px;">
+            <div class="form-group">
+              <label class="form-label">Emotion BEFORE Trade (Pre-Trade)</label>
+              <input type="hidden" id="tfEmotionPre" value="">
+              <div id="tfEmotionPreGroup" class="chip-group">
+                <span class="chip-btn" data-val="Calm" onclick="Trades.togglePreEmotion(this, 'Calm')">Calm</span>
+                <span class="chip-btn" data-val="Focused" onclick="Trades.togglePreEmotion(this, 'Focused')">Focused</span>
+                <span class="chip-btn" data-val="Confident" onclick="Trades.togglePreEmotion(this, 'Confident')">Confident</span>
+                <span class="chip-btn" data-val="FOMO" onclick="Trades.togglePreEmotion(this, 'FOMO')">FOMO</span>
+                <span class="chip-btn" data-val="Fearful" onclick="Trades.togglePreEmotion(this, 'Fearful')">Fearful</span>
+                <span class="chip-btn" data-val="Greedy" onclick="Trades.togglePreEmotion(this, 'Greedy')">Greedy</span>
+                <span class="chip-btn" data-val="Impatient" onclick="Trades.togglePreEmotion(this, 'Impatient')">Impatient</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Emotion DURING Trade (In-Trade)</label>
+              <input type="hidden" id="tfEmotionDuring" value="">
+              <div id="tfEmotionDuringGroup" class="chip-group">
+                <span class="chip-btn" data-val="Patient" onclick="Trades.toggleDuringEmotion(this, 'Patient')">Patient</span>
+                <span class="chip-btn" data-val="Relaxed" onclick="Trades.toggleDuringEmotion(this, 'Relaxed')">Relaxed</span>
+                <span class="chip-btn" data-val="Under Pressure" onclick="Trades.toggleDuringEmotion(this, 'Under Pressure')">Under Pressure</span>
+                <span class="chip-btn" data-val="Frustrated" onclick="Trades.toggleDuringEmotion(this, 'Frustrated')">Frustrated</span>
+                <span class="chip-btn" data-val="Revenge Trading" onclick="Trades.toggleDuringEmotion(this, 'Revenge Trading')">Revenge Trading</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Structured 3-Part Notes -->
+          <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-top:14px;">
+            <div class="form-group">
+              <label class="form-label">1. Pre-Trade Thesis (Why this entry?)</label>
+              <textarea id="tfPreTradeNotes" class="form-textarea" style="height:60px;" placeholder="Setup, HTF bias, catalyst..."></textarea>
+            </div>
+            <div class="form-group">
+              <label class="form-label">2. Post-Trade Review (Execution & plan adherence)</label>
+              <textarea id="tfPostTradeNotes" class="form-textarea" style="height:60px;" placeholder="Execution, exit timing, plan followed?"></textarea>
+            </div>
+            <div class="form-group">
+              <label class="form-label">3. Key Takeaway (Lessons learned)</label>
+              <textarea id="tfKeyLearnings" class="form-textarea" style="height:60px;" placeholder="Key takeaway and lessons from this trade..."></textarea>
+            </div>
+          </div>
+
+          <!-- Hidden fallback for tfNotes to prevent any null reference errors -->
+          <input type="hidden" id="tfNotes" value="">
+
+          <div class="form-group" style="margin-top:10px;">
+            <label class="form-label">Mistake / Rule Violation</label>
+            <select id="tfMistake" class="form-select"></select>
           </div>
         </div>
         <div class="modal-footer">
@@ -931,6 +1272,7 @@
   <script src="/static/js/analytics.js"></script>
   <script src="/static/js/playbooks.js"></script>
   <script src="/static/js/accounts.js"></script>
+  <script src="/static/js/review.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

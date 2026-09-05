@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional
 import sqlite3
 from server.database import get_connection
 from server.models import MQLSyncPayload
+from server.analytics import compute_r_multiple
 
 logger = logging.getLogger(__name__)
 
@@ -64,15 +65,18 @@ def _process_ctrader_grouped_trade(cursor, account_id: int, trade, now_str: str)
     if existing:
         trade_id = existing["id"]
         original_volume = float(existing["volume"] or 0.0)
+        clean_sl = trade.stop_loss if trade.stop_loss and trade.stop_loss > 0 else None
+        clean_tp = trade.take_profit if trade.take_profit and trade.take_profit > 0 else None
         cursor.execute("""
             UPDATE trades
             SET symbol = ?, direction = ?, open_time = ?, open_price = ?,
                 stop_loss = COALESCE(?, stop_loss), take_profit = COALESCE(?, take_profit),
-                notes = ?, updated_at = ?
+                notes = CASE WHEN notes IS NOT NULL AND notes != '' THEN notes ELSE ? END,
+                updated_at = ?
             WHERE id = ?;
         """, (
             trade.symbol.upper(), "BUY" if trade.type == 0 else "SELL",
-            trade.open_time, trade.open_price, trade.stop_loss, trade.take_profit,
+            trade.open_time, trade.open_price, clean_sl, clean_tp,
             trade.comment or "", now_str, trade_id
         ))
         updated = 1
@@ -102,7 +106,9 @@ def _process_ctrader_grouped_trade(cursor, account_id: int, trade, now_str: str)
         # top-level trade (ctrader-deal-*). Migrate those rows into the new
         # partial-close table when the grouped payload arrives.
         cursor.execute("""
-            SELECT id, setup_id, mistake_id, notes, emotions, rating, tags, timeframe
+            SELECT id, setup_id, mistake_id, notes, emotions, rating, tags, timeframe,
+                   pre_trade_notes, post_trade_notes, key_learnings, emotion_pre, emotion_during,
+                   signals, initial_risk, risk_mode, is_missed
             FROM trades
             WHERE account_id = ? AND ticket = ? AND id != ?;
         """, (account_id, partial_ticket, trade_id))
@@ -136,12 +142,27 @@ def _process_ctrader_grouped_trade(cursor, account_id: int, trade, now_str: str)
                 emotions = CASE WHEN emotions = 'Disciplined' THEN ? ELSE emotions END,
                 rating = CASE WHEN rating = 5 THEN ? ELSE rating END,
                 tags = CASE WHEN tags = '' THEN ? ELSE tags END,
-                timeframe = CASE WHEN timeframe = 'M15' THEN ? ELSE timeframe END
+                timeframe = CASE WHEN timeframe = 'M15' THEN ? ELSE timeframe END,
+                pre_trade_notes = CASE WHEN pre_trade_notes = '' THEN ? ELSE pre_trade_notes END,
+                post_trade_notes = CASE WHEN post_trade_notes = '' THEN ? ELSE post_trade_notes END,
+                key_learnings = CASE WHEN key_learnings = '' THEN ? ELSE key_learnings END,
+                emotion_pre = CASE WHEN emotion_pre = '' THEN ? ELSE emotion_pre END,
+                emotion_during = CASE WHEN emotion_during = '' THEN ? ELSE emotion_during END,
+                signals = CASE WHEN signals = '' THEN ? ELSE signals END,
+                initial_risk = COALESCE(initial_risk, ?),
+                risk_mode = CASE WHEN risk_mode = 'CURRENCY' THEN ? ELSE risk_mode END,
+                is_missed = CASE WHEN is_missed = 0 THEN ? ELSE is_missed END
             WHERE id = ?;
         """, (
             legacy["setup_id"], legacy["mistake_id"], legacy["notes"] or "",
             legacy["emotions"] or "Disciplined", legacy["rating"] or 5,
-            legacy["tags"] or "", legacy["timeframe"] or "M15", trade_id
+            legacy["tags"] or "", legacy["timeframe"] or "M15",
+            legacy["pre_trade_notes"] or "", legacy["post_trade_notes"] or "",
+            legacy["key_learnings"] or "", legacy["emotion_pre"] or "",
+            legacy["emotion_during"] or "", legacy["signals"] or "",
+            legacy["initial_risk"], legacy["risk_mode"] or "CURRENCY",
+            legacy["is_missed"] or 0,
+            trade_id
         ))
         cursor.executemany(
             "DELETE FROM trades WHERE id = ?;",
@@ -172,14 +193,32 @@ def _process_ctrader_grouped_trade(cursor, account_id: int, trade, now_str: str)
         status = "OPEN"
 
     cursor.execute("""
+        SELECT direction, open_price, stop_loss, initial_risk, r_multiple
+        FROM trades WHERE id = ?;
+    """, (trade_id,))
+    p_info = cursor.fetchone()
+    calc_r = p_info["r_multiple"] if p_info and p_info["r_multiple"] is not None else compute_r_multiple(
+        direction=p_info["direction"] if p_info else "BUY",
+        open_price=p_info["open_price"] if p_info else 0.0,
+        stop_loss=p_info["stop_loss"] if p_info else None,
+        close_price=weighted_close_price,
+        net_profit=total_net,
+        initial_risk=p_info["initial_risk"] if p_info else None,
+        partial_closes=[dict(p) for p in partials],
+        volume=parent_volume
+    )
+
+    cursor.execute("""
         UPDATE trades
         SET volume = ?, close_time = ?, close_price = ?, commission = ?, swap = ?,
-            gross_profit = ?, net_profit = ?, status = ?, updated_at = ?
+            gross_profit = ?, net_profit = ?, status = ?,
+            r_multiple = COALESCE(r_multiple, ?),
+            updated_at = ?
         WHERE id = ?;
     """, (
         parent_volume, last_close_time, weighted_close_price,
         total_commission, total_swap, total_gross, total_net, status,
-        now_str, trade_id
+        calc_r, now_str, trade_id
     ))
     return trade_id, updated, _save_candles(cursor, trade.symbol, trade.candles)
 
@@ -327,34 +366,64 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
             gross_pnl = pnl - (trade.commission or 0.0) - (trade.swap or 0.0)
             status = "WIN" if pnl > 0.001 else ("LOSS" if pnl < -0.001 else "BE")
 
+            clean_sl = trade.stop_loss if trade.stop_loss and trade.stop_loss > 0 else None
+            clean_tp = trade.take_profit if trade.take_profit and trade.take_profit > 0 else None
+
             # Check if trade already exists
             cursor.execute("SELECT id FROM trades WHERE account_id = ? AND ticket = ?;", (account_id, trade.ticket))
             existing = cursor.fetchone()
 
             if not existing and trade.order_id:
                 cursor.execute("""
-                    SELECT id FROM trades
+                    SELECT id, open_price, stop_loss, initial_risk, r_multiple, direction FROM trades
                     WHERE account_id = ? AND status = 'PENDING'
                       AND (order_id = ? OR ticket = ? OR ticket = ? OR ticket = ?);
                 """, (account_id, str(trade.order_id), f"ctrader-order-{trade.order_id}", f"mt5-order-{trade.order_id}", str(trade.order_id)))
                 pending_match = cursor.fetchone()
                 if pending_match:
+                    resolved_sl = clean_sl or (pending_match["stop_loss"] if pending_match["stop_loss"] and pending_match["stop_loss"] > 0 else None)
+                    resolved_op = trade.open_price or pending_match["open_price"]
+                    calc_r = pending_match["r_multiple"] if pending_match["r_multiple"] is not None else compute_r_multiple(
+                        direction=direction,
+                        open_price=resolved_op,
+                        stop_loss=resolved_sl,
+                        close_price=trade.close_price,
+                        net_profit=pnl,
+                        initial_risk=pending_match["initial_risk"],
+                        volume=trade.lots
+                    )
                     cursor.execute("""
                         UPDATE trades
                         SET ticket = ?, order_id = ?, symbol = ?, direction = ?, volume = ?, open_time = ?, close_time = ?,
                             open_price = ?, close_price = ?, stop_loss = COALESCE(?, stop_loss),
                             take_profit = COALESCE(?, take_profit), commission = ?, swap = ?,
-                            gross_profit = ?, net_profit = ?, status = ?, updated_at = ?
+                            gross_profit = ?, net_profit = ?, status = ?,
+                            r_multiple = COALESCE(r_multiple, ?),
+                            updated_at = ?
                         WHERE id = ?;
                     """, (
                         trade.ticket, str(trade.order_id), trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.close_time,
-                        trade.open_price, trade.close_price, trade.stop_loss, trade.take_profit,
-                        trade.commission or 0.0, trade.swap or 0.0, gross_pnl, pnl, status, now_str, pending_match["id"]
+                        trade.open_price, trade.close_price, clean_sl, clean_tp,
+                        trade.commission or 0.0, trade.swap or 0.0, gross_pnl, pnl, status,
+                        calc_r, now_str, pending_match["id"]
                     ))
                     existing = pending_match
                     updated_trades += 1
 
             if existing:
+                cursor.execute("SELECT direction, open_price, stop_loss, initial_risk, r_multiple FROM trades WHERE id = ?;", (existing["id"],))
+                t_info = cursor.fetchone()
+                resolved_sl = clean_sl or (t_info["stop_loss"] if t_info and t_info["stop_loss"] and t_info["stop_loss"] > 0 else None)
+                resolved_op = trade.open_price or (t_info["open_price"] if t_info else 0.0)
+                calc_r = t_info["r_multiple"] if t_info and t_info["r_multiple"] is not None else compute_r_multiple(
+                    direction=direction,
+                    open_price=resolved_op,
+                    stop_loss=resolved_sl,
+                    close_price=trade.close_price,
+                    net_profit=pnl,
+                    initial_risk=t_info["initial_risk"] if t_info else None,
+                    volume=trade.lots
+                )
                 cursor.execute("""
                     UPDATE trades
                     SET close_time = ?,
@@ -366,31 +435,41 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                         gross_profit = ?,
                         net_profit = ?,
                         status = ?,
+                        r_multiple = COALESCE(r_multiple, ?),
                         updated_at = ?
                     WHERE id = ?;
                 """, (
                     trade.close_time,
                     trade.close_price,
-                    trade.stop_loss,
-                    trade.take_profit,
+                    clean_sl,
+                    clean_tp,
                     trade.commission or 0.0,
                     trade.swap or 0.0,
                     gross_pnl,
                     pnl,
                     status,
+                    calc_r,
                     now_str,
                     existing["id"]
                 ))
                 updated_trades += 1
             else:
+                calc_r = compute_r_multiple(
+                    direction=direction,
+                    open_price=trade.open_price,
+                    stop_loss=clean_sl,
+                    close_price=trade.close_price,
+                    net_profit=pnl,
+                    volume=trade.lots
+                )
                 cursor.execute("""
                     INSERT INTO trades (
                         account_id, ticket, symbol, direction, volume,
                         open_time, close_time, open_price, close_price,
                         stop_loss, take_profit, commission, swap,
                         gross_profit, net_profit, status,
-                        notes, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        notes, r_multiple, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """, (
                     account_id,
                     trade.ticket,
@@ -401,14 +480,15 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     trade.close_time,
                     trade.open_price,
                     trade.close_price,
-                    trade.stop_loss,
-                    trade.take_profit,
+                    clean_sl,
+                    clean_tp,
                     trade.commission or 0.0,
                     trade.swap or 0.0,
                     gross_pnl,
                     pnl,
                     status,
                     trade.comment or "",
+                    calc_r,
                     now_str,
                     now_str
                 ))
@@ -422,6 +502,8 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
         active_ctrader_tickets = set()
         for trade in (payload.open_trades or []):
             direction = "BUY" if trade.type == 0 else "SELL"
+            clean_sl = trade.stop_loss if trade.stop_loss and trade.stop_loss > 0 else None
+            clean_tp = trade.take_profit if trade.take_profit and trade.take_profit > 0 else None
             if payload.source == "ctrader-cbot":
                 active_ctrader_tickets.add(trade.ticket)
 
@@ -442,11 +524,14 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     cursor.execute("""
                         UPDATE trades
                         SET symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?,
-                            stop_loss = ?, take_profit = ?, status = 'OPEN', notes = ?, updated_at = ?
+                            stop_loss = COALESCE(?, stop_loss), take_profit = COALESCE(?, take_profit),
+                            status = 'OPEN',
+                            notes = CASE WHEN notes IS NOT NULL AND notes != '' THEN notes ELSE ? END,
+                            updated_at = ?
                         WHERE id = ?;
                     """, (
                         trade.symbol.upper(), direction, total_volume, trade.open_time,
-                        trade.open_price, trade.stop_loss, trade.take_profit,
+                        trade.open_price, clean_sl, clean_tp,
                         trade.comment or "", now_str, grouped_position["id"]
                     ))
                     updated_trades += 1
@@ -471,25 +556,28 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                         WHERE id = ?;
                     """, (
                         trade.ticket, str(trade.order_id), trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_price,
-                        trade.stop_loss, trade.take_profit, trade.commission or 0.0, trade.swap or 0.0,
+                        clean_sl, clean_tp, trade.commission or 0.0, trade.swap or 0.0,
                         (trade.profit or 0.0) - (trade.commission or 0.0) - (trade.swap or 0.0),
                         trade.profit or 0.0, now_str, pending_match["id"]
                     ))
                     updated_trades += 1
                     continue
 
+            calc_init_risk = abs(trade.open_price - clean_sl) if (clean_sl and trade.open_price and clean_sl != trade.open_price) else None
+
             if existing:
                 cursor.execute("""
                     UPDATE trades
                     SET symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?,
-                        stop_loss = ?, take_profit = ?, commission = ?, swap = ?,
-                        gross_profit = ?, net_profit = ?, status = 'OPEN',
+                        stop_loss = COALESCE(?, stop_loss), take_profit = COALESCE(?, take_profit),
+                        initial_risk = COALESCE(initial_risk, ?),
+                        commission = ?, swap = ?, gross_profit = ?, net_profit = ?, status = 'OPEN',
                         notes = CASE WHEN notes IS NOT NULL AND notes != '' THEN notes ELSE ? END,
                         updated_at = ?
                     WHERE id = ?;
                 """, (
                     trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_price,
-                    trade.stop_loss, trade.take_profit, trade.commission or 0.0, trade.swap or 0.0,
+                    clean_sl, clean_tp, calc_init_risk, trade.commission or 0.0, trade.swap or 0.0,
                     (trade.profit or 0.0) - (trade.commission or 0.0) - (trade.swap or 0.0),
                     trade.profit or 0.0, trade.comment or "", now_str, existing["id"]
                 ))
@@ -498,10 +586,10 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                 cursor.execute("""
                     INSERT INTO trades (
                         account_id, ticket, symbol, direction, volume,
-                        open_time, open_price, stop_loss, take_profit,
+                        open_time, open_price, stop_loss, take_profit, initial_risk,
                         commission, swap, net_profit, status,
                         notes, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?);
                 """, (
                     account_id,
                     trade.ticket,
@@ -512,6 +600,7 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     trade.open_price,
                     trade.stop_loss,
                     trade.take_profit,
+                    calc_init_risk,
                     trade.commission or 0.0,
                     trade.swap or 0.0,
                     trade.profit or 0.0,

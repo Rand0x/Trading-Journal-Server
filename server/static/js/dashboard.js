@@ -6,6 +6,7 @@
 const Dashboard = {
   currentCalendarDate: new Date(),
   dashboardData: null,
+  calendarMode: 'currency', // 'currency', 'r', 'pct'
 
   async load() {
     try {
@@ -20,6 +21,25 @@ const Dashboard = {
     } catch (err) {
       console.error('Failed to load dashboard:', err);
       App.showToast(`Error loading dashboard: ${err.message}`, 'error');
+    }
+  },
+
+  setCalendarMode(mode) {
+    this.calendarMode = mode;
+    ['Currency', 'R', 'Pct'].forEach(m => {
+      const btn = document.getElementById(`calMode${m}`);
+      if (btn) {
+        if (m.toLowerCase() === mode.toLowerCase()) {
+          btn.classList.remove('btn-secondary');
+          btn.classList.add('btn-primary');
+        } else {
+          btn.classList.remove('btn-primary');
+          btn.classList.add('btn-secondary');
+        }
+      }
+    });
+    if (this.dashboardData) {
+      this.renderCalendar(this.dashboardData.calendar, this.currentCurrency);
     }
   },
 
@@ -47,6 +67,34 @@ const Dashboard = {
     document.getElementById('dashSharpe').textContent = (m.sharpe_ratio || 0).toFixed(2);
     document.getElementById('dashDrawdown').textContent = `-${App.formatMoney(m.max_drawdown_amount || 0, cur)} (${(m.max_drawdown_pct || 0).toFixed(1)}%)`;
     document.getElementById('dashStreaks').textContent = `W: ${m.max_win_streak || 0} / L: ${m.max_loss_streak || 0}`;
+
+    // Current Drawdown & Current Streak
+    const curDdEl = document.getElementById('dashCurrentDrawdown');
+    if (curDdEl) {
+      const ddAmt = m.current_drawdown_amount || 0;
+      const ddPct = m.current_drawdown_pct || 0;
+      curDdEl.textContent = `-${App.formatMoney(ddAmt, cur)} (${ddPct.toFixed(1)}%)`;
+    }
+    const curDdrEl = document.getElementById('dashCurrentDrawdownR');
+    if (curDdrEl) {
+      const ddR = m.current_drawdown_r || 0;
+      curDdrEl.textContent = `${ddR > 0 ? '-' : ''}${Math.abs(ddR).toFixed(2)} R from ATH`;
+    }
+    const curStreakEl = document.getElementById('dashCurrentStreak');
+    if (curStreakEl) {
+      const stType = m.current_streak_type || 'NONE';
+      const stCount = m.current_streak_count || 0;
+      if (stType === 'WIN') {
+        curStreakEl.textContent = `🔥 ${stCount} Win${stCount > 1 ? 's' : ''}`;
+        curStreakEl.className = 'metric-value color-green';
+      } else if (stType === 'LOSS') {
+        curStreakEl.textContent = `❄️ ${stCount} Loss${stCount > 1 ? 'es' : ''}`;
+        curStreakEl.className = 'metric-value color-red';
+      } else {
+        curStreakEl.textContent = 'None';
+        curStreakEl.className = 'metric-value';
+      }
+    }
   },
 
   renderCalendar(calendarData = {}, currency) {
@@ -77,6 +125,13 @@ const Dashboard = {
       grid.appendChild(card);
     }
 
+    let monthPnl = 0;
+    let monthR = 0;
+    let monthWins = 0;
+    let monthLosses = 0;
+    let monthBE = 0;
+    let monthPct = 0;
+
     // Fill current month days
     for (let day = 1; day <= daysInMonth; day++) {
       const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -88,15 +143,37 @@ const Dashboard = {
       let tradeCountBadge = '';
 
       if (dayData && dayData.trades_count > 0) {
-        const pnl = dayData.net_profit;
+        const pnl = dayData.net_profit || 0;
+        const rVal = dayData.r_multiple || 0;
+        const pctVal = dayData.pct_return || 0;
+
+        monthPnl += pnl;
+        monthR += rVal;
+        monthWins += dayData.wins !== undefined ? dayData.wins : (dayData.winning_trades || 0);
+        monthLosses += dayData.losses !== undefined ? dayData.losses : (dayData.losing_trades || 0);
+        monthBE += dayData.breakevens !== undefined ? dayData.breakevens : (dayData.breakeven_trades || 0);
+        monthPct += pctVal;
+
         if (pnl > 0.01) {
           statusClass = 'profit';
-          pnlText = `<div class="day-pnl color-green">${App.formatMoney(pnl, cur, { showSign: true })}</div>`;
         } else if (pnl < -0.01) {
           statusClass = 'loss';
-          pnlText = `<div class="day-pnl color-red">${App.formatMoney(pnl, cur)}</div>`;
+        }
+
+        if (this.calendarMode === 'r') {
+          const rSign = rVal > 0 ? '+' : '';
+          pnlText = `<div class="day-pnl ${rVal >= 0 ? 'color-green' : 'color-red'}">${rSign}${rVal.toFixed(2)} R</div>`;
+        } else if (this.calendarMode === 'pct') {
+          const pctSign = pctVal > 0 ? '+' : '';
+          pnlText = `<div class="day-pnl ${pctVal >= 0 ? 'color-green' : 'color-red'}">${pctSign}${pctVal.toFixed(2)}%</div>`;
         } else {
-          pnlText = `<div class="day-pnl color-muted">${App.formatMoney(0, cur)}</div>`;
+          if (pnl > 0.01) {
+            pnlText = `<div class="day-pnl color-green">${App.formatMoney(pnl, cur, { showSign: true })}</div>`;
+          } else if (pnl < -0.01) {
+            pnlText = `<div class="day-pnl color-red">${App.formatMoney(pnl, cur)}</div>`;
+          } else {
+            pnlText = `<div class="day-pnl color-muted">${App.formatMoney(0, cur)}</div>`;
+          }
         }
         tradeCountBadge = `<span class="day-badge">${dayData.trades_count} tr</span>`;
       }
@@ -118,6 +195,29 @@ const Dashboard = {
       }
 
       grid.appendChild(card);
+    }
+
+    // Render Month Summary
+    const sumPnlEl = document.getElementById('calSummaryPnl');
+    if (sumPnlEl) {
+      sumPnlEl.textContent = App.formatMoney(monthPnl, cur, { showSign: true });
+      sumPnlEl.className = monthPnl >= 0 ? 'color-green' : 'color-red';
+    }
+    const sumREl = document.getElementById('calSummaryR');
+    if (sumREl) {
+      const sign = monthR > 0 ? '+' : '';
+      sumREl.textContent = `${sign}${monthR.toFixed(2)} R`;
+      sumREl.style.color = monthR >= 0 ? '#60a5fa' : '#ef4444';
+    }
+    const sumWblEl = document.getElementById('calSummaryWBL');
+    if (sumWblEl) {
+      sumWblEl.textContent = `${monthWins}W · ${monthBE}BE · ${monthLosses}L`;
+    }
+    const sumPctEl = document.getElementById('calSummaryPct');
+    if (sumPctEl) {
+      const pSign = monthPct > 0 ? '+' : '';
+      sumPctEl.textContent = `${pSign}${monthPct.toFixed(2)}%`;
+      sumPctEl.style.color = monthPct >= 0 ? '#10b981' : '#ef4444';
     }
   },
 

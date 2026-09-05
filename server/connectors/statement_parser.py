@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Tuple, Optional
 from server.database import get_connection
+from server.analytics import compute_r_multiple
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,17 @@ def parse_and_import_statement(file_content: str, filename: str, account_id: int
             direction = t.get("direction", "BUY").upper()
             net_profit = float(t.get("net_profit") or 0.0)
             status = "WIN" if net_profit > 0.001 else ("LOSS" if net_profit < -0.001 else "BE")
+            sl_val = float(t.get("stop_loss") or 0.0) if t.get("stop_loss") else None
+            tp_val = float(t.get("take_profit") or 0.0) if t.get("take_profit") else None
+            open_p = float(t.get("open_price") or 0.0)
+            close_p = float(t.get("close_price") or 0.0)
+            calc_r = compute_r_multiple(
+                direction=direction,
+                open_price=open_p,
+                stop_loss=sl_val,
+                close_price=close_p,
+                net_profit=net_profit
+            )
 
             try:
                 cursor.execute("""
@@ -79,9 +91,9 @@ def parse_and_import_statement(file_content: str, filename: str, account_id: int
                         account_id, ticket, symbol, direction, volume,
                         open_time, close_time, open_price, close_price,
                         stop_loss, take_profit, commission, swap,
-                        gross_profit, net_profit, status, notes,
+                        gross_profit, net_profit, status, r_multiple, notes,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """, (
                     account_id,
                     ticket,
@@ -90,15 +102,16 @@ def parse_and_import_statement(file_content: str, filename: str, account_id: int
                     float(t.get("volume") or 0.1),
                     t.get("open_time") or now_str,
                     t.get("close_time") or now_str,
-                    float(t.get("open_price") or 0.0),
-                    float(t.get("close_price") or 0.0),
-                    float(t.get("stop_loss") or 0.0) if t.get("stop_loss") else None,
-                    float(t.get("take_profit") or 0.0) if t.get("take_profit") else None,
+                    open_p,
+                    close_p,
+                    sl_val,
+                    tp_val,
                     float(t.get("commission") or 0.0),
                     float(t.get("swap") or 0.0),
                     float(t.get("gross_profit") or net_profit),
                     net_profit,
                     status,
+                    calc_r,
                     t.get("notes") or f"Imported from {filename}",
                     now_str,
                     now_str

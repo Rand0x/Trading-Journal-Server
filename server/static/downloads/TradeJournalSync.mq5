@@ -108,9 +108,10 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
    if(trans.type == TRADE_TRANSACTION_DEAL_ADD ||
       trans.type == TRADE_TRANSACTION_ORDER_ADD ||
       trans.type == TRADE_TRANSACTION_ORDER_DELETE ||
-      trans.type == TRADE_TRANSACTION_ORDER_UPDATE)
+      trans.type == TRADE_TRANSACTION_ORDER_UPDATE ||
+      trans.type == TRADE_TRANSACTION_POSITION)
    {
-      Print("Trade/Order transaction detected! Triggering instant sync...");
+      Print("Trade/Order/Position transaction detected! Triggering instant sync...");
       SyncToServer();
    }
 }
