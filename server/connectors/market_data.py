@@ -436,7 +436,12 @@ def _extract_all_take_profits(trade: Any, cursor=None) -> List[float]:
                 if abs(rel_price - open_price) <= max(0.0005 * open_price, 0.0001):
                     rel_ts = int(_parse_dt(rel.get("open_time") or "").timestamp())
                     same_open_pending = (trade_dict.get("status") in ("OPEN", "PENDING") and rel.get("status") in ("OPEN", "PENDING"))
-                    if same_open_pending or abs(rel_ts - trade_open_ts) <= 900:
+                    same_cancelled = (trade_dict.get("status") == "CANCELLED" and rel.get("status") == "CANCELLED")
+                    if same_open_pending or same_cancelled or (
+                        trade_dict.get("status") not in ("OPEN", "PENDING", "CANCELLED")
+                        and rel.get("status") not in ("OPEN", "PENDING", "CANCELLED")
+                        and abs(rel_ts - trade_open_ts) <= 900
+                    ):
                         if rel.get("take_profit") and float(rel["take_profit"]) > 0:
                             val = round(float(rel["take_profit"]), 5)
                             if 0.05 * open_price <= val <= 20 * open_price:

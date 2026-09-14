@@ -369,16 +369,25 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
             clean_sl = trade.stop_loss if trade.stop_loss and trade.stop_loss > 0 else None
             clean_tp = trade.take_profit if trade.take_profit and trade.take_profit > 0 else None
 
-            # Check if trade already exists
-            cursor.execute("SELECT id FROM trades WHERE account_id = ? AND ticket = ?;", (account_id, trade.ticket))
+            # Check if trade already exists by ticket or position_id or order_id
+            match_tickets = [trade.ticket]
+            if trade.position_id and str(trade.position_id) != trade.ticket:
+                match_tickets.append(str(trade.position_id))
+            if trade.order_id and str(trade.order_id) not in match_tickets:
+                match_tickets.append(str(trade.order_id))
+
+            ticket_placeholders = ", ".join("?" for _ in match_tickets)
+            cursor.execute(f"SELECT id, ticket, order_id FROM trades WHERE account_id = ? AND (ticket IN ({ticket_placeholders}) OR order_id IN ({ticket_placeholders}));", (account_id, *match_tickets, *match_tickets))
             existing = cursor.fetchone()
 
-            if not existing and trade.order_id:
-                cursor.execute("""
-                    SELECT id, open_price, stop_loss, initial_risk, r_multiple, direction FROM trades
+            if not existing and (trade.order_id or trade.position_id):
+                alt_ids = [v for v in [str(trade.order_id or ""), str(trade.position_id or "")] if v]
+                alt_placeholders = ", ".join("?" for _ in alt_ids)
+                cursor.execute(f"""
+                    SELECT id, ticket, order_id, open_price, stop_loss, initial_risk, r_multiple, direction FROM trades
                     WHERE account_id = ? AND status = 'PENDING'
-                      AND (order_id = ? OR ticket = ? OR ticket = ? OR ticket = ?);
-                """, (account_id, str(trade.order_id), f"ctrader-order-{trade.order_id}", f"mt5-order-{trade.order_id}", str(trade.order_id)))
+                      AND (order_id IN ({alt_placeholders}) OR ticket IN ({alt_placeholders}));
+                """, (account_id, *alt_ids, *alt_ids))
                 pending_match = cursor.fetchone()
                 if pending_match:
                     resolved_sl = clean_sl or (pending_match["stop_loss"] if pending_match["stop_loss"] and pending_match["stop_loss"] > 0 else None)
@@ -402,13 +411,31 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                             updated_at = ?
                         WHERE id = ?;
                     """, (
-                        trade.ticket, str(trade.order_id), trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.close_time,
+                        trade.ticket, str(trade.order_id or ""), trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.close_time,
                         trade.open_price, trade.close_price, clean_sl, clean_tp,
                         trade.commission or 0.0, trade.swap or 0.0, gross_pnl, pnl, status,
                         calc_r, now_str, pending_match["id"]
                     ))
                     existing = pending_match
                     updated_trades += 1
+
+            if not existing:
+                # Check for an existing trade (OPEN or already recorded) that matches this trade's parameters
+                cursor.execute("""
+                    SELECT id, ticket, order_id, direction, open_price, stop_loss, initial_risk, r_multiple, status FROM trades
+                    WHERE account_id = ?
+                      AND symbol = ? AND direction = ?
+                      AND ABS(volume - ?) < 0.0001
+                      AND (
+                          open_time = ?
+                          OR (ABS(strftime('%s', open_time) - strftime('%s', ?)) <= 60 AND ABS(open_price - ?) < 0.0001)
+                      )
+                    ORDER BY CASE WHEN status = 'OPEN' THEN 0 ELSE 1 END, id ASC
+                    LIMIT 1;
+                """, (account_id, trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_time, trade.open_price))
+                fallback_match = cursor.fetchone()
+                if fallback_match:
+                    existing = fallback_match
 
             if existing:
                 cursor.execute("SELECT direction, open_price, stop_loss, initial_risk, r_multiple FROM trades WHERE id = ?;", (existing["id"],))
@@ -424,9 +451,15 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     initial_risk=t_info["initial_risk"] if t_info else None,
                     volume=trade.lots
                 )
+
+                matched_ticket = existing["ticket"] if existing["ticket"] else trade.ticket
+                stored_order_id = trade.ticket if trade.ticket != matched_ticket else str(trade.order_id or existing["order_id"] or "")
+
                 cursor.execute("""
                     UPDATE trades
-                    SET close_time = ?,
+                    SET ticket = COALESCE(ticket, ?),
+                        order_id = CASE WHEN order_id IS NULL OR order_id = '' THEN ? ELSE order_id END,
+                        close_time = ?,
                         close_price = ?,
                         stop_loss = COALESCE(?, stop_loss),
                         take_profit = COALESCE(?, take_profit),
@@ -436,9 +469,12 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                         net_profit = ?,
                         status = ?,
                         r_multiple = COALESCE(r_multiple, ?),
+                        notes = CASE WHEN notes IS NOT NULL AND notes != '' THEN notes ELSE ? END,
                         updated_at = ?
                     WHERE id = ?;
                 """, (
+                    matched_ticket,
+                    stored_order_id,
                     trade.close_time,
                     trade.close_price,
                     clean_sl,
@@ -449,6 +485,7 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     pnl,
                     status,
                     calc_r,
+                    trade.comment or "",
                     now_str,
                     existing["id"]
                 ))
@@ -664,6 +701,95 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     WHERE account_id = ? AND status = 'OPEN'
                       AND ticket LIKE 'ctrader-position-%';
                 """, (account_id,))
+
+        # Remove or merge any duplicate trades (e.g. OPEN + CLOSED pair, or two duplicate CLOSED trades)
+        cursor.execute("""
+            SELECT t1.id as id1, t2.id as id2,
+                   t1.status as status1, t2.status as status2,
+                   t1.notes as notes1, t2.notes as notes2,
+                   t1.mistake_id as mistake1, t2.mistake_id as mistake2,
+                   t1.setup_id as setup1, t2.setup_id as setup2,
+                   t1.rating as rating1, t2.rating as rating2,
+                   t1.ticket as ticket1, t2.ticket as ticket2,
+                   t1.order_id as order_id1, t2.order_id as order_id2,
+                   t1.close_time as close_time1, t2.close_time as close_time2,
+                   t1.close_price as close_price1, t2.close_price as close_price2,
+                   t1.gross_profit as gross_profit1, t2.gross_profit as gross_profit2,
+                   t1.net_profit as net_profit1, t2.net_profit as net_profit2
+            FROM trades t1
+            JOIN trades t2 ON t1.account_id = t2.account_id
+                          AND t1.id < t2.id
+                          AND t1.symbol = t2.symbol
+                          AND t1.direction = t2.direction
+                          AND ABS(t1.volume - t2.volume) < 0.0001
+                          AND (
+                              t1.open_time = t2.open_time
+                              OR (ABS(strftime('%s', t1.open_time) - strftime('%s', t2.open_time)) <= 60 AND ABS(t1.open_price - t2.open_price) < 0.0001)
+                          )
+            WHERE t1.account_id = ?;
+        """, (account_id,))
+        dup_pairs = cursor.fetchall()
+        for pair in dup_pairs:
+            id1 = pair["id1"]
+            id2 = pair["id2"]
+
+            # Check if t1 or t2 still exists in this loop
+            cursor.execute("SELECT id FROM trades WHERE id = ?;", (id1,))
+            if not cursor.fetchone():
+                continue
+            cursor.execute("SELECT id FROM trades WHERE id = ?;", (id2,))
+            if not cursor.fetchone():
+                continue
+
+            def is_meaningful_notes(n):
+                if not n:
+                    return False
+                n_str = str(n).strip()
+                return not (n_str.startswith('[sl') or n_str.startswith('[tp'))
+
+            score1 = (2 if is_meaningful_notes(pair["notes1"]) else 0) + (1 if pair["mistake1"] else 0) + (1 if pair["setup1"] else 0) + (1 if pair["rating1"] and pair["rating1"] != 5 else 0)
+            score2 = (2 if is_meaningful_notes(pair["notes2"]) else 0) + (1 if pair["mistake2"] else 0) + (1 if pair["setup2"] else 0) + (1 if pair["rating2"] and pair["rating2"] != 5 else 0)
+
+            if score1 >= score2:
+                keeper_id, dup_id = id1, id2
+                keeper_ticket, dup_ticket = pair["ticket1"], pair["ticket2"]
+                keeper_status, dup_status = pair["status1"], pair["status2"]
+                dup_close_time = pair["close_time2"]
+                dup_close_price = pair["close_price2"]
+                dup_gross = pair["gross_profit2"]
+                dup_net = pair["net_profit2"]
+            else:
+                keeper_id, dup_id = id2, id1
+                keeper_ticket, dup_ticket = pair["ticket2"], pair["ticket1"]
+                keeper_status, dup_status = pair["status2"], pair["status1"]
+                dup_close_time = pair["close_time1"]
+                dup_close_price = pair["close_price1"]
+                dup_gross = pair["gross_profit1"]
+                dup_net = pair["net_profit1"]
+
+            # If keeper is OPEN but dup was CLOSED, transfer close results
+            if keeper_status == 'OPEN' and dup_status in ('CLOSED', 'WIN', 'LOSS', 'BE'):
+                cursor.execute("""
+                    UPDATE trades
+                    SET close_time = ?, close_price = ?, gross_profit = ?, net_profit = ?, status = ?, updated_at = ?
+                    WHERE id = ?;
+                """, (dup_close_time, dup_close_price, dup_gross, dup_net, dup_status, now_str, keeper_id))
+
+            # Store duplicate's ticket in order_id of keeper if keeper's order_id is empty and tickets differ
+            if dup_ticket and dup_ticket != keeper_ticket:
+                cursor.execute("""
+                    UPDATE trades
+                    SET order_id = CASE WHEN order_id IS NULL OR order_id = '' THEN ? ELSE order_id END
+                    WHERE id = ?;
+                """, (dup_ticket, keeper_id))
+
+            # Relink any screenshots and partial closes to keeper
+            cursor.execute("UPDATE trade_screenshots SET trade_id = ? WHERE trade_id = ?;", (keeper_id, dup_id))
+            cursor.execute("UPDATE trade_partial_closes SET trade_id = ? WHERE trade_id = ?;", (keeper_id, dup_id))
+
+            # Delete the duplicate trade
+            cursor.execute("DELETE FROM trades WHERE id = ?;", (dup_id,))
+            logger.info(f"Reconciled duplicate trade: kept {keeper_id}, deleted {dup_id}")
 
         conn.commit()
 

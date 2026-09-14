@@ -22,9 +22,17 @@ input int      InpCandleTrades  = 10;                                        // 
 //--- Global variables
 datetime g_lastSyncTime = 0;
 datetime g_lastHistorySync = 0;
+uint     g_lastSyncTick = 0;
+uint     g_lastLiveTick = 0;
+bool     g_syncPending = false;
+int      g_lastTotalOpenOrders = -1;
+int      g_lastTotalHistoryOrders = -1;
+double   g_lastOrdersStateHash = -1.0;
 
 void SendLiveCandles();
 void SyncHistoryCandles();
+void RequestSync(string reason = "");
+int  CheckTradeStateChanges();
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -41,7 +49,8 @@ int OnInit()
    Print("Journal API Key configured.");
    Print("Note: Ensure '", InpServerUrl, "' is added to MT4 Tools -> Options -> Expert Advisors -> Allow WebRequest!");
    
-   EventSetTimer(MathMax(1, InpLiveInterval));
+   // Timer runs every 1s for accurate anti-spam cooldown processing
+   EventSetTimer(1);
    
    // Create on-chart manual sync button
    ObjectCreate(0, "BtnJournalSync", OBJ_BUTTON, 0, 0, 0);
@@ -56,6 +65,10 @@ int OnInit()
    ObjectSetInteger(0, "BtnJournalSync", OBJPROP_FONTSIZE, 9);
    ChartRedraw();
 
+   // Initialize order state baseline
+   CheckTradeStateChanges();
+
+   // Perform immediate initial sync
    SyncToServer();
    return(INIT_SUCCEEDED);
 }
@@ -78,24 +91,125 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 {
    if(id == CHARTEVENT_OBJECT_CLICK && sparam == "BtnJournalSync")
    {
-      Print("Manual sync triggered via chart button. Syncing to Journal...");
+      Print("Manual sync triggered via chart button.");
       ObjectSetInteger(0, "BtnJournalSync", OBJPROP_STATE, false);
       ChartRedraw();
       g_lastHistorySync = 0;
+      RequestSync("Manual Button Click");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Detect changes in orders, position count, and SL/TP modifications|
+//+------------------------------------------------------------------+
+int CheckTradeStateChanges()
+{
+   int totalOpen = OrdersTotal();
+   int totalHist = OrdersHistoryTotal();
+
+   if(g_lastTotalOpenOrders < 0)
+   {
+      g_lastTotalOpenOrders = totalOpen;
+      g_lastTotalHistoryOrders = totalHist;
+      return 0;
+   }
+
+   if(totalOpen != g_lastTotalOpenOrders || totalHist != g_lastTotalHistoryOrders)
+   {
+      g_lastTotalOpenOrders = totalOpen;
+      g_lastTotalHistoryOrders = totalHist;
+      return 1; // Count changed (open, close, pending triggered/deleted)
+   }
+
+   // Check if SL/TP/Lots modified on any open or pending order
+   double stateHash = 0.0;
+   for(int i = 0; i < totalOpen; i++)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      stateHash += (double)OrderTicket() + (OrderLots() * 100.0) + OrderOpenPrice() + OrderStopLoss() + OrderTakeProfit();
+   }
+
+   if(g_lastOrdersStateHash < 0.0)
+   {
+      g_lastOrdersStateHash = stateHash;
+      return 0;
+   }
+
+   if(MathAbs(stateHash - g_lastOrdersStateHash) > 0.0001)
+   {
+      g_lastOrdersStateHash = stateHash;
+      return 2; // Order modified (SL/TP/Lots)
+   }
+
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Request sync with 5-second anti-spam cooldown                    |
+//+------------------------------------------------------------------+
+void RequestSync(string reason = "")
+{
+   uint now = GetTickCount();
+   if(g_lastSyncTick == 0 || (now - g_lastSyncTick) >= 5000)
+   {
+      if(StringLen(reason) > 0)
+         PrintFormat("TradeJournalSync MT4: Instant sync triggered (%s)...", reason);
+      SyncToServer();
+   }
+   else
+   {
+      if(!g_syncPending)
+      {
+         double elapsed = (double)(now - g_lastSyncTick) / 1000.0;
+         if(StringLen(reason) > 0)
+            PrintFormat("TradeJournalSync MT4: Sync queued (%s), waiting for 5s cooldown (elapsed: %.1fs)...", reason, elapsed);
+         g_syncPending = true;
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Timer event function (called every 1s)                           |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   uint now = GetTickCount();
+
+   // 1. Send live candles at configured InpLiveInterval (default 5s)
+   if(InpLiveInterval > 0 && (now - g_lastLiveTick >= (uint)(InpLiveInterval * 1000)))
+   {
+      g_lastLiveTick = now;
+      SendLiveCandles();
+   }
+
+   // 2. Detect trade state changes (fallback for trade open/close/modify)
+   int change = CheckTradeStateChanges();
+   if(change > 0)
+   {
+      RequestSync(change == 1 ? "Order count change" : "Order SL/TP/Lots modification");
+   }
+
+   // 3. Execute pending sync once 5s cooldown has elapsed
+   if(g_syncPending && (now - g_lastSyncTick >= 5000))
+   {
+      Print("TradeJournalSync MT4: Executing queued sync after 5s cooldown...");
+      SyncToServer();
+      return;
+   }
+
+   // 4. Periodic full sync interval (default 60s)
+   if(InpSyncInterval > 0 && (now - g_lastSyncTick >= (uint)(InpSyncInterval * 1000)))
+   {
       SyncToServer();
    }
 }
 
 //+------------------------------------------------------------------+
-//| Timer event function                                             |
+//| Trade event function (called on any trade activity in MT4)       |
 //+------------------------------------------------------------------+
-void OnTimer()
+void OnTrade()
 {
-   SendLiveCandles();
-   if(TimeCurrent() - g_lastSyncTime >= InpSyncInterval)
-   {
-      SyncToServer();
-   }
+   RequestSync("OnTrade Event");
 }
 
 //+------------------------------------------------------------------+
@@ -349,6 +463,10 @@ void SyncToServer()
    int timeout = 5000;
    int res = WebRequest("POST", InpServerUrl, headers, timeout, postData, result, resultHeaders);
 
+   g_lastSyncTick = GetTickCount();
+   g_syncPending = false;
+   CheckTradeStateChanges();
+
    if(res == 200)
    {
       Print("TradeJournalSync MT4: Successfully synced ", addedTrades, " trades to Server!");
@@ -430,49 +548,90 @@ string GetCandlesEndpointUrl()
 }
 
 //+------------------------------------------------------------------+
-//| Send newest forming candle (bar 0) every 5s for active symbols   |
+//| Send newest forming candle (bar 0) & open trades PnL live        |
 //+------------------------------------------------------------------+
 void SendLiveCandles()
 {
-   if(!InpSyncCandles) return;
    if(StringLen(InpApiKey) == 0) return;
 
-   string symbols[];
-   int totalSymbols = 0;
-   GetActiveSymbols(symbols, totalSymbols);
-   if(totalSymbols == 0) return;
-
-   int timeframes[6] = {PERIOD_M1, PERIOD_M5, PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
-   string liveJson = "{\"candles\":[";
-   bool first = true;
-   int candleCount = 0;
-
-   for(int s = 0; s < totalSymbols; s++)
+   // 1. Gather live open trades PnL & current market prices
+   int totalTrades = OrdersTotal();
+   string openTradesJson = "[";
+   int openCount = 0;
+   for(int i = 0; i < totalTrades; i++)
    {
-      string sym = symbols[s];
-      for(int t = 0; t < 6; t++)
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      int oType = OrderType();
+      if(oType != OP_BUY && oType != OP_SELL) continue;
+
+      int ticket = OrderTicket();
+      string oSym = OrderSymbol();
+      double profit = OrderProfit();
+      double curPrice = OrderClosePrice();
+      double sl = OrderStopLoss();
+      double tp = OrderTakeProfit();
+
+      if(openCount > 0) openTradesJson += ",";
+      openTradesJson += StringFormat(
+         "{\"ticket\":\"%d\",\"symbol\":\"%s\",\"profit\":%.2f,\"current_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f}",
+         ticket, oSym, profit, curPrice, sl, tp
+      );
+      openCount++;
+   }
+   openTradesJson += "]";
+
+   // Account live equity & balance
+   double balance = AccountBalance();
+   double equity = AccountEquity();
+   double margin = AccountMargin();
+   double freeMargin = AccountFreeMargin();
+
+   // 2. Gather live candle bar 0 for active symbols
+   string candlesJson = "[]";
+   int candleCount = 0;
+   if(InpSyncCandles)
+   {
+      string symbols[];
+      int totalSymbols = 0;
+      GetActiveSymbols(symbols, totalSymbols);
+      if(totalSymbols > 0)
       {
-         datetime cTime = iTime(sym, timeframes[t], 0);
-         if(cTime <= 0) continue;
+         int timeframes[6] = {PERIOD_M1, PERIOD_M5, PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
+         candlesJson = "[";
+         bool first = true;
+         for(int s = 0; s < totalSymbols; s++)
+         {
+            string sym = symbols[s];
+            for(int t = 0; t < 6; t++)
+            {
+               datetime cTime = iTime(sym, timeframes[t], 0);
+               if(cTime <= 0) continue;
 
-         double cOpen = iOpen(sym, timeframes[t], 0);
-         double cHigh = iHigh(sym, timeframes[t], 0);
-         double cLow = iLow(sym, timeframes[t], 0);
-         double cClose = iClose(sym, timeframes[t], 0);
-         long cVol = iVolume(sym, timeframes[t], 0);
+               double cOpen = iOpen(sym, timeframes[t], 0);
+               double cHigh = iHigh(sym, timeframes[t], 0);
+               double cLow = iLow(sym, timeframes[t], 0);
+               double cClose = iClose(sym, timeframes[t], 0);
+               long cVol = iVolume(sym, timeframes[t], 0);
 
-         if(!first) liveJson += ",";
-         liveJson += StringFormat(
-            "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"time\":%d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"volume\":%d}",
-            sym, TimeframeName(timeframes[t]), (long)cTime, cOpen, cHigh, cLow, cClose, cVol
-         );
-         first = false;
-         candleCount++;
+               if(!first) candlesJson += ",";
+               candlesJson += StringFormat(
+                  "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"time\":%d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"volume\":%d}",
+                  sym, TimeframeName(timeframes[t]), (long)cTime, cOpen, cHigh, cLow, cClose, cVol
+               );
+               first = false;
+               candleCount++;
+            }
+         }
+         candlesJson += "]";
       }
    }
-   liveJson += "]}";
 
-   if(candleCount == 0) return;
+   if(candleCount == 0 && openCount == 0) return;
+
+   string liveJson = StringFormat(
+      "{\"equity\":%.2f,\"balance\":%.2f,\"margin\":%.2f,\"free_margin\":%.2f,\"open_trades\":%s,\"candles\":%s}",
+      equity, balance, margin, freeMargin, openTradesJson, candlesJson
+   );
 
    string candlesUrl = GetCandlesEndpointUrl();
 

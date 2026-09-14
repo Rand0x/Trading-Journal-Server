@@ -20,7 +20,7 @@ def get_mistakes():
                    COUNT(t.id) as occurrence_count,
                    ROUND(SUM(CASE WHEN t.net_profit < 0 THEN ABS(t.net_profit) ELSE 0.0 END), 2) as total_loss
             FROM mistakes m
-            LEFT JOIN trades t ON t.mistake_id = m.id
+            LEFT JOIN trades t ON t.mistake_id = m.id AND t.is_missed = 0 AND t.status IN ('CLOSED', 'WIN', 'LOSS', 'BE')
             GROUP BY m.id
             ORDER BY total_loss DESC;
         """)

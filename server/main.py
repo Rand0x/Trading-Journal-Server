@@ -160,6 +160,12 @@ def apple_touch_icon():
     return FileResponse(os.path.join(STATIC_DIR, "apple-touch-icon.png"))
 
 @app.get("/")
+@app.get("/dashboard", include_in_schema=False)
+@app.get("/trades", include_in_schema=False)
+@app.get("/analytics", include_in_schema=False)
+@app.get("/playbooks", include_in_schema=False)
+@app.get("/review", include_in_schema=False)
+@app.get("/accounts", include_in_schema=False)
 def serve_spa():
     """Serves the Single Page Web Application."""
     index_path = os.path.join(STATIC_DIR, "index.html")

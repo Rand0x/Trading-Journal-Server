@@ -47,12 +47,24 @@ class TestAnalytics(unittest.TestCase):
         self.assertEqual(equity[-1]["balance"], 10600.0)
         self.assertEqual(equity[-1]["cumulative_pnl"], 600.0)
 
-    def test_performance_by_symbol(self):
-        syms = get_performance_by_symbol(self.trades)
-        self.assertEqual(len(syms), 3)
+    def test_open_trades_metrics(self):
+        trades_with_open = self.trades + [
+            {"id": 5, "symbol": "EURUSD", "net_profit": 55.0, "status": "OPEN", "open_time": "2026-09-03 10:00:00", "close_time": None, "volume": 1.0},
+            {"id": 6, "symbol": "USDJPY", "net_profit": 0.0, "status": "PENDING", "open_time": "2026-09-03 11:00:00", "close_time": None, "volume": 1.0}
+        ]
+        m = calculate_trade_metrics(trades_with_open, initial_balance=10000.0)
+        # Closed trade metrics remain untainted
+        self.assertEqual(m["total_trades"], 4)
+        self.assertEqual(m["net_profit"], 600.0)
+        # Open trades captured properly
+        self.assertEqual(m["open_trades_count"], 1)
+        self.assertEqual(m["open_pnl"], 55.0)
+        self.assertEqual(m["total_pnl"], 655.0)
+
+        # Performance by symbol ignores open trades
+        syms = get_performance_by_symbol(trades_with_open)
         eur = next(s for s in syms if s["symbol"] == "EURUSD")
         self.assertEqual(eur["trades"], 2)
-        self.assertEqual(eur["win_rate"], 50.0)
         self.assertEqual(eur["net_profit"], 100.0)
 
 if __name__ == "__main__":

@@ -81,12 +81,36 @@ def _get_trade_with_partials(cursor, trade_id: int):
                   AND ABS(t.open_price - ?) <= ?;
             """, (account_id, symbol, direction, trade_id, open_price, price_tol))
             sibling_rows = [dict(r) for r in cursor.fetchall()]
+        elif result.get("status") == "CANCELLED":
+            open_time_str = result.get("open_time") or ""
+            if open_time_str:
+                cursor.execute("""
+                    SELECT t.*
+                    FROM trades t
+                    WHERE t.account_id = ? AND t.symbol = ? AND t.direction = ?
+                      AND t.status = 'CANCELLED' AND t.id != ?
+                      AND ABS(t.open_price - ?) <= ?
+                      AND (
+                          SUBSTR(t.open_time, 1, 10) = SUBSTR(?, 1, 10)
+                          OR (t.open_time IS NOT NULL AND ABS(strftime('%s', t.open_time) - strftime('%s', ?)) <= 86400)
+                      );
+                """, (account_id, symbol, direction, trade_id, open_price, price_tol, open_time_str, open_time_str))
+            else:
+                cursor.execute("""
+                    SELECT t.*
+                    FROM trades t
+                    WHERE t.account_id = ? AND t.symbol = ? AND t.direction = ?
+                      AND t.status = 'CANCELLED' AND t.id != ?
+                      AND ABS(t.open_price - ?) <= ?;
+                """, (account_id, symbol, direction, trade_id, open_price, price_tol))
+            sibling_rows = [dict(r) for r in cursor.fetchall()]
         else:
             cursor.execute("""
                 SELECT t.*
                 FROM trades t
                 WHERE t.account_id = ? AND t.symbol = ? AND t.direction = ?
                   AND t.id != ?
+                  AND t.status NOT IN ('OPEN', 'PENDING', 'CANCELLED')
                   AND ABS(t.open_price - ?) <= ?
                   AND SUBSTR(t.open_time, 1, 16) = SUBSTR(?, 1, 16);
             """, (account_id, symbol, direction, trade_id, open_price, price_tol, result.get("open_time") or ""))

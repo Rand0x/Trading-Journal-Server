@@ -54,9 +54,64 @@ const Trades = {
       this.totalTrades = data.total;
       this.renderTable(data.trades);
       this.renderPagination();
+      this.checkAutoRefresh(data.trades);
     } catch (err) {
       console.error('Failed to load trades:', err);
       App.showToast(`Error: ${err.message}`, 'error');
+    }
+  },
+
+  autoRefreshTimer: null,
+
+  checkAutoRefresh(trades = []) {
+    this.stopAutoRefresh();
+    const hasOpenTrades = (trades || []).some(t => t.status === 'OPEN');
+    if (!hasOpenTrades) return;
+
+    this.autoRefreshTimer = setInterval(async () => {
+      if (App.currentView !== 'trades') {
+        this.stopAutoRefresh();
+        return;
+      }
+      const isModalActive = document.querySelector('.modal.active');
+      if (isModalActive || this.activeEditingId) {
+        return;
+      }
+      try {
+        const filterParams = App.getFilterParams();
+        const params = {
+          ...filterParams,
+          limit: this.limit,
+          offset: this.currentOffset,
+          sort_by: this.sortBy,
+          sort_order: this.sortOrder,
+        };
+        const symbolVal = document.getElementById('tradeSymbolFilter')?.value;
+        if (symbolVal) params.symbol = symbolVal;
+        const dirVal = document.getElementById('tradeDirFilter')?.value;
+        if (dirVal) params.direction = dirVal;
+        const statusVal = document.getElementById('tradeStatusFilter')?.value;
+        if (statusVal) params.status = statusVal;
+        const searchVal = document.getElementById('tradeSearchInput')?.value;
+        if (searchVal) params.search = searchVal;
+
+        const data = await API.getTrades(params);
+        this.totalTrades = data.total;
+        this.renderTable(data.trades);
+        this.renderPagination();
+
+        const stillHasOpen = (data.trades || []).some(t => t.status === 'OPEN');
+        if (!stillHasOpen) {
+          this.stopAutoRefresh();
+        }
+      } catch (err) {}
+    }, 3000);
+  },
+
+  stopAutoRefresh() {
+    if (this.autoRefreshTimer) {
+      clearInterval(this.autoRefreshTimer);
+      this.autoRefreshTimer = null;
     }
   },
 
@@ -64,11 +119,11 @@ const Trades = {
     if (!trades || !trades.length) return [];
 
     const result = [];
-    const openGroups = new Map();
+    const baseGroups = new Map();
 
     for (const t of trades) {
-      const isOpen = (t.status === 'OPEN' || t.status === 'PENDING') && !t.is_missed;
-      if (!isOpen) {
+      const isGroupable = (t.status === 'OPEN' || t.status === 'PENDING' || t.status === 'CANCELLED') && !t.is_missed;
+      if (!isGroupable) {
         result.push(t);
         continue;
       }
@@ -76,21 +131,59 @@ const Trades = {
       // Group key: account_id, symbol, direction, status, and open_price with 4-digit precision
       const price = parseFloat(t.open_price) || 0;
       const priceKey = price.toFixed(4);
-      const groupKey = `${t.account_id || ''}_${(t.symbol || '').toUpperCase()}_${(t.direction || '').toUpperCase()}_${t.status}_${priceKey}`;
+      const baseKey = `${t.account_id || ''}_${(t.symbol || '').toUpperCase()}_${(t.direction || '').toUpperCase()}_${t.status}_${priceKey}`;
 
-      if (!openGroups.has(groupKey)) {
-        openGroups.set(groupKey, []);
+      if (!baseGroups.has(baseKey)) {
+        baseGroups.set(baseKey, []);
       }
-      openGroups.get(groupKey).push(t);
+      baseGroups.get(baseKey).push(t);
     }
 
-    for (const group of openGroups.values()) {
+    // Cluster candidates by time proximity (max 2 hours gap between sibling orders)
+    const finalGroups = [];
+    for (const candidates of baseGroups.values()) {
+      if (candidates.length === 1) {
+        finalGroups.push(candidates);
+        continue;
+      }
+
+      candidates.sort((a, b) => (a.open_time || '').localeCompare(b.open_time || ''));
+
+      let currentCluster = [candidates[0]];
+      for (let i = 1; i < candidates.length; i++) {
+        const prev = candidates[i - 1];
+        const curr = candidates[i];
+
+        let isSameCluster = true;
+        if (prev.open_time && curr.open_time) {
+          const prevTs = new Date(prev.open_time.replace(' ', 'T')).getTime();
+          const currTs = new Date(curr.open_time.replace(' ', 'T')).getTime();
+          if (!isNaN(prevTs) && !isNaN(currTs)) {
+            if (Math.abs(currTs - prevTs) > 2 * 3600 * 1000) {
+              isSameCluster = false;
+            }
+          }
+        }
+
+        if (isSameCluster) {
+          currentCluster.push(curr);
+        } else {
+          finalGroups.push(currentCluster);
+          currentCluster = [curr];
+        }
+      }
+      if (currentCluster.length > 0) {
+        finalGroups.push(currentCluster);
+      }
+    }
+
+    for (const group of finalGroups) {
       if (group.length === 1) {
         result.push(group[0]);
         continue;
       }
 
-      // Multiple open orders with same entry and direction!
+      // Multiple orders with same entry, direction and status!
       group.sort((a, b) => (a.id || 0) - (b.id || 0));
       const primary = { ...group[0] };
 
@@ -358,12 +451,14 @@ const Trades = {
           <div class="trade-expanded-partials">
             ${subTrades.map((leg, idx) => {
               const legPnl = Number(leg.net_profit || 0);
-              const legPnlClass = legPnl >= 0 ? 'color-green' : 'color-red';
+              const isLegPendingOrCancelled = isPending || isCancelled || leg.status === 'PENDING' || leg.status === 'CANCELLED';
+              const legPnlClass = isLegPendingOrCancelled ? 'color-muted' : (legPnl >= 0 ? 'color-green' : 'color-red');
+              const legPnlText = isLegPendingOrCancelled ? '—' : App.formatMoney(legPnl, tradeCurrency, { showSign: true });
               const tpStr = leg.take_profit ? `TP${idx + 1}: ${leg.take_profit}` : 'No TP';
               const slStr = leg.stop_loss ? `SL: ${leg.stop_loss}` : 'No SL';
               return `<div>
                 <span>Ticket #${escape(leg.ticket || leg.id)} · ${Number(leg.volume).toFixed(2)} lots · Entry: ${leg.open_price} · <strong style="color:#10b981;">${tpStr}</strong> · <span style="color:#ef4444;">${slStr}</span></span>
-                <strong class="${legPnlClass}">${App.formatMoney(legPnl, tradeCurrency, { showSign: true })}</strong>
+                <strong class="${legPnlClass}">${legPnlText}</strong>
               </div>`;
             }).join('')}
           </div>

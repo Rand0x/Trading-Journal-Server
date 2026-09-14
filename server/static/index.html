@@ -25,32 +25,32 @@
 
       <ul class="nav-links">
         <li class="nav-item active">
-          <a href="#" data-view="dashboard">
+          <a href="#dashboard" data-view="dashboard">
             <span>📊</span> Dashboard
           </a>
         </li>
         <li class="nav-item">
-          <a href="#" data-view="trades">
+          <a href="#trades" data-view="trades">
             <span>📝</span> Trade Log
           </a>
         </li>
         <li class="nav-item">
-          <a href="#" data-view="analytics">
+          <a href="#analytics" data-view="analytics">
             <span>📈</span> Analytics
           </a>
         </li>
         <li class="nav-item">
-          <a href="#" data-view="playbooks">
+          <a href="#playbooks" data-view="playbooks">
             <span>🎯</span> Playbooks
           </a>
         </li>
         <li class="nav-item">
-          <a href="#" data-view="review">
+          <a href="#review" data-view="review">
             <span>📅</span> Weekly Review
           </a>
         </li>
         <li class="nav-item">
-          <a href="#" data-view="accounts">
+          <a href="#accounts" data-view="accounts">
             <span>🔄</span> Accounts & Sync
           </a>
         </li>
@@ -91,7 +91,12 @@
           <div class="metric-card">
             <span class="metric-label">Net Cumulative P&L</span>
             <span id="dashNetPnl" class="metric-value color-green">0.00</span>
-            <span class="metric-sub">Closed Trades Profit</span>
+            <span id="dashNetPnlSub" class="metric-sub">Closed Trades Profit</span>
+          </div>
+          <div class="metric-card" id="dashOpenPositionsCard">
+            <span class="metric-label">Open Positions P&L</span>
+            <span id="dashOpenPnl" class="metric-value color-muted">0.00</span>
+            <span id="dashOpenTradesSub" class="metric-sub">0 Active Trades</span>
           </div>
           <div class="metric-card">
             <span class="metric-label">Win Rate</span>

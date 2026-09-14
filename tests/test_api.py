@@ -58,6 +58,14 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(res_svg.status_code, 200)
         self.assertIn("svg", res_svg.headers.get("content-type", ""))
 
+    def test_spa_view_routes(self):
+        routes = ["/", "/dashboard", "/trades", "/analytics", "/playbooks", "/review", "/accounts"]
+        for route in routes:
+            res = self.client.get(route)
+            self.assertEqual(res.status_code, 200, f"Route {route} failed")
+            self.assertIn("text/html", res.headers.get("content-type", ""))
+            self.assertIn("Trading Journal", res.text)
+
     def test_get_accounts(self):
         res = self.client.get("/api/accounts")
         self.assertEqual(res.status_code, 200)
@@ -73,6 +81,9 @@ class TestAPI(unittest.TestCase):
         self.assertIn("metrics", data)
         self.assertIn("calendar", data)
         self.assertIn("equity_curve", data)
+        self.assertIn("open_trades_count", data)
+        self.assertIn("open_pnl", data)
+        self.assertIn("total_pnl", data)
 
     def test_create_account_generates_journal_api_key(self):
         res = self.client.post("/api/accounts", json={
@@ -1312,7 +1323,195 @@ class TestAPI(unittest.TestCase):
         self.assertIn(1.105, tp_prices)
         self.assertIn(1.11, tp_prices)
 
+    def test_cancelled_and_open_orders_split_and_grouping(self):
+        # 4 trades created with same symbol, direction, entry price
+        # 2 trades cancelled, 2 trades remain open
+        c1_res = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "ticket": "split-leg-c1",
+            "symbol": "AUDUSD",
+            "direction": "BUY",
+            "volume": 0.5,
+            "open_time": "2026-09-05 15:00:00",
+            "open_price": 0.6500,
+            "take_profit": 0.6550,
+            "status": "CANCELLED"
+        })
+        c1_id = c1_res.json()["id"]
+
+        c2_res = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "ticket": "split-leg-c2",
+            "symbol": "AUDUSD",
+            "direction": "BUY",
+            "volume": 0.5,
+            "open_time": "2026-09-05 15:00:00",
+            "open_price": 0.6500,
+            "take_profit": 0.6600,
+            "status": "CANCELLED"
+        })
+        c2_id = c2_res.json()["id"]
+
+        o1_res = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "ticket": "split-leg-o1",
+            "symbol": "AUDUSD",
+            "direction": "BUY",
+            "volume": 0.5,
+            "open_time": "2026-09-05 15:00:00",
+            "open_price": 0.6500,
+            "take_profit": 0.6650,
+            "status": "OPEN"
+        })
+        o1_id = o1_res.json()["id"]
+
+        o2_res = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "ticket": "split-leg-o2",
+            "symbol": "AUDUSD",
+            "direction": "BUY",
+            "volume": 0.5,
+            "open_time": "2026-09-05 15:00:00",
+            "open_price": 0.6500,
+            "take_profit": 0.6700,
+            "status": "OPEN"
+        })
+        o2_id = o2_res.json()["id"]
+
+        # Cancelled trade detail: must only group the 2 cancelled legs
+        c_detail = self.client.get(f"/api/trades/{c1_id}").json()
+        self.assertTrue(c_detail["is_grouped"])
+        self.assertEqual(c_detail["grouped_count"], 2)
+        self.assertEqual(c_detail["grouped_total_volume"], 1.0)
+        self.assertEqual(c_detail["multiple_tps"], [0.655, 0.66])
+        c_tickets = [s["ticket"] for s in c_detail["sub_trades"]]
+        self.assertIn("split-leg-c1", c_tickets)
+        self.assertIn("split-leg-c2", c_tickets)
+        self.assertNotIn("split-leg-o1", c_tickets)
+        self.assertNotIn("split-leg-o2", c_tickets)
+
+        # Open trade detail: must only group the 2 open legs
+        o_detail = self.client.get(f"/api/trades/{o1_id}").json()
+        self.assertTrue(o_detail["is_grouped"])
+        self.assertEqual(o_detail["grouped_count"], 2)
+        self.assertEqual(o_detail["grouped_total_volume"], 1.0)
+        self.assertEqual(o_detail["multiple_tps"], [0.665, 0.67])
+        o_tickets = [s["ticket"] for s in o_detail["sub_trades"]]
+        self.assertIn("split-leg-o1", o_tickets)
+        self.assertIn("split-leg-o2", o_tickets)
+        self.assertNotIn("split-leg-c1", o_tickets)
+        self.assertNotIn("split-leg-c2", o_tickets)
+
+    def test_single_cancelled_order_is_not_grouped(self):
+        # 1 trade cancelled, 3 trades open
+        single_c = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "ticket": "single-c",
+            "symbol": "GBPUSD",
+            "direction": "SELL",
+            "volume": 0.2,
+            "open_time": "2026-09-05 16:00:00",
+            "open_price": 1.3000,
+            "take_profit": 1.2950,
+            "status": "CANCELLED"
+        }).json()
+        single_c_id = single_c["id"]
+
+        for i in (1, 2, 3):
+            self.client.post("/api/trades", json={
+                "account_id": self.account_id,
+                "ticket": f"triple-o-{i}",
+                "symbol": "GBPUSD",
+                "direction": "SELL",
+                "volume": 0.2,
+                "open_time": "2026-09-05 16:00:00",
+                "open_price": 1.3000,
+                "take_profit": 1.2900 - i * 0.005,
+                "status": "OPEN"
+            })
+
+        c_detail = self.client.get(f"/api/trades/{single_c_id}").json()
+        self.assertFalse(c_detail["is_grouped"])
+        self.assertEqual(c_detail["grouped_count"], 1)
+
+    def test_all_cancelled_orders_grouped_together(self):
+        # 3 trades all cancelled
+        c_ids = []
+        for i in (1, 2, 3):
+            res = self.client.post("/api/trades", json={
+                "account_id": self.account_id,
+                "ticket": f"all-c-{i}",
+                "symbol": "USDJPY",
+                "direction": "BUY",
+                "volume": 0.3,
+                "open_time": "2026-09-05 17:00:00",
+                "open_price": 150.00,
+                "take_profit": 150.50 + i * 0.50,
+                "status": "CANCELLED"
+            }).json()
+            c_ids.append(res["id"])
+
+        detail = self.client.get(f"/api/trades/{c_ids[0]}").json()
+        self.assertTrue(detail["is_grouped"])
+        self.assertEqual(detail["grouped_count"], 3)
+        self.assertAlmostEqual(detail["grouped_total_volume"], 0.9)
+        self.assertEqual(detail["multiple_tps"], [151.0, 151.5, 152.0])
+
+    def test_live_candles_updates_open_trades_pnl(self):
+        # 1. Create an open trade with unique symbol to avoid grouping collision
+        res_trade = self.client.post("/api/trades", json={
+            "account_id": self.account_id,
+            "ticket": "live-open-101",
+            "symbol": "NZDUSD",
+            "direction": "BUY",
+            "volume": 1.0,
+            "open_time": "2026-09-05 18:00:00",
+            "open_price": 0.6100,
+            "stop_loss": 0.6050,
+            "status": "OPEN"
+        }).json()
+        trade_id = res_trade["id"]
+
+        # 2. Upload live payload with open_trades floating PnL and account equity
+        res_live = self.client.post("/api/sync/candles", headers={"X-API-Key": self.api_key}, json={
+            "equity": 10543.20,
+            "balance": 10000.00,
+            "open_trades": [
+                {
+                    "ticket": "live-open-101",
+                    "symbol": "NZDUSD",
+                    "profit": 150.00,
+                    "current_price": 0.6175,
+                    "stop_loss": 0.6060,
+                    "take_profit": 0.6250
+                }
+            ],
+            "candles": []
+        })
+        self.assertEqual(res_live.status_code, 200)
+        self.assertEqual(res_live.json().get("updated_open_trades"), 1)
+
+        # 3. Verify trade is updated with floating net_profit and current price
+        trade_detail = self.client.get(f"/api/trades/{trade_id}").json()
+        self.assertEqual(trade_detail["status"], "OPEN")
+        self.assertEqual(trade_detail["net_profit"], 150.00)
+        self.assertEqual(trade_detail["close_price"], 0.6175)
+        self.assertEqual(trade_detail["stop_loss"], 0.6060)
+        self.assertEqual(trade_detail["take_profit"], 0.6250)
+
+        # 4. Verify /latest-candle/{trade_id} returns net_profit and live close_price
+        latest_res = self.client.get(f"/api/sync/latest-candle/{trade_id}")
+        self.assertEqual(latest_res.status_code, 200)
+        latest_json = latest_res.json()
+        self.assertEqual(latest_json["net_profit"], 150.00)
+        self.assertEqual(latest_json["close_price"], 0.6175)
+
+        # 5. Verify account equity was updated
+        acc = self.client.get(f"/api/accounts/{self.account_id}").json()
+        self.assertEqual(acc["equity"], 10543.20)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

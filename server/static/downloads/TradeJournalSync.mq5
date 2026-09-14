@@ -21,9 +21,13 @@ input int      InpCandleTrades  = 10;                                        // 
 //--- Global variables
 datetime g_lastSyncTime = 0;
 datetime g_lastHistorySync = 0;
+ulong    g_lastSyncTick = 0;
+ulong    g_lastLiveTick = 0;
+bool     g_syncPending = false;
 
 void SendLiveCandles();
 void SyncHistoryCandles();
+void RequestSync(string reason = "");
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -40,7 +44,8 @@ int OnInit()
    Print("Journal API Key configured.");
    Print("Note: Ensure '", InpServerUrl, "' is added to MT5 Tools -> Options -> Expert Advisors -> Allow WebRequest!");
    
-   EventSetTimer(MathMax(1, InpLiveInterval));
+   // Timer runs every 1s for accurate anti-spam cooldown processing
+   EventSetTimer(1);
    
    // Create on-chart manual sync button
    ObjectCreate(0, "BtnJournalSync", OBJ_BUTTON, 0, 0, 0);
@@ -78,21 +83,62 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 {
    if(id == CHARTEVENT_OBJECT_CLICK && sparam == "BtnJournalSync")
    {
-      Print("Manual sync triggered via chart button. Syncing to Journal...");
+      Print("Manual sync triggered via chart button.");
       ObjectSetInteger(0, "BtnJournalSync", OBJPROP_STATE, false);
       ChartRedraw();
       g_lastHistorySync = 0;
-      SyncToServer();
+      RequestSync("Manual Button Click");
    }
 }
 
 //+------------------------------------------------------------------+
-//| Timer event function                                             |
+//| Request sync with 5-second anti-spam cooldown                    |
+//+------------------------------------------------------------------+
+void RequestSync(string reason = "")
+{
+   ulong now = GetTickCount64();
+   if(g_lastSyncTick == 0 || (now - g_lastSyncTick) >= 5000)
+   {
+      if(StringLen(reason) > 0)
+         PrintFormat("TradeJournalSync: Instant sync triggered (%s)...", reason);
+      SyncToServer();
+   }
+   else
+   {
+      if(!g_syncPending)
+      {
+         double elapsed = (double)(now - g_lastSyncTick) / 1000.0;
+         if(StringLen(reason) > 0)
+            PrintFormat("TradeJournalSync: Sync queued (%s), waiting for 5s cooldown (elapsed: %.1fs)...", reason, elapsed);
+         g_syncPending = true;
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Timer event function (called every 1s)                           |
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   SendLiveCandles();
-   if(TimeCurrent() - g_lastSyncTime >= InpSyncInterval)
+   ulong now = GetTickCount64();
+
+   // 1. Send live candles at configured InpLiveInterval (default 5s)
+   if(InpLiveInterval > 0 && (now - g_lastLiveTick >= (ulong)InpLiveInterval * 1000))
+   {
+      g_lastLiveTick = now;
+      SendLiveCandles();
+   }
+
+   // 2. Execute pending sync once 5s cooldown has elapsed
+   if(g_syncPending && (now - g_lastSyncTick >= 5000))
+   {
+      Print("TradeJournalSync: Executing queued sync after 5s cooldown...");
+      SyncToServer();
+      return;
+   }
+
+   // 3. Periodic full sync interval (default 60s)
+   if(InpSyncInterval > 0 && (now - g_lastSyncTick >= (ulong)InpSyncInterval * 1000))
    {
       SyncToServer();
    }
@@ -111,9 +157,16 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
       trans.type == TRADE_TRANSACTION_ORDER_UPDATE ||
       trans.type == TRADE_TRANSACTION_POSITION)
    {
-      Print("Trade/Order/Position transaction detected! Triggering instant sync...");
-      SyncToServer();
+      RequestSync(EnumToString(trans.type));
    }
+}
+
+//+------------------------------------------------------------------+
+//| Standard trade event function                                    |
+//+------------------------------------------------------------------+
+void OnTrade()
+{
+   RequestSync("OnTrade Event");
 }
 
 //+------------------------------------------------------------------+
@@ -239,6 +292,7 @@ void SyncToServer()
       string comment = HistoryDealGetString(dealTicket, DEAL_COMMENT);
       ulong orderTicket = HistoryDealGetInteger(dealTicket, DEAL_ORDER);
       ulong positionId = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+      ulong primaryTicket = (positionId > 0) ? positionId : dealTicket;
 
       // In MT5, deal direction on exit is opposite to position direction
       // If closing deal was SELL, original position was BUY (0). If closing deal was BUY, position was SELL (1).
@@ -246,6 +300,8 @@ void SyncToServer()
 
       datetime openTime = closeTime - 3600;
       double openPrice = closePrice;
+      double sl = 0.0;
+      double tp = 0.0;
       for(int historyIndex = 0; historyIndex < totalDeals; historyIndex++)
       {
          ulong entryTicket = HistoryDealGetTicket(historyIndex);
@@ -257,6 +313,17 @@ void SyncToServer()
             openTime = entryTime;
             openPrice = HistoryDealGetDouble(entryTicket, DEAL_PRICE);
          }
+         ulong entryOrder = HistoryDealGetInteger(entryTicket, DEAL_ORDER);
+         if(entryOrder > 0 && HistoryOrderSelect(entryOrder))
+         {
+            sl = HistoryOrderGetDouble(entryOrder, ORDER_SL);
+            tp = HistoryOrderGetDouble(entryOrder, ORDER_TP);
+         }
+      }
+      if(orderTicket > 0 && (sl == 0.0 || tp == 0.0) && HistoryOrderSelect(orderTicket))
+      {
+         if(sl == 0.0) sl = HistoryOrderGetDouble(orderTicket, ORDER_SL);
+         if(tp == 0.0) tp = HistoryOrderGetDouble(orderTicket, ORDER_TP);
       }
 
       // Candle data: the complete real entry-to-exit range at an automatic timeframe.
@@ -269,8 +336,10 @@ void SyncToServer()
 
       if(addedTrades > 0) closedTradesJson += ",";
       closedTradesJson += StringFormat(
-         "{\"ticket\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"close_time\":\"%s\",\"open_price\":%.5f,\"close_price\":%.5f,\"stop_loss\":0.0,\"take_profit\":0.0,\"commission\":%.2f,\"swap\":%.2f,\"profit\":%.2f,\"comment\":\"%s\",\"candles\":%s}",
-         IntegerToString(dealTicket),
+         "{\"ticket\":\"%s\",\"position_id\":\"%s\",\"order_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"close_time\":\"%s\",\"open_price\":%.5f,\"close_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"commission\":%.2f,\"swap\":%.2f,\"profit\":%.2f,\"comment\":\"%s\",\"candles\":%s}",
+         IntegerToString(primaryTicket),
+         IntegerToString(positionId),
+         IntegerToString(orderTicket),
          symbol,
          posType,
          volume,
@@ -278,6 +347,8 @@ void SyncToServer()
          TimeToString(closeTime, TIME_DATE|TIME_SECONDS),
          openPrice,
          closePrice,
+         sl,
+         tp,
          commission,
          swap,
          profit,
@@ -295,6 +366,8 @@ void SyncToServer()
    {
       ulong posTicket = PositionGetTicket(p);
       if(posTicket <= 0) continue;
+      ulong posId = PositionGetInteger(POSITION_IDENTIFIER);
+      ulong primaryTicket = (posId > 0) ? posId : posTicket;
       string pSymbol = PositionGetString(POSITION_SYMBOL);
       long pType = PositionGetInteger(POSITION_TYPE);
       double pVol = PositionGetDouble(POSITION_VOLUME);
@@ -313,8 +386,9 @@ void SyncToServer()
 
       if(p > 0) openTradesJson += ",";
       openTradesJson += StringFormat(
-         "{\"ticket\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"profit\":%.2f,\"candles\":%s}",
-         IntegerToString(posTicket),
+         "{\"ticket\":\"%s\",\"position_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"profit\":%.2f,\"candles\":%s}",
+         IntegerToString(primaryTicket),
+         IntegerToString(posId),
          pSymbol,
          (int)pType,
          pVol,
@@ -394,6 +468,9 @@ void SyncToServer()
    ResetLastError();
    int timeout = 5000;
    int res = WebRequest("POST", InpServerUrl, headers, timeout, postData, result, resultHeaders);
+
+   g_lastSyncTick = GetTickCount64();
+   g_syncPending = false;
 
    if(res == 200)
    {
@@ -498,47 +575,87 @@ string GetCandlesEndpointUrl()
 }
 
 //+------------------------------------------------------------------+
-//| Send newest forming candle (bar 0) every 5s for active symbols   |
+//| Send newest forming candle (bar 0) & open trades PnL live        |
 //+------------------------------------------------------------------+
 void SendLiveCandles()
 {
-   if(!InpSyncCandles) return;
    if(StringLen(InpApiKey) == 0) return;
 
-   string symbols[];
-   int totalSymbols = 0;
-   GetActiveSymbols(symbols, totalSymbols);
-   if(totalSymbols == 0) return;
-
-   ENUM_TIMEFRAMES timeframes[6] = {PERIOD_M1, PERIOD_M5, PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
-   string liveJson = "{\"candles\":[";
-   bool first = true;
-   int candleCount = 0;
-
-   for(int s = 0; s < totalSymbols; s++)
+   // 1. Gather live open positions PnL & current prices
+   int totalPositions = PositionsTotal();
+   string openTradesJson = "[";
+   int openCount = 0;
+   for(int p = 0; p < totalPositions; p++)
    {
-      string sym = symbols[s];
-      for(int t = 0; t < 6; t++)
+      ulong posTicket = PositionGetTicket(p);
+      if(posTicket <= 0) continue;
+      ulong posId = PositionGetInteger(POSITION_IDENTIFIER);
+      ulong primaryTicket = (posId > 0) ? posId : posTicket;
+      string pSymbol = PositionGetString(POSITION_SYMBOL);
+      double pProfit = PositionGetDouble(POSITION_PROFIT);
+      double pPriceCurrent = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double pSL = PositionGetDouble(POSITION_SL);
+      double pTP = PositionGetDouble(POSITION_TP);
+
+      if(openCount > 0) openTradesJson += ",";
+      openTradesJson += StringFormat(
+         "{\"ticket\":\"%s\",\"position_id\":\"%s\",\"symbol\":\"%s\",\"profit\":%.2f,\"current_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f}",
+         IntegerToString(primaryTicket), IntegerToString(posId), pSymbol, pProfit, pPriceCurrent, pSL, pTP
+      );
+      openCount++;
+   }
+   openTradesJson += "]";
+
+   // Account live equity & balance
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double margin = AccountInfoDouble(ACCOUNT_MARGIN);
+   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+
+   // 2. Gather live candle bar 0 for active symbols
+   string candlesJson = "[]";
+   int candleCount = 0;
+   if(InpSyncCandles)
+   {
+      string symbols[];
+      int totalSymbols = 0;
+      GetActiveSymbols(symbols, totalSymbols);
+      if(totalSymbols > 0)
       {
-         MqlRates rates[];
-         ArraySetAsSeries(rates, true);
-         if(CopyRates(sym, timeframes[t], 0, 1, rates) <= 0) continue;
+         ENUM_TIMEFRAMES timeframes[6] = {PERIOD_M1, PERIOD_M5, PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
+         candlesJson = "[";
+         bool first = true;
+         for(int s = 0; s < totalSymbols; s++)
+         {
+            string sym = symbols[s];
+            for(int t = 0; t < 6; t++)
+            {
+               MqlRates rates[];
+               ArraySetAsSeries(rates, true);
+               if(CopyRates(sym, timeframes[t], 0, 1, rates) <= 0) continue;
 
-         datetime cTime = rates[0].time;
-         if(cTime <= 0) continue;
+               datetime cTime = rates[0].time;
+               if(cTime <= 0) continue;
 
-         if(!first) liveJson += ",";
-         liveJson += StringFormat(
-            "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"time\":%d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"volume\":%.0f}",
-            sym, TimeframeName(timeframes[t]), (long)cTime, rates[0].open, rates[0].high, rates[0].low, rates[0].close, (double)rates[0].tick_volume
-         );
-         first = false;
-         candleCount++;
+               if(!first) candlesJson += ",";
+               candlesJson += StringFormat(
+                  "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"time\":%d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"volume\":%.0f}",
+                  sym, TimeframeName(timeframes[t]), (long)cTime, rates[0].open, rates[0].high, rates[0].low, rates[0].close, (double)rates[0].tick_volume
+               );
+               first = false;
+               candleCount++;
+            }
+         }
+         candlesJson += "]";
       }
    }
-   liveJson += "]}";
 
-   if(candleCount == 0) return;
+   if(candleCount == 0 && openCount == 0) return;
+
+   string liveJson = StringFormat(
+      "{\"equity\":%.2f,\"balance\":%.2f,\"margin\":%.2f,\"free_margin\":%.2f,\"open_trades\":%s,\"candles\":%s}",
+      equity, balance, margin, freeMargin, openTradesJson, candlesJson
+   );
 
    string candlesUrl = GetCandlesEndpointUrl();
    char postData[];

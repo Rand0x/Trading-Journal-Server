@@ -21,7 +21,7 @@ def get_playbooks():
                    ROUND(AVG(CASE WHEN t.net_profit > 0 THEN 100.0 ELSE 0.0 END), 1) as win_rate,
                    ROUND(SUM(COALESCE(t.net_profit, 0.0)), 2) as total_pnl
             FROM playbooks p
-            LEFT JOIN trades t ON t.setup_id = p.id
+            LEFT JOIN trades t ON t.setup_id = p.id AND t.is_missed = 0 AND t.status IN ('CLOSED', 'WIN', 'LOSS', 'BE')
             GROUP BY p.id
             ORDER BY p.id ASC;
         """)
@@ -75,7 +75,7 @@ def update_playbook(playbook_id: int, playbook: PlaybookUpdate):
                    ROUND(AVG(CASE WHEN t.net_profit > 0 THEN 100.0 ELSE 0.0 END), 1) as win_rate,
                    ROUND(SUM(COALESCE(t.net_profit, 0.0)), 2) as total_pnl
             FROM playbooks p
-            LEFT JOIN trades t ON t.setup_id = p.id
+            LEFT JOIN trades t ON t.setup_id = p.id AND t.is_missed = 0 AND t.status IN ('CLOSED', 'WIN', 'LOSS', 'BE')
             WHERE p.id = ?
             GROUP BY p.id;
         """, (playbook_id,))

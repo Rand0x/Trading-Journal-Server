@@ -88,7 +88,7 @@ const TradeDetail = {
         statusBadge.textContent = isGrouped ? `LIMIT (${trade.grouped_count} TPs)` : 'PENDING LIMIT';
         statusBadge.className = 'badge badge-pending';
       } else if (trade.status === 'CANCELLED') {
-        statusBadge.textContent = 'CANCELLED';
+        statusBadge.textContent = isGrouped ? `CANCELLED (${trade.grouped_count} TPs)` : 'CANCELLED';
         statusBadge.className = 'badge badge-cancelled';
       } else if (trade.status === 'OPEN') {
         statusBadge.textContent = isGrouped ? `OPEN (${trade.grouped_count} TPs)` : 'OPEN';
@@ -893,9 +893,10 @@ const TradeDetail = {
 
   startLiveUpdate() {
     this.stopLiveUpdate();
+    const intervalMs = (this.currentTrade && this.currentTrade.status === 'OPEN') ? 2000 : 5000;
     this.liveUpdateTimer = setInterval(() => {
       this.updateLiveCandle();
-    }, 5000);
+    }, intervalMs);
   },
 
   stopLiveUpdate() {
@@ -926,11 +927,26 @@ const TradeDetail = {
             color: res.candle.close >= res.candle.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
           });
         }
-        if (this.currentTrade && this.currentTrade.status === 'OPEN') {
-          const exitEl = document.getElementById('tdExitPrice');
-          if (exitEl) {
-            exitEl.textContent = Number(res.candle.close).toFixed(5);
+      }
+
+      if (res && this.currentTrade && this.currentTrade.status === 'OPEN') {
+        const exitEl = document.getElementById('tdExitPrice');
+        if (exitEl) {
+          const livePrice = res.close_price != null ? Number(res.close_price) : (res.candle ? Number(res.candle.close) : null);
+          if (livePrice != null) {
+            exitEl.textContent = livePrice.toFixed(5);
           }
+        }
+
+        const pnlEl = document.getElementById('tdPnl');
+        if (pnlEl && res.net_profit != null) {
+          const pnl = Number(res.net_profit);
+          const tradeCurrency = this.currentTrade.account_currency || App.getActiveCurrency();
+          const rStr = (res.r_multiple != null)
+            ? ` (${Number(res.r_multiple) >= 0 ? '+' : ''}${Number(res.r_multiple).toFixed(2)} R)`
+            : '';
+          pnlEl.textContent = `${App.formatMoney(pnl, tradeCurrency, { showSign: true })}${rStr}`;
+          pnlEl.className = `metric-value ${pnl >= 0 ? 'color-green' : 'color-red'}`;
         }
       }
     } catch (e) {

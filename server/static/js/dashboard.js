@@ -18,9 +18,49 @@ const Dashboard = {
       this.renderCalendar(this.dashboardData.calendar, cur);
       this.renderEquityCurve(this.dashboardData.equity_curve, cur);
       this.renderDailyPnlBars(this.dashboardData.calendar, cur);
+      this.checkAutoRefresh();
     } catch (err) {
       console.error('Failed to load dashboard:', err);
       App.showToast(`Error loading dashboard: ${err.message}`, 'error');
+    }
+  },
+
+  autoRefreshTimer: null,
+
+  checkAutoRefresh() {
+    this.stopAutoRefresh();
+    const openCount = this.dashboardData ? (this.dashboardData.open_trades_count || (this.dashboardData.metrics && this.dashboardData.metrics.open_trades_count) || 0) : 0;
+    if (openCount <= 0) return;
+
+    this.autoRefreshTimer = setInterval(async () => {
+      if (App.currentView !== 'dashboard') {
+        this.stopAutoRefresh();
+        return;
+      }
+      try {
+        const params = App.getFilterParams();
+        this.dashboardData = await API.getDashboard(params);
+        const cur = this.dashboardData.currency || App.getActiveCurrency();
+        this.currentCurrency = cur;
+        this.renderKPIs(this.dashboardData.metrics, cur);
+        this.renderCalendar(this.dashboardData.calendar, cur);
+        this.renderEquityCurve(this.dashboardData.equity_curve, cur);
+        this.renderDailyPnlBars(this.dashboardData.calendar, cur);
+
+        const stillOpen = this.dashboardData.open_trades_count || (this.dashboardData.metrics && this.dashboardData.metrics.open_trades_count) || 0;
+        if (stillOpen <= 0) {
+          this.stopAutoRefresh();
+        }
+      } catch (err) {
+        console.error('Dashboard auto-refresh error:', err);
+      }
+    }, 3000);
+  },
+
+  stopAutoRefresh() {
+    if (this.autoRefreshTimer) {
+      clearInterval(this.autoRefreshTimer);
+      this.autoRefreshTimer = null;
     }
   },
 
@@ -45,10 +85,39 @@ const Dashboard = {
 
   renderKPIs(m, currency) {
     const cur = currency || this.currentCurrency || App.getActiveCurrency();
-    const pnl = m.net_profit || 0;
+    const closedPnl = m.net_profit || 0;
+    const openPnl = (m.open_pnl !== undefined) ? m.open_pnl : (this.dashboardData?.open_pnl || 0);
+    const openCount = (m.open_trades_count !== undefined) ? m.open_trades_count : (this.dashboardData?.open_trades_count || 0);
+    const totalPnl = (m.total_pnl !== undefined) ? m.total_pnl : (closedPnl + openPnl);
+
     const pnlEl = document.getElementById('dashNetPnl');
-    pnlEl.textContent = App.formatMoney(pnl, cur, { showSign: true });
-    pnlEl.className = `metric-value ${pnl >= 0 ? 'color-green' : 'color-red'}`;
+    const pnlSubEl = document.getElementById('dashNetPnlSub');
+    if (openCount > 0) {
+      pnlEl.textContent = App.formatMoney(totalPnl, cur, { showSign: true });
+      pnlEl.className = `metric-value ${totalPnl >= 0 ? 'color-green' : 'color-red'}`;
+      if (pnlSubEl) {
+        const openPnlFormatted = App.formatMoney(openPnl, cur, { showSign: true });
+        const openPnlClass = openPnl >= 0 ? 'color-green' : 'color-red';
+        pnlSubEl.innerHTML = `Closed: ${App.formatMoney(closedPnl, cur, { showSign: true })} · Floating: <span class="${openPnlClass}" style="font-weight:700;">${openPnlFormatted} (${openCount})</span>`;
+      }
+    } else {
+      pnlEl.textContent = App.formatMoney(closedPnl, cur, { showSign: true });
+      pnlEl.className = `metric-value ${closedPnl >= 0 ? 'color-green' : 'color-red'}`;
+      if (pnlSubEl) {
+        pnlSubEl.textContent = 'Closed Trades Profit';
+      }
+    }
+
+    // Open Positions Card
+    const openPnlEl = document.getElementById('dashOpenPnl');
+    const openTradesSubEl = document.getElementById('dashOpenTradesSub');
+    if (openPnlEl) {
+      openPnlEl.textContent = App.formatMoney(openPnl, cur, { showSign: true });
+      openPnlEl.className = `metric-value ${openPnl > 0.001 ? 'color-green' : (openPnl < -0.001 ? 'color-red' : 'color-muted')}`;
+    }
+    if (openTradesSubEl) {
+      openTradesSubEl.textContent = `${openCount} Active Trade${openCount === 1 ? '' : 's'}`;
+    }
 
     document.getElementById('dashWinRate').textContent = `${m.win_rate || 0}%`;
     document.getElementById('dashWinLossCount').textContent = `${m.winning_trades || 0}W - ${m.losing_trades || 0}L (${m.breakeven_trades || 0} BE)`;

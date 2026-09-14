@@ -52,6 +52,9 @@ namespace cAlgo.Robots
 
         private readonly Dictionary<int, long> _positionToOrderMap = new Dictionary<int, long>();
         private DateTime _lastFullSync = DateTime.MinValue;
+        private DateTime _lastLiveCandles = DateTime.MinValue;
+        private bool _syncPending = false;
+        private readonly object _syncLock = new object();
 
         protected override void OnStart()
         {
@@ -72,12 +75,12 @@ namespace cAlgo.Robots
             try
             {
                 PendingOrders.Filled += OnPendingOrderFilled;
-                PendingOrders.Created += args => SyncAccount();
-                PendingOrders.Cancelled += args => SyncAccount();
-                PendingOrders.Modified += args => SyncAccount();
-                Positions.Opened += args => SyncAccount();
-                Positions.Closed += args => SyncAccount();
-                Positions.Modified += args => SyncAccount();
+                PendingOrders.Created += args => RequestSync("Pending Order Created");
+                PendingOrders.Cancelled += args => RequestSync("Pending Order Cancelled");
+                PendingOrders.Modified += args => RequestSync("Pending Order Modified");
+                Positions.Opened += args => RequestSync("Position Opened");
+                Positions.Closed += args => RequestSync("Position Closed");
+                Positions.Modified += args => RequestSync("Position Modified");
 
                 var syncButton = new Button
                 {
@@ -91,7 +94,7 @@ namespace cAlgo.Robots
                 syncButton.Click += args =>
                 {
                     Print("Manual sync triggered via chart button.");
-                    SyncAccount();
+                    RequestSync("Manual Button Click");
                 };
                 Chart.AddControl(syncButton);
             }
@@ -101,7 +104,31 @@ namespace cAlgo.Robots
             }
 
             SyncAccount();
-            Timer.Start(TimeSpan.FromSeconds(Math.Max(1, LiveCandleIntervalSeconds)));
+            // Start 1s timer for precise 5s cooldown handling
+            Timer.Start(TimeSpan.FromSeconds(1));
+        }
+
+        private void RequestSync(string reason = "")
+        {
+            lock (_syncLock)
+            {
+                var elapsed = (DateTime.UtcNow - _lastFullSync).TotalSeconds;
+                if (elapsed >= 5.0)
+                {
+                    if (!string.IsNullOrEmpty(reason))
+                        Print("Trade Journal: Instant sync triggered ({0}).", reason);
+                    SyncAccount();
+                }
+                else
+                {
+                    if (!_syncPending)
+                    {
+                        if (!string.IsNullOrEmpty(reason))
+                            Print("Trade Journal: Sync queued ({0}), waiting for 5s cooldown (elapsed: {1:F1}s).", reason, elapsed);
+                        _syncPending = true;
+                    }
+                }
+            }
         }
 
         private void OnPendingOrderFilled(PendingOrderFilledEventArgs args)
@@ -114,15 +141,35 @@ namespace cAlgo.Robots
                 }
             }
             catch {}
-            SyncAccount();
+            RequestSync("Pending Order Filled");
         }
 
         protected override void OnTimer()
         {
-            SendLiveCandles();
-            if (DateTime.UtcNow - _lastFullSync >= TimeSpan.FromMinutes(SyncIntervalMinutes))
+            var now = DateTime.UtcNow;
+
+            // 1. Live candle update at configured interval (default 5s)
+            if (now - _lastLiveCandles >= TimeSpan.FromSeconds(Math.Max(1, LiveCandleIntervalSeconds)))
             {
-                SyncAccount();
+                _lastLiveCandles = now;
+                SendLiveCandles();
+            }
+
+            // 2. Execute queued sync once 5s cooldown has elapsed
+            lock (_syncLock)
+            {
+                if (_syncPending && (now - _lastFullSync).TotalSeconds >= 5.0)
+                {
+                    Print("Trade Journal: Executing queued sync after 5s cooldown.");
+                    SyncAccount();
+                    return;
+                }
+
+                // 3. Periodic background sync interval
+                if (now - _lastFullSync >= TimeSpan.FromMinutes(SyncIntervalMinutes))
+                {
+                    SyncAccount();
+                }
             }
         }
 
@@ -133,7 +180,11 @@ namespace cAlgo.Robots
 
         private void SyncAccount()
         {
-            _lastFullSync = DateTime.UtcNow;
+            lock (_syncLock)
+            {
+                _lastFullSync = DateTime.UtcNow;
+                _syncPending = false;
+            }
             try
             {
                 var payload = BuildPayload();
@@ -389,38 +440,63 @@ namespace cAlgo.Robots
 
         private void SendLiveCandles()
         {
-            if (!SyncCandles) return;
             try
             {
-                var symbols = GetActiveSymbols();
-                var liveBars = new List<JournalCandle>();
-
-                foreach (var sym in symbols)
+                var liveOpenTrades = new List<object>();
+                foreach (var pos in Positions)
                 {
-                    foreach (var tf in SupportedTimeframes)
+                    liveOpenTrades.Add(new
                     {
-                        var bars = MarketData.GetBars(tf.TimeFrame, sym);
-                        if (bars.Count > 0)
+                        ticket = "ctrader-position-" + pos.Id.ToString(CultureInfo.InvariantCulture),
+                        symbol = pos.SymbolName,
+                        profit = pos.NetProfit,
+                        current_price = pos.CurrentPrice,
+                        stop_loss = pos.StopLoss,
+                        take_profit = pos.TakeProfit,
+                        lots = pos.Quantity
+                    });
+                }
+
+                var liveBars = new List<JournalCandle>();
+                if (SyncCandles)
+                {
+                    var symbols = GetActiveSymbols();
+                    foreach (var sym in symbols)
+                    {
+                        foreach (var tf in SupportedTimeframes)
                         {
-                            int lastIdx = bars.Count - 1;
-                            liveBars.Add(new JournalCandle
+                            var bars = MarketData.GetBars(tf.TimeFrame, sym);
+                            if (bars.Count > 0)
                             {
-                                Symbol = sym,
-                                Timeframe = tf.Name,
-                                Time = ToUnixSeconds(bars.OpenTimes[lastIdx]),
-                                Open = bars.OpenPrices[lastIdx],
-                                High = bars.HighPrices[lastIdx],
-                                Low = bars.LowPrices[lastIdx],
-                                Close = bars.ClosePrices[lastIdx],
-                                Volume = bars.TickVolumes[lastIdx]
-                            });
+                                int lastIdx = bars.Count - 1;
+                                liveBars.Add(new JournalCandle
+                                {
+                                    Symbol = sym,
+                                    Timeframe = tf.Name,
+                                    Time = ToUnixSeconds(bars.OpenTimes[lastIdx]),
+                                    Open = bars.OpenPrices[lastIdx],
+                                    High = bars.HighPrices[lastIdx],
+                                    Low = bars.LowPrices[lastIdx],
+                                    Close = bars.ClosePrices[lastIdx],
+                                    Volume = bars.TickVolumes[lastIdx]
+                                });
+                            }
                         }
                     }
                 }
 
-                if (liveBars.Count == 0) return;
+                if (liveBars.Count == 0 && liveOpenTrades.Count == 0) return;
 
-                var payload = new { candles = liveBars };
+                var payload = new
+                {
+                    equity = Account.Equity,
+                    balance = Account.Balance,
+                    margin = Account.Margin,
+                    free_margin = Account.FreeMargin,
+                    open_trades = liveOpenTrades,
+                    candles = liveBars
+                };
+
                 var request = new HttpRequest(new Uri(GetCandlesUrl()))
                 {
                     Method = HttpMethod.Post,

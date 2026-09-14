@@ -5,6 +5,7 @@
 
 const App = {
   currentView: 'dashboard',
+  validRoutes: ['dashboard', 'trades', 'analytics', 'playbooks', 'review', 'accounts'],
   activeAccountId: null,
   dateFrom: null,
   dateTo: null,
@@ -72,12 +73,95 @@ const App = {
     return `${sym}${numStr}`;
   },
 
+  getRouteFromUrl() {
+    // 1. Check hash first: e.g. #trades, #/trades, #trades?date=...
+    const hash = window.location.hash || '';
+    if (hash) {
+      const cleanHash = hash.replace(/^#\/?/, '').split('?')[0].trim().toLowerCase();
+      if (this.validRoutes.includes(cleanHash)) {
+        return cleanHash;
+      }
+    }
+
+    // 2. Check path fallback: e.g. /trades, /analytics
+    const path = window.location.pathname.replace(/^\//, '').split('/')[0].trim().toLowerCase();
+    if (this.validRoutes.includes(path)) {
+      return path;
+    }
+
+    return 'dashboard';
+  },
+
+  getQueryParamsFromHash() {
+    const hash = window.location.hash || '';
+    const qIndex = hash.indexOf('?');
+    if (qIndex === -1) {
+      if (window.location.search) {
+        return Object.fromEntries(new URLSearchParams(window.location.search));
+      }
+      return {};
+    }
+    return Object.fromEntries(new URLSearchParams(hash.substring(qIndex + 1)));
+  },
+
+  switchActiveViewDom(viewName) {
+    if (!this.validRoutes.includes(viewName)) {
+      viewName = 'dashboard';
+    }
+    this.currentView = viewName;
+
+    // Update sidebar navigation
+    document.querySelectorAll('.nav-item').forEach(item => {
+      const link = item.querySelector('a');
+      item.classList.toggle('active', link && link.dataset.view === viewName);
+    });
+
+    // Switch view containers
+    document.querySelectorAll('.view-container').forEach(v => {
+      v.classList.toggle('active', v.id === `view-${viewName}`);
+    });
+
+    if (viewName !== 'trades' && typeof Trades !== 'undefined' && Trades.stopAutoRefresh) {
+      Trades.stopAutoRefresh();
+    }
+    if (viewName !== 'dashboard' && typeof Dashboard !== 'undefined' && Dashboard.stopAutoRefresh) {
+      Dashboard.stopAutoRefresh();
+    }
+    if (viewName !== 'accounts' && typeof Accounts !== 'undefined' && Accounts.stopAutoRefresh) {
+      Accounts.stopAutoRefresh();
+    }
+    if (viewName !== 'review' && typeof Review !== 'undefined' && Review.stopAutoRefresh) {
+      Review.stopAutoRefresh();
+    }
+  },
+
   async init() {
     console.log('Initializing Trading Journal...');
     this.setupEventListeners();
+
+    const initialRoute = this.getRouteFromUrl();
+    this.switchActiveViewDom(initialRoute);
+
     await Accounts.load();
     await Playbooks.load();
-    this.navigateTo('dashboard');
+
+    const query = this.getQueryParamsFromHash();
+    if (initialRoute === 'trades' && (query.date || query.search)) {
+      const searchInput = document.getElementById('tradeSearchInput');
+      if (searchInput) {
+        searchInput.value = query.date || query.search;
+      }
+    }
+
+    const currentHashClean = (window.location.hash || '').replace(/^#\/?/, '').split('?')[0].trim().toLowerCase();
+    if (currentHashClean !== initialRoute) {
+      const queryStr = window.location.hash.includes('?')
+        ? window.location.hash.substring(window.location.hash.indexOf('?'))
+        : (window.location.search || '');
+      history.replaceState({ view: initialRoute }, '', `#${initialRoute}${queryStr}`);
+    }
+
+    this.navigateTo(initialRoute, false);
   },
 
   setupEventListeners() {
@@ -89,6 +173,27 @@ const App = {
         if (targetView) this.navigateTo(targetView);
       });
     });
+
+    // Handle browser back/forward and URL hash changes
+    const handleLocationChange = () => {
+      const route = this.getRouteFromUrl();
+      const query = this.getQueryParamsFromHash();
+      if (route === 'trades') {
+        const searchInput = document.getElementById('tradeSearchInput');
+        if (searchInput) {
+          const expectedSearch = query.date || query.search || '';
+          if (searchInput.value !== expectedSearch) {
+            searchInput.value = expectedSearch;
+          }
+        }
+      }
+      if (this.currentView !== route) {
+        this.navigateTo(route, false);
+      }
+    };
+
+    window.addEventListener('popstate', handleLocationChange);
+    window.addEventListener('hashchange', handleLocationChange);
 
     // Global Account Filter
     const accSelect = document.getElementById('globalAccountSelect');
@@ -140,23 +245,19 @@ const App = {
     }
   },
 
-  navigateTo(viewName) {
-    this.currentView = viewName;
+  navigateTo(viewName, updateUrl = true) {
+    if (!this.validRoutes.includes(viewName)) {
+      viewName = 'dashboard';
+    }
 
-    // Update sidebar navigation
-    document.querySelectorAll('.nav-item').forEach(item => {
-      const link = item.querySelector('a');
-      item.classList.toggle('active', link && link.dataset.view === viewName);
-    });
+    if (updateUrl) {
+      const targetHash = `#${viewName}`;
+      if (window.location.hash !== targetHash && window.location.hash !== `#/${viewName}`) {
+        history.pushState({ view: viewName }, '', targetHash);
+      }
+    }
 
-    // Switch view containers
-    document.querySelectorAll('.view-container').forEach(v => {
-      v.classList.remove('active');
-    });
-
-    const activeView = document.getElementById(`view-${viewName}`);
-    if (activeView) activeView.classList.add('active');
-
+    this.switchActiveViewDom(viewName);
     this.refreshCurrentView();
   },
 
@@ -184,12 +285,15 @@ const App = {
   },
 
   navigateToTradesWithDate(dateStr) {
-    this.navigateTo('trades');
     const searchInput = document.getElementById('tradeSearchInput');
     if (searchInput) {
-      searchInput.value = dateStr;
-      Trades.load();
+      searchInput.value = dateStr || '';
     }
+    const targetHash = dateStr ? `#trades?date=${encodeURIComponent(dateStr)}` : '#trades';
+    if (window.location.hash !== targetHash) {
+      history.pushState({ view: 'trades', date: dateStr }, '', targetHash);
+    }
+    this.navigateTo('trades', false);
   },
 
   getFilterParams() {

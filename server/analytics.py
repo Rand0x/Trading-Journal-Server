@@ -65,6 +65,9 @@ def calculate_trade_metrics(trades: List[Dict[str, Any]], initial_balance: float
     """
     valid_trades = [t for t in trades if not t.get("is_missed") and t.get("status") not in ("CANCELLED", "PENDING")]
     closed_trades = [t for t in valid_trades if t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or t.get("close_time")]
+    open_trades = [t for t in valid_trades if t.get("status") == "OPEN" and not t.get("close_time")]
+    open_pnl = sum(float(t.get("net_profit") or 0.0) for t in open_trades)
+    open_count = len(open_trades)
     total_closed = len(closed_trades)
 
     if total_closed == 0:
@@ -101,6 +104,9 @@ def calculate_trade_metrics(trades: List[Dict[str, Any]], initial_balance: float
             "kelly_criterion": 0.0,
             "total_r": 0.0,
             "avg_r": 0.0,
+            "open_trades_count": open_count,
+            "open_pnl": round(open_pnl, 2),
+            "total_pnl": round(open_pnl, 2),
         }
 
     wins = []
@@ -288,6 +294,9 @@ def calculate_trade_metrics(trades: List[Dict[str, Any]], initial_balance: float
         "kelly_criterion": kelly_criterion,
         "total_r": total_r,
         "avg_r": avg_r,
+        "open_trades_count": open_count,
+        "open_pnl": round(open_pnl, 2),
+        "total_pnl": round(net_profit + open_pnl, 2),
     }
 
 def get_calendar_heatmap(trades: List[Dict[str, Any]], initial_balance: float = 10000.0) -> Dict[str, Dict[str, Any]]:
@@ -401,8 +410,9 @@ def get_performance_by_day_of_week(trades: List[Dict[str, Any]]) -> List[Dict[st
     """Performance breakdown by Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday."""
     day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     buckets = {i: {"day": day_names[i], "day_num": i, "trades": 0, "wins": 0, "losses": 0, "net_profit": 0.0} for i in range(7)}
+    closed_trades = [t for t in trades if not t.get("is_missed") and (t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or (t.get("status") not in ("CANCELLED", "PENDING", "OPEN") and t.get("close_time")))]
 
-    for t in trades:
+    for t in closed_trades:
         t_time = t.get("open_time") or t.get("close_time")
         if not t_time:
             continue
@@ -441,8 +451,9 @@ def get_performance_by_day_of_week(trades: List[Dict[str, Any]]) -> List[Dict[st
 def get_performance_by_hour(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Performance breakdown by hour of day (00:00 - 23:00) to find best trading sessions."""
     hours = {h: {"hour": f"{h:02d}:00", "trades": 0, "wins": 0, "losses": 0, "net_profit": 0.0} for h in range(24)}
+    closed_trades = [t for t in trades if not t.get("is_missed") and (t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or (t.get("status") not in ("CANCELLED", "PENDING", "OPEN") and t.get("close_time")))]
 
-    for t in trades:
+    for t in closed_trades:
         t_time = t.get("open_time")
         if not t_time:
             continue
@@ -478,8 +489,9 @@ def get_performance_by_hour(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]
 def get_performance_by_symbol(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Performance breakdown per symbol/ticker."""
     symbols = {}
+    closed_trades = [t for t in trades if not t.get("is_missed") and (t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or (t.get("status") not in ("CANCELLED", "PENDING", "OPEN") and t.get("close_time")))]
 
-    for t in trades:
+    for t in closed_trades:
         sym = (t.get("symbol") or "UNKNOWN").upper()
         pnl = float(t.get("net_profit") or 0.0)
 
@@ -528,8 +540,9 @@ def get_performance_by_symbol(trades: List[Dict[str, Any]]) -> List[Dict[str, An
 def get_performance_by_setup(trades: List[Dict[str, Any]], playbooks: Dict[int, str]) -> List[Dict[str, Any]]:
     """Performance breakdown per playbook setup."""
     stats = {}
+    closed_trades = [t for t in trades if not t.get("is_missed") and (t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or (t.get("status") not in ("CANCELLED", "PENDING", "OPEN") and t.get("close_time")))]
 
-    for t in trades:
+    for t in closed_trades:
         setup_id = t.get("setup_id")
         setup_name = playbooks.get(setup_id, "No Setup / Discretionary") if setup_id else "No Setup / Discretionary"
         pnl = float(t.get("net_profit") or 0.0)
@@ -881,6 +894,9 @@ def get_weekly_review(trades: List[Dict[str, Any]], week_offset: int = 0) -> Dic
     missed_trades = [t for t in week_trades if t.get("is_missed")]
     active_week_trades = [t for t in week_trades if not t.get("is_missed") and t.get("status") not in ("CANCELLED", "PENDING")]
     closed_week_trades = [t for t in active_week_trades if t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or t.get("close_time")]
+    open_week_trades = [t for t in active_week_trades if t.get("status") == "OPEN" and not t.get("close_time")]
+    open_net = sum(float(t.get("net_profit") or 0.0) for t in open_week_trades)
+    open_trades_count = len(open_week_trades)
 
     wins = [t for t in closed_week_trades if float(t.get("net_profit") or 0.0) > 0.001 or t.get("status") == "WIN"]
     losses = [t for t in closed_week_trades if float(t.get("net_profit") or 0.0) < -0.001 or t.get("status") == "LOSS"]
@@ -963,5 +979,8 @@ def get_weekly_review(trades: List[Dict[str, Any]], week_offset: int = 0) -> Dic
         "top_playbook": top_playbook,
         "missed_trades_count": len(missed_trades),
         "missed_trades": missed_trades,
-        "missing_r_count": missing_r_count
+        "missing_r_count": missing_r_count,
+        "open_trades_count": open_trades_count,
+        "open_pnl": round(open_net, 2),
+        "total_pnl": round(total_net + open_net, 2)
     }

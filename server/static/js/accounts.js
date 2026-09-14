@@ -32,9 +32,37 @@ const Accounts = {
       App.accounts = accounts;
       this.renderAccounts(accounts);
       this.updateGlobalAccountSelect(accounts);
+      this.checkAutoRefresh();
     } catch (err) {
       console.error('Failed to load accounts:', err);
       App.showToast(`Error: ${err.message}`, 'error');
+    }
+  },
+
+  autoRefreshTimer: null,
+
+  checkAutoRefresh() {
+    this.stopAutoRefresh();
+    this.autoRefreshTimer = setInterval(async () => {
+      if (App.currentView !== 'accounts') {
+        this.stopAutoRefresh();
+        return;
+      }
+      const isModalActive = document.querySelector('.modal.active');
+      if (isModalActive) return;
+
+      try {
+        const accounts = await API.getAccounts();
+        App.accounts = accounts;
+        this.renderAccounts(accounts);
+      } catch (err) {}
+    }, 4000);
+  },
+
+  stopAutoRefresh() {
+    if (this.autoRefreshTimer) {
+      clearInterval(this.autoRefreshTimer);
+      this.autoRefreshTimer = null;
     }
   },
 
@@ -46,8 +74,10 @@ const Accounts = {
     accounts.forEach(a => {
       const card = document.createElement('div');
       card.className = 'playbook-card';
-      const isProfitable = (a.equity || a.current_balance) >= a.initial_balance;
-      const profitDiff = (a.equity || a.current_balance) - a.initial_balance;
+      const effectiveCurrent = (a.equity !== null && a.equity !== undefined) ? a.equity : a.current_balance;
+      const isProfitable = effectiveCurrent >= a.initial_balance;
+      const profitDiff = effectiveCurrent - a.initial_balance;
+      const floatingPnl = (a.equity != null && a.current_balance != null) ? (a.equity - a.current_balance) : 0;
 
       const isMT = a.platform === 'MT4' || a.platform === 'MT5';
       const isCTrader = a.platform === 'cTrader';
@@ -86,10 +116,11 @@ const Accounts = {
           </div>
         </div>
 
-        <div style="font-size:12px;display:flex;justify-content:space-between;color:#9ca3af;">
+        <div style="font-size:12px;display:flex;justify-content:space-between;align-items:center;color:#9ca3af;flex-wrap:wrap;gap:4px;">
           <span>Initial: ${App.formatMoney(a.initial_balance, a.currency, { decimals: 0 })}</span>
+          ${Math.abs(floatingPnl) > 0.001 ? `<span>Floating: <strong class="${floatingPnl >= 0 ? 'color-green' : 'color-red'}">${App.formatMoney(floatingPnl, a.currency, { showSign: true })}</strong></span>` : ''}
           <span style="font-weight:700;" class="${isProfitable ? 'color-green' : 'color-red'}">
-            ${App.formatMoney(profitDiff, a.currency, { showSign: true })} (${((profitDiff / (a.initial_balance || 1)) * 100).toFixed(1)}%)
+            Total: ${App.formatMoney(profitDiff, a.currency, { showSign: true })} (${((profitDiff / (a.initial_balance || 1)) * 100).toFixed(1)}%)
           </span>
         </div>
 

@@ -3,7 +3,7 @@ Pydantic Models and Data Transfer Schemas
 Clean type validation without external AI or heavy dependencies.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import List, Optional, Dict, Any, Literal
 
 Platform = Literal["MT4", "MT5", "cTrader", "Manual"]
@@ -351,10 +351,16 @@ class CandleBatch(BaseModel):
     candles: List[CandleItem]
 
 class CandleUploadPayload(BaseModel):
+    model_config = ConfigDict(extra='allow')
     symbol: Optional[str] = None
     timeframe: Optional[str] = None
     candles: Optional[List[CandleItem]] = None
     batches: Optional[List[CandleBatch]] = None
+    open_trades: Optional[List[Dict[str, Any]]] = None
+    equity: Optional[float] = None
+    balance: Optional[float] = None
+    margin: Optional[float] = None
+    free_margin: Optional[float] = None
 
 # ================= CTRADER SYNC SCHEMA =================
 class CTraderSyncRequest(BaseModel):

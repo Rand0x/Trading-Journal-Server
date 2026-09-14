@@ -291,6 +291,180 @@ class TestMQLReceiverPreservation(unittest.TestCase):
             t = dict(cursor.fetchone())
             self.assertIsNone(t["r_multiple"])
 
+    def test_mt5_sl_close_position_id_matching_no_duplicate(self):
+        # Scenario from user: Open trade recorded as ticket '4021270'.
+        # When SL triggers, MT5 sends closed deal '3854236' with position_id '4021270'.
+        # The connector must match it to the existing OPEN trade, update it, and NOT create a duplicate!
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, open_price, stop_loss, status, notes, rating,
+                    created_at, updated_at
+                ) VALUES (
+                    ?, '4021270', 'BTCUSD', 'SELL', 0.01,
+                    '2026-09-13 11:47:35', 77100.0, 77017.31, 'OPEN',
+                    'Der Trade war nötig, damit gezeigt wird, dass das Konto noch aktiv ist.', 1,
+                    '2026-09-13T11:47:35Z', '2026-09-13T11:47:35Z'
+                );
+            """, (self.account_id,))
+            conn.commit()
+            trade_id = cursor.lastrowid
+
+        payload = MQLSyncPayload(
+            source="mql",
+            account_number="sync-acc-100",
+            balance=10000.0,
+            equity=10000.0,
+            closed_trades=[
+                MQLTradeItem(
+                    ticket="3854236",
+                    position_id="4021270",
+                    order_id="3854236",
+                    symbol="BTCUSD",
+                    type=1, # SELL
+                    lots=0.01,
+                    open_time="2026-09-13 11:47:35",
+                    close_time="2026-09-13 14:15:24",
+                    open_price=77100.0,
+                    close_price=77017.67,
+                    stop_loss=77017.31,
+                    profit=-2.60,
+                    comment="[sl 77017.31]"
+                )
+            ]
+        )
+
+        res = process_mql_payload(self.api_key, payload)
+        self.assertEqual(res["updated_trades"], 1)
+        self.assertEqual(res["inserted_trades"], 0)
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM trades WHERE account_id = ? AND symbol = 'BTCUSD';", (self.account_id,))
+            rows = cursor.fetchall()
+            self.assertEqual(len(rows), 1, "There should be exactly 1 trade, not duplicated!")
+            t = dict(rows[0])
+            self.assertEqual(t["id"], trade_id)
+            self.assertEqual(t["status"], "LOSS")
+            self.assertEqual(t["net_profit"], -2.60)
+            self.assertEqual(t["notes"], "Der Trade war nötig, damit gezeigt wird, dass das Konto noch aktiv ist.")
+            self.assertEqual(t["rating"], 1)
+
+    def test_mt5_sl_close_fallback_parameter_matching_no_duplicate(self):
+        # Scenario: Even if position_id was missing/blank, fallback matching by
+        # symbol, direction, volume, and open_time prevents duplicates.
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, open_price, stop_loss, status, notes,
+                    created_at, updated_at
+                ) VALUES (
+                    ?, '5555555', 'ETHUSD', 'BUY', 0.1,
+                    '2026-09-13 12:00:00', 2400.0, 2350.0, 'OPEN',
+                    'User plan for ETH',
+                    '2026-09-13T12:00:00Z', '2026-09-13T12:00:00Z'
+                );
+            """, (self.account_id,))
+            conn.commit()
+            trade_id = cursor.lastrowid
+
+        payload = MQLSyncPayload(
+            source="mql",
+            account_number="sync-acc-100",
+            balance=10000.0,
+            equity=10000.0,
+            closed_trades=[
+                MQLTradeItem(
+                    ticket="9999999", # Different deal ticket, no position_id provided
+                    symbol="ETHUSD",
+                    type=0, # BUY
+                    lots=0.1,
+                    open_time="2026-09-13 12:00:00",
+                    close_time="2026-09-13 13:00:00",
+                    open_price=2400.0,
+                    close_price=2350.0,
+                    profit=-50.0,
+                    comment="[sl]"
+                )
+            ]
+        )
+
+        res = process_mql_payload(self.api_key, payload)
+        self.assertEqual(res["updated_trades"], 1)
+        self.assertEqual(res["inserted_trades"], 0)
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM trades WHERE account_id = ? AND symbol = 'ETHUSD';", (self.account_id,))
+            rows = cursor.fetchall()
+            self.assertEqual(len(rows), 1, "Fallback matching should have merged without duplicating!")
+            t = dict(rows[0])
+            self.assertEqual(t["id"], trade_id)
+            self.assertEqual(t["status"], "LOSS")
+            self.assertEqual(t["notes"], "User plan for ETH")
+
+    def test_reconcile_existing_duplicate_closed_trades(self):
+        # Scenario: DB already contains two CLOSED trades for the same position
+        # Trade A: Has user notes, mistake_id, rating=1
+        # Trade B: Auto-created duplicate with '[sl ...]' notes
+        # Running sync should automatically reconcile them into Trade A!
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, close_time, open_price, close_price, stop_loss, status,
+                    notes, rating, mistake_id, created_at, updated_at
+                ) VALUES (
+                    ?, 'pos-dup-1', 'SOLUSD', 'BUY', 1.0,
+                    '2026-09-13 15:00:00', '2026-09-13 15:30:00', 140.0, 138.0, 138.0, 'LOSS',
+                    'User journal note for SOL', 1, 1,
+                    '2026-09-13T15:00:00Z', '2026-09-13T15:00:00Z'
+                );
+            """, (self.account_id,))
+            trade_a_id = cursor.lastrowid
+
+            cursor.execute("""
+                INSERT INTO trades (
+                    account_id, ticket, symbol, direction, volume,
+                    open_time, close_time, open_price, close_price, stop_loss, status,
+                    notes, rating, created_at, updated_at
+                ) VALUES (
+                    ?, 'deal-dup-2', 'SOLUSD', 'BUY', 1.0,
+                    '2026-09-13 15:00:00', '2026-09-13 15:30:00', 140.0, 138.0, 138.0, 'LOSS',
+                    '[sl 138.00]', 5,
+                    '2026-09-13T15:30:00Z', '2026-09-13T15:30:00Z'
+                );
+            """, (self.account_id,))
+            trade_b_id = cursor.lastrowid
+            conn.commit()
+
+        # Send empty sync payload
+        payload = MQLSyncPayload(
+            source="mql",
+            account_number="sync-acc-100",
+            balance=10000.0,
+            equity=10000.0
+        )
+        process_mql_payload(self.api_key, payload)
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM trades WHERE account_id = ? AND symbol = 'SOLUSD';", (self.account_id,))
+            rows = cursor.fetchall()
+            self.assertEqual(len(rows), 1, "Duplicate closed trade should have been removed during sync reconciliation!")
+            t = dict(rows[0])
+            self.assertEqual(t["id"], trade_a_id)
+            self.assertEqual(t["notes"], "User journal note for SOL")
+            self.assertEqual(t["rating"], 1)
+            self.assertEqual(t["order_id"], "deal-dup-2")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

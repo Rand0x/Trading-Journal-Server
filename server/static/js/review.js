@@ -19,9 +19,41 @@ const Review = {
       const data = await API.getWeeklyReview(query);
       this.currentCurrency = App.getActiveCurrency();
       this.renderReview(data);
+      this.checkAutoRefresh(data);
     } catch (err) {
       console.error('Failed to load weekly review:', err);
       App.showToast(`Weekly review error: ${err.message}`, 'error');
+    }
+  },
+
+  autoRefreshTimer: null,
+
+  checkAutoRefresh(data) {
+    this.stopAutoRefresh();
+    if (this.weekOffset !== 0 || !data || !data.open_trades_count) return;
+
+    this.autoRefreshTimer = setInterval(async () => {
+      if (App.currentView !== 'review' || this.weekOffset !== 0) {
+        this.stopAutoRefresh();
+        return;
+      }
+      try {
+        const params = App.getFilterParams();
+        const query = { week_offset: 0 };
+        if (params.account_id) query.account_id = params.account_id;
+        const freshData = await API.getWeeklyReview(query);
+        this.renderReview(freshData);
+        if (!freshData.open_trades_count) {
+          this.stopAutoRefresh();
+        }
+      } catch (err) {}
+    }, 4000);
+  },
+
+  stopAutoRefresh() {
+    if (this.autoRefreshTimer) {
+      clearInterval(this.autoRefreshTimer);
+      this.autoRefreshTimer = null;
     }
   },
 
@@ -52,15 +84,30 @@ const Review = {
 
     // Weekly Summary Cards
     const pnlEl = document.getElementById('revNetPnl');
+    const rEl = document.getElementById('revTotalR');
+    const openCount = data.open_trades_count || 0;
+    const openPnl = data.open_pnl || 0;
+    const closedPnl = data.net_profit || 0;
+    const totalPnl = data.total_pnl !== undefined ? data.total_pnl : (closedPnl + openPnl);
+
     if (pnlEl) {
-      pnlEl.textContent = App.formatMoney(data.net_profit || 0, cur, { showSign: true });
-      pnlEl.className = `metric-value ${(data.net_profit || 0) >= 0 ? 'color-green' : 'color-red'}`;
+      if (openCount > 0) {
+        pnlEl.textContent = App.formatMoney(totalPnl, cur, { showSign: true });
+        pnlEl.className = `metric-value ${totalPnl >= 0 ? 'color-green' : 'color-red'}`;
+      } else {
+        pnlEl.textContent = App.formatMoney(closedPnl, cur, { showSign: true });
+        pnlEl.className = `metric-value ${closedPnl >= 0 ? 'color-green' : 'color-red'}`;
+      }
     }
 
-    const rEl = document.getElementById('revTotalR');
     if (rEl) {
       const totalR = data.total_r || 0;
-      rEl.textContent = `${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)} R`;
+      const rText = `${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)} R`;
+      if (openCount > 0) {
+        rEl.textContent = `${rText} · Open: ${App.formatMoney(openPnl, cur, { showSign: true })} (${openCount})`;
+      } else {
+        rEl.textContent = rText;
+      }
       rEl.style.color = totalR >= 0 ? '#10b981' : '#ef4444';
     }
 

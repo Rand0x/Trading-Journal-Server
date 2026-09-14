@@ -8,6 +8,7 @@ Handles all external connectivity:
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional, Any, Union, List, Dict
 from fastapi import APIRouter, Header, HTTPException, UploadFile, File, Form, Query, Body
 from server.models import MQLSyncPayload, CTraderSyncRequest, CandleBatch, CandleUploadPayload
@@ -16,6 +17,7 @@ from server.connectors.ctrader_api import sync_ctrader_account
 from server.connectors.ctrader_api import sync_all_active_ctrader_accounts
 from server.connectors.statement_parser import parse_and_import_statement
 from server.connectors.market_data import get_chart_data_for_trade
+from server.analytics import compute_r_multiple
 from server.database import get_connection
 
 logger = logging.getLogger(__name__)
@@ -240,7 +242,7 @@ def get_latest_candle_for_trade(trade_id: int, timeframe: str = Query("AUTO")):
     """
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT symbol, status, open_price, close_price FROM trades WHERE id = ?;", (trade_id,))
+        cursor.execute("SELECT id, symbol, status, open_price, close_price, net_profit, r_multiple FROM trades WHERE id = ?;", (trade_id,))
         trade = cursor.fetchone()
         if not trade:
             raise HTTPException(status_code=404, detail=f"Trade with ID {trade_id} not found.")
@@ -273,6 +275,10 @@ def get_latest_candle_for_trade(trade_id: int, timeframe: str = Query("AUTO")):
                 "timeframe": target_tf,
                 "candle": None,
                 "trade_status": trade["status"],
+                "open_price": float(trade["open_price"]),
+                "close_price": float(trade["close_price"]) if trade["close_price"] is not None else None,
+                "net_profit": float(trade["net_profit"]) if trade["net_profit"] is not None else None,
+                "r_multiple": float(trade["r_multiple"]) if trade["r_multiple"] is not None else None,
             }
 
         return {
@@ -289,7 +295,9 @@ def get_latest_candle_for_trade(trade_id: int, timeframe: str = Query("AUTO")):
             },
             "trade_status": trade["status"],
             "open_price": float(trade["open_price"]),
-            "close_price": float(trade["close_price"]) if trade["close_price"] else None,
+            "close_price": float(trade["close_price"]) if trade["close_price"] is not None else None,
+            "net_profit": float(trade["net_profit"]) if trade["net_profit"] is not None else None,
+            "r_multiple": float(trade["r_multiple"]) if trade["r_multiple"] is not None else None,
         }
 
 @router.get("/latest-candle")
@@ -332,8 +340,99 @@ def upload_candles(
     """
     Stores candle bars manually or via external collector/EA/cBot.
     Handles single batches, multi-batches, or live forming candle updates.
-    Updates in-place based on (symbol, timeframe, timestamp) without creating duplicate ticks.
+    Also updates live floating profit/loss, current prices, and account equity for open trades.
     """
     rows = _extract_candle_rows(payload)
     count = _save_candle_records(rows)
-    return {"status": "success", "count": count}
+
+    updated_open_trades = 0
+    payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else (payload if isinstance(payload, dict) else {})
+    if x_api_key and isinstance(payload_dict, dict):
+        open_trades = payload_dict.get("open_trades")
+        equity = payload_dict.get("equity")
+        balance = payload_dict.get("balance")
+        margin = payload_dict.get("margin")
+        free_margin = payload_dict.get("free_margin")
+
+        if open_trades is not None or equity is not None:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id FROM accounts WHERE api_key = ?;", (x_api_key,))
+                acc = cursor.fetchone()
+                if acc:
+                    account_id = acc["id"]
+                    now_str = datetime.now(timezone.utc).isoformat()
+                    if equity is not None:
+                        cursor.execute("""
+                            UPDATE accounts
+                            SET equity = ?,
+                                current_balance = COALESCE(?, current_balance),
+                                margin = COALESCE(?, margin),
+                                free_margin = COALESCE(?, free_margin),
+                                updated_at = ?
+                            WHERE id = ?;
+                        """, (
+                            float(equity),
+                            float(balance) if balance is not None else None,
+                            float(margin) if margin is not None else None,
+                            float(free_margin) if free_margin is not None else None,
+                            now_str,
+                            account_id
+                        ))
+
+                    for ot in (open_trades or []):
+                        if not isinstance(ot, dict):
+                            continue
+                        t_ticket = str(ot.get("ticket") or "").strip()
+                        if not t_ticket:
+                            continue
+                        profit = ot.get("profit")
+                        cur_price = ot.get("current_price")
+                        sl = ot.get("stop_loss")
+                        tp = ot.get("take_profit")
+
+                        clean_sl = float(sl) if sl is not None and float(sl) > 0 else None
+                        clean_tp = float(tp) if tp is not None and float(tp) > 0 else None
+                        clean_price = float(cur_price) if cur_price is not None and float(cur_price) > 0 else None
+                        profit_val = float(profit) if profit is not None else None
+
+                        cursor.execute("""
+                            SELECT id, direction, open_price, stop_loss, initial_risk
+                            FROM trades
+                            WHERE account_id = ?
+                              AND (ticket = ? OR ticket = ?)
+                              AND status = 'OPEN';
+                        """, (account_id, t_ticket, f"ctrader-position-{t_ticket}"))
+                        t_row = cursor.fetchone()
+                        if t_row:
+                            t_dir = t_row["direction"]
+                            t_open_price = float(t_row["open_price"])
+                            effective_sl = clean_sl if clean_sl is not None else (float(t_row["stop_loss"]) if t_row["stop_loss"] else None)
+                            calc_r = compute_r_multiple(
+                                direction=t_dir,
+                                open_price=t_open_price,
+                                stop_loss=effective_sl,
+                                close_price=clean_price,
+                                net_profit=profit_val,
+                                initial_risk=t_row["initial_risk"]
+                            )
+
+                            cursor.execute("""
+                                UPDATE trades
+                                SET net_profit = COALESCE(?, net_profit),
+                                    gross_profit = COALESCE(?, gross_profit),
+                                    close_price = COALESCE(?, close_price),
+                                    stop_loss = COALESCE(?, stop_loss),
+                                    take_profit = COALESCE(?, take_profit),
+                                    r_multiple = COALESCE(?, r_multiple),
+                                    updated_at = ?
+                                WHERE id = ?;
+                            """, (
+                                profit_val, profit_val,
+                                clean_price, clean_sl, clean_tp,
+                                calc_r, now_str, t_row["id"]
+                            ))
+                            updated_open_trades += 1
+                    conn.commit()
+
+    return {"status": "success", "count": count, "updated_open_trades": updated_open_trades}
