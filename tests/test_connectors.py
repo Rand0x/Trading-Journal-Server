@@ -352,9 +352,8 @@ class TestMQLReceiverPreservation(unittest.TestCase):
             self.assertEqual(t["notes"], "Der Trade war nötig, damit gezeigt wird, dass das Konto noch aktiv ist.")
             self.assertEqual(t["rating"], 1)
 
-    def test_mt5_sl_close_fallback_parameter_matching_no_duplicate(self):
-        # Scenario: Even if position_id was missing/blank, fallback matching by
-        # symbol, direction, volume, and open_time prevents duplicates.
+    def test_mt5_unlinked_close_preserves_distinct_broker_ticket(self):
+        # Similar market fields cannot prove that two broker IDs are one trade.
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -394,24 +393,20 @@ class TestMQLReceiverPreservation(unittest.TestCase):
         )
 
         res = process_mql_payload(self.api_key, payload)
-        self.assertEqual(res["updated_trades"], 1)
-        self.assertEqual(res["inserted_trades"], 0)
+        self.assertEqual(res["updated_trades"], 0)
+        self.assertEqual(res["inserted_trades"], 1)
 
         with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM trades WHERE account_id = ? AND symbol = 'ETHUSD';", (self.account_id,))
-            rows = cursor.fetchall()
-            self.assertEqual(len(rows), 1, "Fallback matching should have merged without duplicating!")
-            t = dict(rows[0])
-            self.assertEqual(t["id"], trade_id)
-            self.assertEqual(t["status"], "LOSS")
-            self.assertEqual(t["notes"], "User plan for ETH")
+            rows = conn.execute("SELECT * FROM trades WHERE account_id = ? AND symbol = 'ETHUSD';", (self.account_id,)).fetchall()
+            self.assertEqual(len(rows), 2)
+            by_ticket = {row['ticket']: dict(row) for row in rows}
+            self.assertEqual(by_ticket['5555555']['id'], trade_id)
+            self.assertEqual(by_ticket['5555555']['status'], 'OPEN')
+            self.assertEqual(by_ticket['5555555']['notes'], 'User plan for ETH')
+            self.assertEqual(by_ticket['9999999']['status'], 'LOSS')
 
-    def test_reconcile_existing_duplicate_closed_trades(self):
-        # Scenario: DB already contains two CLOSED trades for the same position
-        # Trade A: Has user notes, mistake_id, rating=1
-        # Trade B: Auto-created duplicate with '[sl ...]' notes
-        # Running sync should automatically reconcile them into Trade A!
+    def test_empty_sync_preserves_similar_closed_trades(self):
+        # No broker identity links these rows; annotations cannot prove duplication.
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -456,12 +451,12 @@ class TestMQLReceiverPreservation(unittest.TestCase):
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM trades WHERE account_id = ? AND symbol = 'SOLUSD';", (self.account_id,))
             rows = cursor.fetchall()
-            self.assertEqual(len(rows), 1, "Duplicate closed trade should have been removed during sync reconciliation!")
-            t = dict(rows[0])
-            self.assertEqual(t["id"], trade_a_id)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({r['id'] for r in rows}, {trade_a_id, trade_b_id})
+            t = next(dict(r) for r in rows if r['id'] == trade_a_id)
             self.assertEqual(t["notes"], "User journal note for SOL")
             self.assertEqual(t["rating"], 1)
-            self.assertEqual(t["order_id"], "deal-dup-2")
+            self.assertFalse(t["order_id"])
 
 
 if __name__ == "__main__":

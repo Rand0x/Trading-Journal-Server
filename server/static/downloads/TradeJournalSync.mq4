@@ -187,6 +187,8 @@ void OnTimer()
    if(change > 0)
    {
       RequestSync(change == 1 ? "Order count change" : "Order SL/TP/Lots modification");
+      // Sync may advance g_lastSyncTick past cached now; queued work runs next tick.
+      return;
    }
 
    // 3. Execute pending sync once 5s cooldown has elapsed

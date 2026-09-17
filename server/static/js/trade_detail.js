@@ -938,12 +938,24 @@ const TradeDetail = {
           }
         }
 
+        let pnlValue = res.net_profit;
+        let rMultiple = res.r_multiple;
+        if (this.currentTrade.is_grouped && this.currentTrade.grouped_count > 1) {
+          // The candle endpoint only reports the selected leg, not the group.
+          const tradeId = this.currentTradeId;
+          const trade = await API.getTrade(tradeId);
+          if (this.currentTradeId !== tradeId || !modal.classList.contains('active')) return;
+          this.currentTrade = trade;
+          const isGrouped = trade.is_grouped && trade.grouped_count > 1;
+          pnlValue = isGrouped ? trade.grouped_net_profit : trade.net_profit;
+          rMultiple = isGrouped ? null : trade.r_multiple;
+        }
         const pnlEl = document.getElementById('tdPnl');
-        if (pnlEl && res.net_profit != null) {
-          const pnl = Number(res.net_profit);
+        if (pnlEl && pnlValue != null) {
+          const pnl = Number(pnlValue);
           const tradeCurrency = this.currentTrade.account_currency || App.getActiveCurrency();
-          const rStr = (res.r_multiple != null)
-            ? ` (${Number(res.r_multiple) >= 0 ? '+' : ''}${Number(res.r_multiple).toFixed(2)} R)`
+          const rStr = (rMultiple != null)
+            ? ` (${Number(rMultiple) >= 0 ? '+' : ''}${Number(rMultiple).toFixed(2)} R)`
             : '';
           pnlEl.textContent = `${App.formatMoney(pnl, tradeCurrency, { showSign: true })}${rStr}`;
           pnlEl.className = `metric-value ${pnl >= 0 ? 'color-green' : 'color-red'}`;

@@ -250,6 +250,117 @@ string GetCandlesJson(string symbol, ENUM_TIMEFRAMES tf, datetime openTime, date
 //+------------------------------------------------------------------+
 //| Perform HTTP WebRequest Sync to Trading Journal Server            |
 //+------------------------------------------------------------------+
+// One immutable closing-deal identity per position; profit is gross in MT5.
+string BuildPartialCloseJson(ulong ticket, double volume, datetime closeTime,
+                             double price, double gross, double commission, double swap)
+{
+   return StringFormat(
+      "{\"ticket\":\"%s\",\"volume\":%.8f,\"close_time\":\"%s\",\"close_price\":%.8f,\"commission\":%.8f,\"swap\":%.8f,\"gross_profit\":%.8f,\"net_profit\":%.8f}",
+      IntegerToString(ticket), volume, TimeToString(closeTime, TIME_DATE|TIME_SECONDS),
+      price, commission, swap, gross, gross + commission + swap);
+}
+
+// Requires the complete HistorySelectByPosition selection (not a 30-day slice).
+string BuildPositionHistoryJson(ulong positionId, int candleIndex)
+{
+   string symbol = "", comment = "", partials = "[";
+   datetime openTime = 0, closeTime = 0;
+   ulong orderTicket = 0;
+   int posType = 0, exitCount = 0;
+   double entryVolume = 0, entryValue = 0, exposure = 0, entryCommissionPool = 0;
+   double closedVolume = 0, exitValue = 0, profit = 0, commission = 0, swap = 0;
+   double sl = 0, tp = 0;
+   for(int h = 0; h < HistoryDealsTotal(); h++)
+   {
+      ulong dealTicket = HistoryDealGetTicket(h);
+      long dealType = HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+      if(dealType != DEAL_TYPE_BUY && dealType != DEAL_TYPE_SELL) continue;
+      long entryType = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      double dealVolume = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
+      if(dealVolume <= 0) continue;
+      double price = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+      double fee = HistoryDealGetDouble(dealTicket, DEAL_COMMISSION) + HistoryDealGetDouble(dealTicket, DEAL_FEE);
+      datetime dealTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+      if(entryType == DEAL_ENTRY_IN)
+      {
+         if(openTime == 0 || dealTime < openTime)
+         {
+            openTime = dealTime;
+            orderTicket = (ulong)HistoryDealGetInteger(dealTicket, DEAL_ORDER);
+            posType = (dealType == DEAL_TYPE_BUY) ? 0 : 1;
+            comment = HistoryDealGetString(dealTicket, DEAL_COMMENT);
+         }
+         entryVolume += dealVolume;
+         entryValue += dealVolume * price;
+         exposure += dealVolume;
+         entryCommissionPool += fee;
+         continue;
+      }
+      if(entryType != DEAL_ENTRY_OUT && entryType != DEAL_ENTRY_OUT_BY && entryType != DEAL_ENTRY_INOUT) continue;
+      // INOUT's reported volume includes the new reverse leg, not just the exit.
+      double closeVolume = MathMin(dealVolume, exposure);
+      if(closeVolume <= 0) continue;
+      double entryFee = entryCommissionPool * closeVolume / exposure;
+      double exitFee = fee * closeVolume / dealVolume;
+      double partialCommission = exitFee + entryFee;
+      double gross = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+      double dealSwap = HistoryDealGetDouble(dealTicket, DEAL_SWAP);
+      if(exitCount > 0) partials += ",";
+      partials += BuildPartialCloseJson(dealTicket, closeVolume, dealTime, price, gross, partialCommission, dealSwap);
+      exitCount++;
+      closedVolume += closeVolume;
+      exitValue += closeVolume * price;
+      profit += gross;
+      commission += partialCommission;
+      swap += dealSwap;
+      if(dealTime > closeTime) closeTime = dealTime;
+      entryCommissionPool -= entryFee;
+      exposure -= closeVolume;
+      if(entryType == DEAL_ENTRY_INOUT)
+      {
+         double reverseVolume = dealVolume - closeVolume;
+         exposure += reverseVolume;
+         entryVolume += reverseVolume;
+         entryValue += reverseVolume * price;
+         entryCommissionPool += fee - exitFee;
+      }
+   }
+   if(exitCount == 0 || openTime == 0) return "";
+   partials += "]";
+   double remainingVolume = 0;
+   for(int p = 0; p < PositionsTotal(); p++)
+   {
+      if(PositionGetTicket(p) <= 0) continue;
+      if((ulong)PositionGetInteger(POSITION_IDENTIFIER) != positionId) continue;
+      remainingVolume = PositionGetDouble(POSITION_VOLUME);
+      sl = PositionGetDouble(POSITION_SL);
+      tp = PositionGetDouble(POSITION_TP);
+      break;
+   }
+   if(orderTicket > 0 && HistoryOrderSelect(orderTicket))
+   {
+      if(sl == 0) sl = HistoryOrderGetDouble(orderTicket, ORDER_SL);
+      if(tp == 0) tp = HistoryOrderGetDouble(orderTicket, ORDER_TP);
+   }
+   double volume = closedVolume + remainingVolume;
+   double openPrice = entryValue / entryVolume;
+   double closePrice = exitValue / closedVolume;
+   string closeTimeJson = remainingVolume > 0 ? "null" : "\"" + TimeToString(closeTime, TIME_DATE|TIME_SECONDS) + "\"";
+   string candlesJson = "[]";
+   if(InpSyncCandles && candleIndex < InpCandleTrades)
+   {
+      datetime chartEnd = remainingVolume > 0 ? TimeCurrent() : closeTime;
+      ENUM_TIMEFRAMES chartTf = SelectChartTimeframe(openTime, chartEnd, InpCandleBars);
+      candlesJson = GetCandlesJson(symbol, chartTf, openTime, chartEnd, InpCandleBars);
+   }
+   return StringFormat(
+      "{\"ticket\":\"%s\",\"position_id\":\"%s\",\"order_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.8f,\"open_time\":\"%s\",\"close_time\":%s,\"open_price\":%.8f,\"close_price\":%.8f,\"stop_loss\":%.8f,\"take_profit\":%.8f,\"commission\":%.8f,\"swap\":%.8f,\"profit\":%.8f,\"comment\":\"%s\",\"partial_closes\":%s,\"candles\":%s}",
+      IntegerToString(positionId), IntegerToString(positionId), IntegerToString(orderTicket),
+      JsonEscape(symbol), posType, volume, TimeToString(openTime, TIME_DATE|TIME_SECONDS), closeTimeJson,
+      openPrice, closePrice, sl, tp, commission, swap, profit, JsonEscape(comment), partials, candlesJson);
+}
+
 void SyncToServer()
 {
    long login = AccountInfoInteger(ACCOUNT_LOGIN);
@@ -261,100 +372,36 @@ void SyncToServer()
    string currency = AccountInfoString(ACCOUNT_CURRENCY);
    string broker = AccountInfoString(ACCOUNT_COMPANY);
 
-   // Select deal history for past 30 days
+   // Snapshot unique recent position IDs before selecting full per-position history.
    datetime fromDate = TimeCurrent() - (30 * 24 * 3600);
-   datetime toDate = TimeCurrent();
-   HistorySelect(fromDate, toDate);
-
-   int totalDeals = HistoryDealsTotal();
-   string closedTradesJson = "[";
-   int addedTrades = 0;
-
-   for(int i = totalDeals - 1; i >= 0 && addedTrades < 100; i--)
+   if(!HistorySelect(fromDate, TimeCurrent())) return;
+   ulong positionIds[];
+   int positionCount = 0;
+   for(int i = HistoryDealsTotal() - 1; i >= 0 && positionCount < 100; i--)
    {
       ulong dealTicket = HistoryDealGetTicket(i);
-      if(dealTicket <= 0) continue;
-
       long entryType = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
-      // We are interested in exit deals (DEAL_ENTRY_OUT or DEAL_ENTRY_INOUT)
-      if(entryType != DEAL_ENTRY_OUT && entryType != DEAL_ENTRY_INOUT) continue;
-
+      if(entryType != DEAL_ENTRY_OUT && entryType != DEAL_ENTRY_OUT_BY && entryType != DEAL_ENTRY_INOUT) continue;
       long dealType = HistoryDealGetInteger(dealTicket, DEAL_TYPE);
       if(dealType != DEAL_TYPE_BUY && dealType != DEAL_TYPE_SELL) continue;
-
-      string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
-      double volume = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
-      double closePrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
-      double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
-      double commission = HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
-      double swap = HistoryDealGetDouble(dealTicket, DEAL_SWAP);
-      datetime closeTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
-      string comment = HistoryDealGetString(dealTicket, DEAL_COMMENT);
-      ulong orderTicket = HistoryDealGetInteger(dealTicket, DEAL_ORDER);
-      ulong positionId = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
-      ulong primaryTicket = (positionId > 0) ? positionId : dealTicket;
-
-      // In MT5, deal direction on exit is opposite to position direction
-      // If closing deal was SELL, original position was BUY (0). If closing deal was BUY, position was SELL (1).
-      int posType = (dealType == DEAL_TYPE_SELL) ? 0 : 1;
-
-      datetime openTime = closeTime - 3600;
-      double openPrice = closePrice;
-      double sl = 0.0;
-      double tp = 0.0;
-      for(int historyIndex = 0; historyIndex < totalDeals; historyIndex++)
-      {
-         ulong entryTicket = HistoryDealGetTicket(historyIndex);
-         if(HistoryDealGetInteger(entryTicket, DEAL_POSITION_ID) != positionId) continue;
-         if(HistoryDealGetInteger(entryTicket, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
-         datetime entryTime = (datetime)HistoryDealGetInteger(entryTicket, DEAL_TIME);
-         if(entryTime < openTime)
-         {
-            openTime = entryTime;
-            openPrice = HistoryDealGetDouble(entryTicket, DEAL_PRICE);
-         }
-         ulong entryOrder = HistoryDealGetInteger(entryTicket, DEAL_ORDER);
-         if(entryOrder > 0 && HistoryOrderSelect(entryOrder))
-         {
-            sl = HistoryOrderGetDouble(entryOrder, ORDER_SL);
-            tp = HistoryOrderGetDouble(entryOrder, ORDER_TP);
-         }
-      }
-      if(orderTicket > 0 && (sl == 0.0 || tp == 0.0) && HistoryOrderSelect(orderTicket))
-      {
-         if(sl == 0.0) sl = HistoryOrderGetDouble(orderTicket, ORDER_SL);
-         if(tp == 0.0) tp = HistoryOrderGetDouble(orderTicket, ORDER_TP);
-      }
-
-      // Candle data: the complete real entry-to-exit range at an automatic timeframe.
-      string candlesJson = "[]";
-      if(InpSyncCandles && addedTrades < InpCandleTrades)
-      {
-         ENUM_TIMEFRAMES chartTf = SelectChartTimeframe(openTime, closeTime, InpCandleBars);
-         candlesJson = GetCandlesJson(symbol, chartTf, openTime, closeTime, InpCandleBars);
-      }
-
+      ulong positionId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+      if(positionId == 0) continue;
+      bool seen = false;
+      for(int j = 0; j < positionCount; j++)
+         if(positionIds[j] == positionId) { seen = true; break; }
+      if(seen) continue;
+      ArrayResize(positionIds, positionCount + 1);
+      positionIds[positionCount++] = positionId;
+   }
+   string closedTradesJson = "[";
+   int addedTrades = 0;
+   for(int i = 0; i < positionCount; i++)
+   {
+      if(!HistorySelectByPosition(positionIds[i])) continue;
+      string tradeJson = BuildPositionHistoryJson(positionIds[i], addedTrades);
+      if(StringLen(tradeJson) == 0) continue;
       if(addedTrades > 0) closedTradesJson += ",";
-      closedTradesJson += StringFormat(
-         "{\"ticket\":\"%s\",\"position_id\":\"%s\",\"order_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"close_time\":\"%s\",\"open_price\":%.5f,\"close_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"commission\":%.2f,\"swap\":%.2f,\"profit\":%.2f,\"comment\":\"%s\",\"candles\":%s}",
-         IntegerToString(primaryTicket),
-         IntegerToString(positionId),
-         IntegerToString(orderTicket),
-         symbol,
-         posType,
-         volume,
-         TimeToString(openTime, TIME_DATE|TIME_SECONDS),
-         TimeToString(closeTime, TIME_DATE|TIME_SECONDS),
-         openPrice,
-         closePrice,
-         sl,
-         tp,
-         commission,
-         swap,
-         profit,
-         JsonEscape(comment),
-         candlesJson
-      );
+      closedTradesJson += tradeJson;
       addedTrades++;
    }
    closedTradesJson += "]";
@@ -386,7 +433,7 @@ void SyncToServer()
 
       if(p > 0) openTradesJson += ",";
       openTradesJson += StringFormat(
-         "{\"ticket\":\"%s\",\"position_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"profit\":%.2f,\"candles\":%s}",
+         "{\"ticket\":\"%s\",\"position_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.8f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"profit\":%.2f,\"candles\":%s}",
          IntegerToString(primaryTicket),
          IntegerToString(posId),
          pSymbol,

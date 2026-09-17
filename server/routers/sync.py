@@ -405,6 +405,14 @@ def upload_candles(
                         """, (account_id, t_ticket, f"ctrader-position-{t_ticket}"))
                         t_row = cursor.fetchone()
                         if t_row:
+                            cursor.execute("""
+                                SELECT COALESCE(SUM(net_profit), 0) AS realized_net,
+                                       COALESCE(SUM(gross_profit), 0) AS realized_gross
+                                FROM trade_partial_closes WHERE trade_id = ?;
+                            """, (t_row["id"],))
+                            realized = cursor.fetchone()
+                            aggregate_net = profit_val + realized["realized_net"] if profit_val is not None else None
+                            aggregate_gross = profit_val + realized["realized_gross"] if profit_val is not None else None
                             t_dir = t_row["direction"]
                             t_open_price = float(t_row["open_price"])
                             effective_sl = clean_sl if clean_sl is not None else (float(t_row["stop_loss"]) if t_row["stop_loss"] else None)
@@ -413,7 +421,7 @@ def upload_candles(
                                 open_price=t_open_price,
                                 stop_loss=effective_sl,
                                 close_price=clean_price,
-                                net_profit=profit_val,
+                                net_profit=aggregate_net,
                                 initial_risk=t_row["initial_risk"]
                             )
 
@@ -428,7 +436,7 @@ def upload_candles(
                                     updated_at = ?
                                 WHERE id = ?;
                             """, (
-                                profit_val, profit_val,
+                                aggregate_net, aggregate_gross,
                                 clean_price, clean_sl, clean_tp,
                                 calc_r, now_str, t_row["id"]
                             ))

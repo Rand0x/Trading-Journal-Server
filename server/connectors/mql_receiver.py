@@ -58,13 +58,24 @@ def _save_candles(cursor, symbol: str, candles) -> int:
 def _process_ctrader_grouped_trade(cursor, account_id: int, trade, now_str: str):
     """Persist one cTrader position and all of its closing deals."""
     cursor.execute(
-        "SELECT id, volume FROM trades WHERE account_id = ? AND ticket = ?;",
+        "SELECT id, volume, status FROM trades WHERE account_id = ? AND ticket = ?;",
         (account_id, trade.ticket)
     )
     existing = cursor.fetchone()
+    if not existing and trade.order_id:
+        cursor.execute("""
+            SELECT id, volume, status FROM trades
+            WHERE account_id = ? AND status = 'PENDING'
+              AND (order_id = ? OR ticket IN (?, ?, ?));
+        """, (account_id, str(trade.order_id), str(trade.order_id),
+              f"mt5-order-{trade.order_id}", f"ctrader-order-{trade.order_id}"))
+        existing = cursor.fetchone()
+        if existing:
+            cursor.execute("UPDATE trades SET ticket = ? WHERE id = ?;", (trade.ticket, existing["id"]))
     if existing:
         trade_id = existing["id"]
-        original_volume = float(existing["volume"] or 0.0)
+        # Pending volume is requested size, not necessarily executed size.
+        original_volume = 0.0 if existing["status"] == "PENDING" else float(existing["volume"] or 0.0)
         clean_sl = trade.stop_loss if trade.stop_loss and trade.stop_loss > 0 else None
         clean_tp = trade.take_profit if trade.take_profit and trade.take_profit > 0 else None
         cursor.execute("""
@@ -164,6 +175,13 @@ def _process_ctrader_grouped_trade(cursor, account_id: int, trade, now_str: str)
             legacy["is_missed"] or 0,
             trade_id
         ))
+        for legacy_row in legacy_rows:
+            cursor.execute("""
+                INSERT OR IGNORE INTO trade_screenshots
+                    (trade_id, source_url, image_url, caption, created_at)
+                SELECT ?, source_url, image_url, caption, created_at
+                FROM trade_screenshots WHERE trade_id = ?;
+            """, (trade_id, legacy_row["id"]))
         cursor.executemany(
             "DELETE FROM trades WHERE id = ?;",
             [(legacy_row["id"],) for legacy_row in legacy_rows]
@@ -177,7 +195,7 @@ def _process_ctrader_grouped_trade(cursor, account_id: int, trade, now_str: str)
     """, (trade_id,))
     partials = cursor.fetchall()
     total_volume = sum(float(row["volume"] or 0.0) for row in partials)
-    parent_volume = max(original_volume, total_volume)
+    parent_volume = max(original_volume, float(trade.lots), total_volume)
     total_commission = sum(float(row["commission"] or 0.0) for row in partials)
     total_swap = sum(float(row["swap"] or 0.0) for row in partials)
     total_gross = sum(float(row["gross_profit"] or 0.0) for row in partials)
@@ -191,6 +209,7 @@ def _process_ctrader_grouped_trade(cursor, account_id: int, trade, now_str: str)
     status = "WIN" if total_net > 0.001 else ("LOSS" if total_net < -0.001 else "BE")
     if not is_complete:
         status = "OPEN"
+        last_close_time = None
 
     cursor.execute("""
         SELECT direction, open_price, stop_loss, initial_risk, r_multiple
@@ -350,7 +369,7 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
         updated_trades = 0
 
         for trade in (payload.closed_trades or []):
-            if payload.source == "ctrader-cbot" and trade.partial_closes:
+            if trade.partial_closes:
                 _, was_updated, saved_candles = _process_ctrader_grouped_trade(
                     cursor, account_id, trade, now_str
                 )
@@ -418,24 +437,6 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     ))
                     existing = pending_match
                     updated_trades += 1
-
-            if not existing:
-                # Check for an existing trade (OPEN or already recorded) that matches this trade's parameters
-                cursor.execute("""
-                    SELECT id, ticket, order_id, direction, open_price, stop_loss, initial_risk, r_multiple, status FROM trades
-                    WHERE account_id = ?
-                      AND symbol = ? AND direction = ?
-                      AND ABS(volume - ?) < 0.0001
-                      AND (
-                          open_time = ?
-                          OR (ABS(strftime('%s', open_time) - strftime('%s', ?)) <= 60 AND ABS(open_price - ?) < 0.0001)
-                      )
-                    ORDER BY CASE WHEN status = 'OPEN' THEN 0 ELSE 1 END, id ASC
-                    LIMIT 1;
-                """, (account_id, trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_time, trade.open_price))
-                fallback_match = cursor.fetchone()
-                if fallback_match:
-                    existing = fallback_match
 
             if existing:
                 cursor.execute("SELECT direction, open_price, stop_loss, initial_risk, r_multiple FROM trades WHERE id = ?;", (existing["id"],))
@@ -544,35 +545,45 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
             if payload.source == "ctrader-cbot":
                 active_ctrader_tickets.add(trade.ticket)
 
-            # A grouped cTrader position uses the same ticket for its parent
-            # trade and its live position snapshot. Preserve the partial-exit
-            # aggregate while updating the remaining live volume and prices.
-            if payload.source == "ctrader-cbot" and trade.position_id:
+            # Parent PnL is realized exits plus the current floating snapshot,
+            # never the previous aggregate plus another floating increment.
+            cursor.execute("""
+                SELECT t.id, t.volume, SUM(pc.volume) AS closed_volume,
+                       SUM(pc.net_profit) AS realized_net,
+                       SUM(pc.gross_profit) AS realized_gross,
+                       SUM(pc.commission) AS realized_commission,
+                       SUM(pc.swap) AS realized_swap
+                FROM trades t JOIN trade_partial_closes pc ON pc.trade_id = t.id
+                WHERE t.account_id = ? AND t.ticket = ? GROUP BY t.id;
+            """, (account_id, trade.ticket))
+            grouped_position = cursor.fetchone()
+            if grouped_position:
+                total_volume = max(float(grouped_position["volume"]),
+                                   float(grouped_position["closed_volume"]) + float(trade.lots))
+                floating = trade.profit or 0.0
+                commission = trade.commission or 0.0
+                swap = trade.swap or 0.0
                 cursor.execute("""
-                    SELECT t.id, COALESCE(SUM(pc.volume), 0.0) AS closed_volume
-                    FROM trades t
-                    LEFT JOIN trade_partial_closes pc ON pc.trade_id = t.id
-                    WHERE t.account_id = ? AND t.ticket = ?
-                    GROUP BY t.id;
-                """, (account_id, trade.ticket))
-                grouped_position = cursor.fetchone()
-                if grouped_position and grouped_position["closed_volume"] > 0:
-                    total_volume = float(grouped_position["closed_volume"]) + float(trade.lots)
-                    cursor.execute("""
-                        UPDATE trades
-                        SET symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?,
-                            stop_loss = COALESCE(?, stop_loss), take_profit = COALESCE(?, take_profit),
-                            status = 'OPEN',
-                            notes = CASE WHEN notes IS NOT NULL AND notes != '' THEN notes ELSE ? END,
-                            updated_at = ?
-                        WHERE id = ?;
-                    """, (
-                        trade.symbol.upper(), direction, total_volume, trade.open_time,
-                        trade.open_price, clean_sl, clean_tp,
-                        trade.comment or "", now_str, grouped_position["id"]
-                    ))
-                    updated_trades += 1
-                    continue
+                    UPDATE trades
+                    SET symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?,
+                        stop_loss = COALESCE(?, stop_loss), take_profit = COALESCE(?, take_profit),
+                        status = 'OPEN', close_time = NULL,
+                        net_profit = ?, gross_profit = ?, commission = ?, swap = ?,
+                        notes = CASE WHEN notes IS NOT NULL AND notes != '' THEN notes ELSE ? END,
+                        updated_at = ?
+                    WHERE id = ?;
+                """, (
+                    trade.symbol.upper(), direction, total_volume, trade.open_time,
+                    trade.open_price, clean_sl, clean_tp,
+                    grouped_position["realized_net"] + floating,
+                    grouped_position["realized_gross"] + floating - commission - swap,
+                    grouped_position["realized_commission"] + commission,
+                    grouped_position["realized_swap"] + swap,
+                    trade.comment or "", now_str, grouped_position["id"]
+                ))
+                updated_trades += 1
+                candles_saved += _save_candles(cursor, trade.symbol, trade.candles)
+                continue
 
             cursor.execute("SELECT id FROM trades WHERE account_id = ? AND ticket = ?;", (account_id, trade.ticket))
             existing = cursor.fetchone()
@@ -691,6 +702,7 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     DELETE FROM trades
                     WHERE account_id = ? AND status = 'OPEN'
                       AND ticket LIKE 'ctrader-position-%'
+                      AND NOT EXISTS (SELECT 1 FROM trade_partial_closes pc WHERE pc.trade_id = trades.id)
                       AND ticket NOT IN ({placeholders});
                     """,
                     (account_id, *active_ctrader_tickets),
@@ -699,97 +711,9 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                 cursor.execute("""
                     DELETE FROM trades
                     WHERE account_id = ? AND status = 'OPEN'
-                      AND ticket LIKE 'ctrader-position-%';
+                      AND ticket LIKE 'ctrader-position-%'
+                      AND NOT EXISTS (SELECT 1 FROM trade_partial_closes pc WHERE pc.trade_id = trades.id);
                 """, (account_id,))
-
-        # Remove or merge any duplicate trades (e.g. OPEN + CLOSED pair, or two duplicate CLOSED trades)
-        cursor.execute("""
-            SELECT t1.id as id1, t2.id as id2,
-                   t1.status as status1, t2.status as status2,
-                   t1.notes as notes1, t2.notes as notes2,
-                   t1.mistake_id as mistake1, t2.mistake_id as mistake2,
-                   t1.setup_id as setup1, t2.setup_id as setup2,
-                   t1.rating as rating1, t2.rating as rating2,
-                   t1.ticket as ticket1, t2.ticket as ticket2,
-                   t1.order_id as order_id1, t2.order_id as order_id2,
-                   t1.close_time as close_time1, t2.close_time as close_time2,
-                   t1.close_price as close_price1, t2.close_price as close_price2,
-                   t1.gross_profit as gross_profit1, t2.gross_profit as gross_profit2,
-                   t1.net_profit as net_profit1, t2.net_profit as net_profit2
-            FROM trades t1
-            JOIN trades t2 ON t1.account_id = t2.account_id
-                          AND t1.id < t2.id
-                          AND t1.symbol = t2.symbol
-                          AND t1.direction = t2.direction
-                          AND ABS(t1.volume - t2.volume) < 0.0001
-                          AND (
-                              t1.open_time = t2.open_time
-                              OR (ABS(strftime('%s', t1.open_time) - strftime('%s', t2.open_time)) <= 60 AND ABS(t1.open_price - t2.open_price) < 0.0001)
-                          )
-            WHERE t1.account_id = ?;
-        """, (account_id,))
-        dup_pairs = cursor.fetchall()
-        for pair in dup_pairs:
-            id1 = pair["id1"]
-            id2 = pair["id2"]
-
-            # Check if t1 or t2 still exists in this loop
-            cursor.execute("SELECT id FROM trades WHERE id = ?;", (id1,))
-            if not cursor.fetchone():
-                continue
-            cursor.execute("SELECT id FROM trades WHERE id = ?;", (id2,))
-            if not cursor.fetchone():
-                continue
-
-            def is_meaningful_notes(n):
-                if not n:
-                    return False
-                n_str = str(n).strip()
-                return not (n_str.startswith('[sl') or n_str.startswith('[tp'))
-
-            score1 = (2 if is_meaningful_notes(pair["notes1"]) else 0) + (1 if pair["mistake1"] else 0) + (1 if pair["setup1"] else 0) + (1 if pair["rating1"] and pair["rating1"] != 5 else 0)
-            score2 = (2 if is_meaningful_notes(pair["notes2"]) else 0) + (1 if pair["mistake2"] else 0) + (1 if pair["setup2"] else 0) + (1 if pair["rating2"] and pair["rating2"] != 5 else 0)
-
-            if score1 >= score2:
-                keeper_id, dup_id = id1, id2
-                keeper_ticket, dup_ticket = pair["ticket1"], pair["ticket2"]
-                keeper_status, dup_status = pair["status1"], pair["status2"]
-                dup_close_time = pair["close_time2"]
-                dup_close_price = pair["close_price2"]
-                dup_gross = pair["gross_profit2"]
-                dup_net = pair["net_profit2"]
-            else:
-                keeper_id, dup_id = id2, id1
-                keeper_ticket, dup_ticket = pair["ticket2"], pair["ticket1"]
-                keeper_status, dup_status = pair["status2"], pair["status1"]
-                dup_close_time = pair["close_time1"]
-                dup_close_price = pair["close_price1"]
-                dup_gross = pair["gross_profit1"]
-                dup_net = pair["net_profit1"]
-
-            # If keeper is OPEN but dup was CLOSED, transfer close results
-            if keeper_status == 'OPEN' and dup_status in ('CLOSED', 'WIN', 'LOSS', 'BE'):
-                cursor.execute("""
-                    UPDATE trades
-                    SET close_time = ?, close_price = ?, gross_profit = ?, net_profit = ?, status = ?, updated_at = ?
-                    WHERE id = ?;
-                """, (dup_close_time, dup_close_price, dup_gross, dup_net, dup_status, now_str, keeper_id))
-
-            # Store duplicate's ticket in order_id of keeper if keeper's order_id is empty and tickets differ
-            if dup_ticket and dup_ticket != keeper_ticket:
-                cursor.execute("""
-                    UPDATE trades
-                    SET order_id = CASE WHEN order_id IS NULL OR order_id = '' THEN ? ELSE order_id END
-                    WHERE id = ?;
-                """, (dup_ticket, keeper_id))
-
-            # Relink any screenshots and partial closes to keeper
-            cursor.execute("UPDATE trade_screenshots SET trade_id = ? WHERE trade_id = ?;", (keeper_id, dup_id))
-            cursor.execute("UPDATE trade_partial_closes SET trade_id = ? WHERE trade_id = ?;", (keeper_id, dup_id))
-
-            # Delete the duplicate trade
-            cursor.execute("DELETE FROM trades WHERE id = ?;", (dup_id,))
-            logger.info(f"Reconciled duplicate trade: kept {keeper_id}, deleted {dup_id}")
 
         conn.commit()
 

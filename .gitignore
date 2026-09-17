@@ -7,5 +7,26 @@ venv/
 env/
 .pytest_cache/
 *.log
-data/journal.db*
-!data/.gitkeep
+# Local configuration and credentials (keep the sanitized template).
+.env.*
+!.env.example
+.venv/
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# Runtime data, screenshots, exports, backups and local deployment helpers.
+/data/*
+!/data/.gitkeep
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+/scratch/
+/backups/
+/secrets/

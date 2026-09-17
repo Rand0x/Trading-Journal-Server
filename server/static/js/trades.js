@@ -13,8 +13,7 @@ const Trades = {
   expandedTradeId: null,
   expandedRow: null,
 
-  async load(page = 0) {
-    this.currentOffset = page * this.limit;
+  getRequestParams() {
     const filterParams = App.getFilterParams();
 
     const params = {
@@ -47,6 +46,12 @@ const Trades = {
     const searchVal = document.getElementById('tradeSearchInput')?.value;
     if (searchVal) params.search = searchVal;
 
+    return params;
+  },
+
+  async load(page = 0) {
+    this.currentOffset = page * this.limit;
+    const params = this.getRequestParams();
     this.populateSignalFilters();
 
     try {
@@ -78,22 +83,7 @@ const Trades = {
         return;
       }
       try {
-        const filterParams = App.getFilterParams();
-        const params = {
-          ...filterParams,
-          limit: this.limit,
-          offset: this.currentOffset,
-          sort_by: this.sortBy,
-          sort_order: this.sortOrder,
-        };
-        const symbolVal = document.getElementById('tradeSymbolFilter')?.value;
-        if (symbolVal) params.symbol = symbolVal;
-        const dirVal = document.getElementById('tradeDirFilter')?.value;
-        if (dirVal) params.direction = dirVal;
-        const statusVal = document.getElementById('tradeStatusFilter')?.value;
-        if (statusVal) params.status = statusVal;
-        const searchVal = document.getElementById('tradeSearchInput')?.value;
-        if (searchVal) params.search = searchVal;
+        const params = this.getRequestParams();
 
         const data = await API.getTrades(params);
         this.totalTrades = data.total;

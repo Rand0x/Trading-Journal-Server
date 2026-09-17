@@ -178,17 +178,21 @@ const App = {
     const handleLocationChange = () => {
       const route = this.getRouteFromUrl();
       const query = this.getQueryParamsFromHash();
+      let searchChanged = false;
       if (route === 'trades') {
         const searchInput = document.getElementById('tradeSearchInput');
         if (searchInput) {
           const expectedSearch = query.date || query.search || '';
           if (searchInput.value !== expectedSearch) {
             searchInput.value = expectedSearch;
+            searchChanged = true;
           }
         }
       }
       if (this.currentView !== route) {
         this.navigateTo(route, false);
+      } else if (searchChanged) {
+        this.refreshCurrentView();
       }
     };
 

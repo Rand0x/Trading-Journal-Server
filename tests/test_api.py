@@ -526,7 +526,7 @@ class TestAPI(unittest.TestCase):
             ).fetchone()["count"]
         self.assertEqual(row["volume"], 1.0)
         self.assertEqual(row["status"], "OPEN")
-        self.assertEqual(row["net_profit"], 100.0)
+        self.assertEqual(row["net_profit"], 120.0)  # realized 100 + floating 20
         self.assertEqual(partial_count, 1)
 
         base_payload["closed_trades"][0]["lots"] = 1.0
