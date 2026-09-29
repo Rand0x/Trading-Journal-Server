@@ -6,7 +6,7 @@ Serves executive KPIs, TradeZella-style Calendar Heatmap, and Equity Curve.
 from typing import Optional
 from fastapi import APIRouter, Query
 from server.database import get_connection
-from server.analytics import calculate_trade_metrics, get_calendar_heatmap, get_equity_curve
+from server.analytics import calculate_trade_metrics, get_calendar_heatmap, get_equity_curve, get_dashboard_insights
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
 
@@ -68,9 +68,10 @@ def get_dashboard_summary(
 
         # Fetch trades
         cursor.execute(f"""
-            SELECT t.*, a.name as account_name, a.currency as account_currency
+            SELECT t.*, a.name as account_name, a.currency as account_currency, p.name as setup_name
             FROM trades t
             LEFT JOIN accounts a ON t.account_id = a.id
+            LEFT JOIN playbooks p ON t.setup_id = p.id
             {where_str}
             ORDER BY t.open_time ASC;
         """, params)
@@ -79,11 +80,13 @@ def get_dashboard_summary(
     metrics = calculate_trade_metrics(trades, initial_balance)
     calendar = get_calendar_heatmap(trades, initial_balance)
     equity_curve = get_equity_curve(trades, initial_balance)
+    insights = get_dashboard_insights(trades, metrics)
 
     return {
         "metrics": metrics,
         "calendar": calendar,
         "equity_curve": equity_curve,
+        "insights": insights,
         "initial_balance": initial_balance,
         "current_balance": current_balance,
         "equity": equity,

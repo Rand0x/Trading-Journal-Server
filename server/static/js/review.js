@@ -195,7 +195,7 @@ const Review = {
     badgeEl.className = `badge badge-${type.toLowerCase()}`;
 
     const setupName = trade.setup_name || (trade.setup_id ? `Setup #${trade.setup_id}` : 'No Setup');
-    const mistakeTag = trade.mistake_name ? `<span class="badge badge-loss" style="font-size:11px;">⚠️ ${TradeDetail.escapeHtml(trade.mistake_name)}</span>` : '';
+    const mistakeTag = trade.mistake_name ? `<span class="badge badge-loss" style="font-size:11px;">${TradeDetail.escapeHtml(trade.mistake_name)}</span>` : '';
     const dateStr = (trade.close_time || trade.open_time || '').substring(0, 16).replace('T', ' ');
 
     let emotionHtml = '';
@@ -227,7 +227,7 @@ const Review = {
         </div>
 
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <span class="badge" style="background:#1e293b;color:#60a5fa;font-size:11px;">🎯 ${TradeDetail.escapeHtml(setupName)}</span>
+          <span class="badge" style="background:#1e293b;color:#60a5fa;font-size:11px;">${TradeDetail.escapeHtml(setupName)}</span>
           ${mistakeTag}
           ${emotionHtml}
         </div>
@@ -240,7 +240,7 @@ const Review = {
 
         <div style="display:flex;justify-content:flex-end;margin-top:4px;">
           <button class="btn btn-secondary btn-sm" onclick="TradeDetail.open(${trade.id})">
-            🔍 Trade Details & Chart Replay
+            <svg style="width:14px;height:14px;"><use href="#i-chart"/></svg> Trade details &amp; chart replay
           </button>
         </div>
       </div>

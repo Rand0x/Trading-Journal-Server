@@ -67,5 +67,56 @@ class TestAnalytics(unittest.TestCase):
         self.assertEqual(eur["trades"], 2)
         self.assertEqual(eur["net_profit"], 100.0)
 
+    def test_dashboard_insights_breakdowns(self):
+        from server.analytics import get_dashboard_insights
+        trades = [dict(t) for t in self.trades]
+        trades[0].update(direction="BUY", r_multiple=2.0, setup_id=1)
+        trades[1].update(direction="SELL", r_multiple=-1.0, setup_id=1, mistake_id=3)
+        trades[2].update(direction="BUY", r_multiple=3.5)
+        trades[3].update(direction="SELL", r_multiple=1.5, setup_id=2)
+        trades += [
+            {"id": 5, "symbol": "EURUSD", "net_profit": 40.0, "status": "OPEN", "open_time": "2026-09-04 08:00:00", "direction": "BUY"},
+            {"id": 6, "symbol": "EURUSD", "net_profit": 500.0, "status": "WIN", "is_missed": 1, "open_time": "2026-09-04 09:00:00",
+             "close_time": "2026-09-04 10:00:00", "r_multiple": 5.0},
+        ]
+        metrics = calculate_trade_metrics(trades, initial_balance=10000.0)
+        ins = get_dashboard_insights(trades, metrics)
+
+        dist = {b["label"]: b["count"] for b in ins["r_distribution"]}
+        # Buckets are [low, high): a full -1R stop-out counts as "-1R to 0R".
+        self.assertEqual(dist["-1R to 0R"], 1)
+        self.assertEqual(dist["-2R to -1R"], 0)
+        self.assertEqual(dist["1R to 2R"], 1)
+        self.assertEqual(dist["2R to 3R"], 1)
+        self.assertEqual(dist["≥ 3R"], 1)                # missed trade (5R) is excluded
+
+        self.assertEqual(ins["long_short"]["long"], {"trades": 2, "wins": 2, "win_rate": 100.0, "net_profit": 550.0, "avg_r": 2.75})
+        self.assertEqual(ins["long_short"]["short"]["net_profit"], 50.0)
+
+        self.assertEqual(ins["day_stats"]["trading_days"], 3)
+        self.assertEqual(ins["day_stats"]["green_days"], 3)
+        self.assertEqual(ins["day_stats"]["best_day"], {"date": "2026-09-02", "net_profit": 350.0})
+        self.assertEqual(ins["holding"]["winners_min"], 85.0)   # (60 + 120 + 75) / 3
+        self.assertEqual(ins["holding"]["losers_min"], 45.0)
+
+        self.assertEqual(ins["monthly"], [{"month": "2026-09", "net_profit": 600.0, "trades": 4, "win_rate": 75.0, "total_r": 6.0}])
+        self.assertEqual(ins["plan_rate"], 50.0)               # trades 1 and 4: setup and no mistake
+        self.assertEqual([t["id"] for t in ins["open_positions"]], [5])
+        self.assertEqual(ins["recent_trades"][0]["id"], 4)
+
+        score = ins["journal_score"]
+        self.assertEqual(len(score["components"]), 6)
+        by_key = {c["key"]: c["score"] for c in score["components"]}
+        self.assertEqual(by_key["win_rate"], 100.0)            # 75 % win rate, capped
+        self.assertEqual(by_key["discipline"], 50.0)
+        self.assertAlmostEqual(score["score"], sum(by_key.values()) / 6, places=1)
+
+    def test_dashboard_insights_empty(self):
+        from server.analytics import get_dashboard_insights
+        ins = get_dashboard_insights([], calculate_trade_metrics([], 10000.0))
+        self.assertEqual(ins["journal_score"]["score"], 0.0)
+        self.assertEqual(ins["day_stats"]["best_day"], None)
+        self.assertEqual(sum(b["count"] for b in ins["r_distribution"]), 0)
+
 if __name__ == "__main__":
     unittest.main()

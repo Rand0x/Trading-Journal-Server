@@ -404,13 +404,13 @@ const Trades = {
         <td>${mistakeBadge}</td>
         <td style="text-align:right;">
           <button class="btn btn-secondary btn-sm" onclick="TradeDetail.open(${t.id})" title="Open Full Details & Chart">
-            📊 Full Details
+            <svg style="width:14px;height:14px;"><use href="#i-chart"/></svg> Details
           </button>
-          <button class="btn btn-secondary btn-sm" onclick="Trades.openEditModal(${t.id})" title="Edit Trade">
-            ✏️
+          <button class="btn btn-secondary btn-sm" onclick="Trades.openEditModal(${t.id})" title="Edit trade" aria-label="Edit trade">
+            <svg style="width:14px;height:14px;"><use href="#i-edit"/></svg>
           </button>
-          <button class="btn btn-secondary btn-sm" onclick="Trades.deleteTrade(${t.id}, ${deleteIdsParam})" title="Delete Trade" style="color:#ef4444;">
-            🗑️
+          <button class="btn btn-secondary btn-sm" onclick="Trades.deleteTrade(${t.id}, ${deleteIdsParam})" title="Delete trade" aria-label="Delete trade" style="color:#ef4444;">
+            <svg style="width:14px;height:14px;"><use href="#i-trash"/></svg>
           </button>
         </td>
       `;

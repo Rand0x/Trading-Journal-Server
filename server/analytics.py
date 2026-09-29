@@ -987,3 +987,166 @@ def get_weekly_review(trades: List[Dict[str, Any]], week_offset: int = 0) -> Dic
         "open_pnl": round(open_net, 2),
         "total_pnl": round(total_net + open_net, 2)
     }
+
+
+R_DISTRIBUTION_BUCKETS = [
+    ("≤ -2R", None, -2.0), ("-2R to -1R", -2.0, -1.0), ("-1R to 0R", -1.0, 0.0),
+    ("0R to 1R", 0.0, 1.0), ("1R to 2R", 1.0, 2.0), ("2R to 3R", 2.0, 3.0), ("≥ 3R", 3.0, None),
+]
+
+
+def _is_realized(t: Dict[str, Any]) -> bool:
+    return not t.get("is_missed") and t.get("status") in ("CLOSED", "WIN", "LOSS", "BE")
+
+
+def _parse_trade_dt(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(_normalize_date_str(value)[:19].replace("T", " "))
+    except ValueError:
+        return None
+
+
+def _journal_score(metrics: Dict[str, Any], green_day_rate: float, plan_rate: float) -> Dict[str, Any]:
+    """Transparent 0-100 score: the mean of six clamped component scores."""
+    def clamp(value: float) -> float:
+        return max(0.0, min(100.0, value))
+
+    pf = float(metrics.get("profit_factor") or 0.0)
+    components = [
+        {"key": "win_rate", "label": "Win rate", "hint": "60 % win rate = 100",
+         "score": clamp(float(metrics.get("win_rate") or 0.0) / 60.0 * 100.0)},
+        {"key": "profit_factor", "label": "Profit factor", "hint": "1.0 = 0, 2.5 or more = 100",
+         "score": clamp((pf - 1.0) / 1.5 * 100.0)},
+        {"key": "win_loss_ratio", "label": "Avg win / avg loss", "hint": "2 : 1 or more = 100",
+         "score": clamp(float(metrics.get("win_loss_ratio") or 0.0) / 2.0 * 100.0)},
+        {"key": "drawdown", "label": "Max drawdown", "hint": "0 % = 100, 20 % or more = 0",
+         "score": clamp(100.0 - float(metrics.get("max_drawdown_pct") or 0.0) * 5.0)},
+        {"key": "consistency", "label": "Green days", "hint": "70 % green days = 100",
+         "score": clamp(green_day_rate / 70.0 * 100.0)},
+        {"key": "discipline", "label": "Plan followed", "hint": "Trades with a setup and no tagged mistake",
+         "score": clamp(plan_rate)},
+    ]
+    for c in components:
+        c["score"] = round(c["score"], 1)
+    total = round(sum(c["score"] for c in components) / len(components), 1) if metrics.get("total_trades") else 0.0
+    return {"score": total, "components": components}
+
+
+def get_dashboard_insights(trades: List[Dict[str, Any]], metrics: Dict[str, Any], recent_limit: int = 8) -> Dict[str, Any]:
+    """Deterministic breakdowns for the dashboard beyond the headline KPIs."""
+    closed = [t for t in trades if _is_realized(t)]
+
+    def pnl(t):
+        return float(t.get("net_profit") or 0.0)
+
+    # R-multiple distribution
+    r_values = [float(t["r_multiple"]) for t in closed if t.get("r_multiple") is not None]
+    r_distribution = [
+        {"label": label, "positive": low is not None and low >= 0,
+         "count": sum(1 for r in r_values if (low is None or r >= low) and (high is None or r < high))}
+        for label, low, high in R_DISTRIBUTION_BUCKETS
+    ]
+
+    # Long vs short
+    long_short = {}
+    for key, sides in (("long", ("BUY", "LONG")), ("short", ("SELL", "SHORT"))):
+        side_trades = [t for t in closed if (t.get("direction") or "").upper() in sides]
+        wins = sum(1 for t in side_trades if pnl(t) > 0.001)
+        side_r = [float(t["r_multiple"]) for t in side_trades if t.get("r_multiple") is not None]
+        long_short[key] = {
+            "trades": len(side_trades),
+            "wins": wins,
+            "win_rate": round(wins / len(side_trades) * 100.0, 1) if side_trades else 0.0,
+            "net_profit": round(sum(pnl(t) for t in side_trades), 2),
+            "avg_r": round(sum(side_r) / len(side_r), 2) if side_r else None,
+        }
+
+    # Holding time of winners vs losers (minutes)
+    def avg_hold(selected):
+        durations = []
+        for t in selected:
+            start, end = _parse_trade_dt(t.get("open_time")), _parse_trade_dt(t.get("close_time"))
+            if start and end and end >= start:
+                durations.append((end - start).total_seconds() / 60.0)
+        return round(sum(durations) / len(durations), 1) if durations else None
+
+    holding = {
+        "winners_min": avg_hold([t for t in closed if pnl(t) > 0.001]),
+        "losers_min": avg_hold([t for t in closed if pnl(t) < -0.001]),
+        "all_min": avg_hold(closed),
+    }
+
+    # Day-level statistics (by close date, like the calendar)
+    days: Dict[str, float] = {}
+    for t in closed:
+        key = _normalize_date_str(t.get("close_time") or t.get("open_time") or "")[:10]
+        if key:
+            days[key] = days.get(key, 0.0) + pnl(t)
+    green = sum(1 for v in days.values() if v > 0.001)
+    red = sum(1 for v in days.values() if v < -0.001)
+    best_day = max(days.items(), key=lambda kv: kv[1]) if days else None
+    worst_day = min(days.items(), key=lambda kv: kv[1]) if days else None
+    day_stats = {
+        "trading_days": len(days),
+        "green_days": green,
+        "red_days": red,
+        "green_day_rate": round(green / len(days) * 100.0, 1) if days else 0.0,
+        "avg_daily_pnl": round(sum(days.values()) / len(days), 2) if days else 0.0,
+        "best_day": {"date": best_day[0], "net_profit": round(best_day[1], 2)} if best_day else None,
+        "worst_day": {"date": worst_day[0], "net_profit": round(worst_day[1], 2)} if worst_day else None,
+    }
+
+    # Monthly results
+    months: Dict[str, Dict[str, float]] = {}
+    for t in closed:
+        key = _normalize_date_str(t.get("close_time") or t.get("open_time") or "")[:7]
+        if not key:
+            continue
+        m = months.setdefault(key, {"net_profit": 0.0, "trades": 0, "wins": 0, "r": 0.0})
+        m["net_profit"] += pnl(t)
+        m["trades"] += 1
+        m["wins"] += 1 if pnl(t) > 0.001 else 0
+        m["r"] += float(t.get("r_multiple") or 0.0)
+    monthly = [
+        {"month": key, "net_profit": round(m["net_profit"], 2), "trades": m["trades"],
+         "win_rate": round(m["wins"] / m["trades"] * 100.0, 1) if m["trades"] else 0.0,
+         "total_r": round(m["r"], 2)}
+        for key, m in sorted(months.items())
+    ]
+
+    by_symbol = get_performance_by_symbol(trades)  # sorted by net profit, best first
+
+    # Plan adherence: a setup was assigned and no mistake was tagged
+    plan_followed = sum(1 for t in closed if t.get("setup_id") and not t.get("mistake_id"))
+    plan_rate = plan_followed / len(closed) * 100.0 if closed else 0.0
+
+    weekdays = get_performance_by_day_of_week(trades)
+    recent = sorted(closed, key=lambda t: _normalize_date_str(t.get("close_time") or t.get("open_time") or ""), reverse=True)
+    open_positions = [t for t in trades if t.get("status") == "OPEN" and not t.get("is_missed")]
+
+    def trade_summary(t):
+        return {
+            "id": t.get("id"), "symbol": t.get("symbol"), "direction": t.get("direction"),
+            "volume": t.get("volume"), "net_profit": round(pnl(t), 2),
+            "r_multiple": t.get("r_multiple"), "status": t.get("status"),
+            "open_time": t.get("open_time"), "close_time": t.get("close_time"),
+            "setup_name": t.get("setup_name"), "account_currency": t.get("account_currency"),
+        }
+
+    return {
+        "r_distribution": r_distribution,
+        "long_short": long_short,
+        "holding": holding,
+        "day_stats": day_stats,
+        "monthly": monthly,
+        # Weekends only when traded, so FX-only journals keep a Mon-Fri chart.
+        "by_weekday": [d for i, d in enumerate(weekdays) if i < 5 or d["trades"] > 0],
+        "top_symbols": by_symbol[:5],
+        "worst_symbols": [s for s in reversed(by_symbol) if s.get("net_profit", 0.0) < 0][:3],
+        "plan_rate": round(plan_rate, 1),
+        "journal_score": _journal_score(metrics, day_stats["green_day_rate"], plan_rate),
+        "recent_trades": [trade_summary(t) for t in recent[:recent_limit]],
+        "open_positions": [trade_summary(t) for t in open_positions],
+    }

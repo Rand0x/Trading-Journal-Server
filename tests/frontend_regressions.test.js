@@ -146,3 +146,14 @@ test('auto-refresh preserves every active load filter and page', async () => {
   assert.equal(requests[0].signals, 'Breakout');
   assert.deepEqual(requests[1], requests[0]);
 });
+
+test('review view loads although Review is a top-level const, not a window property', () => {
+  const h = harness();
+  let loads = 0;
+  vm.runInContext('const Review = { load() { globalThis.__reviewLoads = (globalThis.__reviewLoads || 0) + 1; } };', h.context);
+  const app = h.load('app.js', 'App');
+  app.currentView = 'review';
+  app.refreshCurrentView();
+  loads = vm.runInContext('globalThis.__reviewLoads', h.context);
+  assert.equal(loads, 1);
+});

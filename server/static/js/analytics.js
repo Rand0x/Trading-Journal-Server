@@ -280,61 +280,13 @@ const Analytics = {
 
   drawBarChart(container, items = [], currency) {
     const cur = currency || this.currentCurrency || App.getActiveCurrency();
-    const sym = App.getCurrencySymbol(cur);
-    container.innerHTML = '';
-    if (items.length === 0) return;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = container.clientWidth || 450;
-    canvas.height = 240;
-    container.appendChild(canvas);
-
-    const ctx = canvas.getContext('2d');
-    const width = canvas.width;
-    const height = canvas.height;
-    const padding = { top: 20, right: 20, bottom: 35, left: 55 };
-
-    const values = items.map(i => i.value);
-    const maxAbs = Math.max(...values.map(Math.abs), 50);
-
-    const chartW = width - padding.left - padding.right;
-    const chartH = height - padding.top - padding.bottom;
-    const zeroY = padding.top + chartH / 2;
-
-    // Draw zero line
-    ctx.strokeStyle = '#374151';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(padding.left, zeroY);
-    ctx.lineTo(width - padding.right, zeroY);
-    ctx.stroke();
-
-    // Axis labels
-    ctx.fillStyle = '#6b7280';
-    ctx.font = '10px -apple-system, sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText(`+${sym}${Math.round(maxAbs)}`, padding.left - 6, padding.top + 8);
-    ctx.fillText(`-${sym}${Math.round(maxAbs)}`, padding.left - 6, height - padding.bottom);
-
-    const step = chartW / items.length;
-    const barWidth = Math.max(3, Math.min(24, step - 4));
-
-    items.forEach((item, idx) => {
-      const x = padding.left + (idx * step) + (step - barWidth) / 2;
-      const barH = (Math.abs(item.value) / maxAbs) * (chartH / 2);
-
-      if (item.value >= 0) {
-        ctx.fillStyle = '#10b981';
-        ctx.fillRect(x, zeroY - barH, barWidth, barH);
-      } else {
-        ctx.fillStyle = '#ef4444';
-        ctx.fillRect(x, zeroY, barWidth, barH);
-      }
-
-      // X labels
-      ctx.fillStyle = '#9ca3af';
-      ctx.textAlign = 'center';
-      ctx.fillText(item.label, x + barWidth / 2, height - 10);
+    Charts.bars(container, items.map(item => ({
+      label: item.label,
+      value: item.value,
+    })), {
+      height: 230,
+      format: v => App.formatMoney(v, cur, { decimals: 0, showSign: v > 0 }),
+      emptyText: 'No closed trades in this period.',
     });
   }
 };

@@ -9,6 +9,15 @@ const App = {
   activeAccountId: null,
   dateFrom: null,
   dateTo: null,
+  datePreset: 'all',
+  viewTitles: {
+    dashboard: 'Dashboard', trades: 'Trade Log', analytics: 'Analytics',
+    playbooks: 'Playbooks', review: 'Weekly Review', accounts: 'Accounts & Sync',
+  },
+  presetLabels: {
+    all: 'All time', today: 'Today', week: 'This week', month: 'This month',
+    '30days': 'Last 30 days', '90days': 'Last 90 days', year: 'Year to date',
+  },
   accounts: [],
   playbooks: [],
   mistakes: [],
@@ -121,6 +130,11 @@ const App = {
       v.classList.toggle('active', v.id === `view-${viewName}`);
     });
 
+    const title = document.getElementById('topbarTitle');
+    if (title) title.textContent = this.viewTitles[viewName] || '';
+    if (document.title !== undefined) document.title = `${this.viewTitles[viewName] || 'Dashboard'} · Trading Journal`;
+    this.toggleSidebar(false);
+
     if (viewName !== 'trades' && typeof Trades !== 'undefined' && Trades.stopAutoRefresh) {
       Trades.stopAutoRefresh();
     }
@@ -204,18 +218,26 @@ const App = {
     if (accSelect) {
       accSelect.addEventListener('change', (e) => {
         this.activeAccountId = e.target.value ? parseInt(e.target.value) : null;
+        this.updateSidebarAccount();
         this.refreshCurrentView();
       });
     }
 
-    // Global Date Presets
-    const datePreset = document.getElementById('globalDatePreset');
-    if (datePreset) {
-      datePreset.addEventListener('change', (e) => {
-        this.applyDatePreset(e.target.value);
+    // Global Date Presets (segmented control)
+    const presets = document.getElementById('globalDatePresets');
+    if (presets) {
+      presets.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-preset]');
+        if (!btn) return;
+        presets.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+        this.applyDatePreset(btn.dataset.preset);
         this.refreshCurrentView();
       });
     }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.toggleSidebar(false);
+    });
 
     // Drag and drop setup for file imports
     const dropzone = document.getElementById('importDropzone');
@@ -283,7 +305,8 @@ const App = {
         Accounts.load();
         break;
       case 'review':
-        if (window.Review) Review.load();
+        // Top-level `const` modules are not properties of window.
+        if (typeof Review !== 'undefined') Review.load();
         break;
     }
   },
@@ -310,20 +333,51 @@ const App = {
 
   applyDatePreset(preset) {
     const now = new Date();
+    // Local calendar dates (toISOString would shift the day across timezones).
+    const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const daysAgo = n => new Date(now.getFullYear(), now.getMonth(), now.getDate() - n);
+    this.datePreset = this.presetLabels[preset] ? preset : 'all';
     this.dateFrom = null;
     this.dateTo = null;
 
     if (preset === 'today') {
-      this.dateFrom = now.toISOString().substring(0, 10);
+      this.dateFrom = ymd(now);
       this.dateTo = this.dateFrom;
     } else if (preset === 'week') {
-      const firstDay = new Date(now.setDate(now.getDate() - now.getDay()));
-      this.dateFrom = firstDay.toISOString().substring(0, 10);
+      this.dateFrom = ymd(daysAgo((now.getDay() + 6) % 7)); // Monday
     } else if (preset === 'month') {
-      this.dateFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+      this.dateFrom = ymd(new Date(now.getFullYear(), now.getMonth(), 1));
     } else if (preset === '30days') {
-      const past = new Date(Date.now() - 30 * 24 * 3600 * 1000);
-      this.dateFrom = past.toISOString().substring(0, 10);
+      this.dateFrom = ymd(daysAgo(30));
+    } else if (preset === '90days') {
+      this.dateFrom = ymd(daysAgo(90));
+    } else if (preset === 'year') {
+      this.dateFrom = `${now.getFullYear()}-01-01`;
+    }
+  },
+
+  getPeriodLabel() {
+    return this.presetLabels[this.datePreset] || 'All time';
+  },
+
+  toggleSidebar(force) {
+    if (typeof document === 'undefined' || !document.body || !document.body.classList) return;
+    const open = force === undefined ? !document.body.classList.contains('sidebar-open') : force;
+    document.body.classList.toggle('sidebar-open', open);
+  },
+
+  updateSidebarAccount() {
+    const nameEl = document.getElementById('sidebarAccountName');
+    const metaEl = document.getElementById('sidebarAccountMeta');
+    if (!nameEl || !metaEl) return;
+    const acc = this.getActiveAccount();
+    if (acc) {
+      nameEl.textContent = acc.name || 'Account';
+      metaEl.textContent = [acc.platform, acc.broker, acc.currency].filter(Boolean).join(' · ');
+    } else {
+      const count = (this.accounts || []).length;
+      nameEl.textContent = 'All accounts';
+      metaEl.textContent = `${count} account${count === 1 ? '' : 's'} · data stays on this server`;
     }
   },
 
@@ -333,10 +387,11 @@ const App = {
 
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
-    toast.innerHTML = `
-      <span>${type === 'success' ? '✓' : (type === 'error' ? '✗' : 'ℹ')}</span>
-      <span>${message}</span>
-    `;
+    const icon = document.createElement('span');
+    icon.textContent = type === 'success' ? '✓' : (type === 'error' ? '✕' : 'ℹ');
+    const text = document.createElement('span');
+    text.textContent = message;
+    toast.append(icon, text);
 
     container.appendChild(toast);
     setTimeout(() => {

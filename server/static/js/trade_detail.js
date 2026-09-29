@@ -623,7 +623,7 @@ const TradeDetail = {
           <div style="font-size:13px;max-width:440px;line-height:1.5;color:#9ca3af;">${this.escapeHtml(data.message || 'No real broker candles have been stored for this trade yet. Please run a sync in the updated EA or cBot.')}</div>
           <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;justify-content:center;">
             ${this.currentTimeframe !== 'AUTO' ? '<button type="button" class="btn btn-primary btn-sm" onclick="TradeDetail.switchTimeframe(\'AUTO\')">🎯 Switch to Auto Timeframe</button>' : ''}
-            <button type="button" class="btn btn-secondary btn-sm" onclick="TradeDetail.syncAndReload()">🔄 Refresh / Check Sync</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="TradeDetail.syncAndReload()">Refresh / check sync</button>
           </div>
         </div>
       `;
@@ -846,7 +846,7 @@ const TradeDetail = {
     const origText = btn ? btn.innerHTML : '';
     if (btn) {
       btn.disabled = true;
-      btn.innerHTML = '🔄 Syncing...';
+      btn.innerHTML = 'Syncing...';
     }
 
     try {

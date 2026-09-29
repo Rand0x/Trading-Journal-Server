@@ -32,6 +32,7 @@ const Accounts = {
       App.accounts = accounts;
       this.renderAccounts(accounts);
       this.updateGlobalAccountSelect(accounts);
+      if (App.updateSidebarAccount) App.updateSidebarAccount();
       this.checkAutoRefresh();
     } catch (err) {
       console.error('Failed to load accounts:', err);
@@ -137,7 +138,7 @@ const Accounts = {
           </div>
           ${isCTrader ? `
             <button class="btn btn-primary btn-sm" onclick="Accounts.triggerCTraderSyncForAccount(${a.id})" title="Fetch account data with the configured cTrader Open API credentials">
-              ⚡ Sync Now
+              Sync now
             </button>
           ` : ''}
         </div>
