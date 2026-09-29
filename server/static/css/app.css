@@ -880,7 +880,7 @@ button, input, select, textarea { font-family: inherit; }
 .calendar-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 118px;
-  gap: 8px;
+  gap: 24px; /* clear separation between Sunday and the week totals */
 }
 
 .calendar-weekdays {
