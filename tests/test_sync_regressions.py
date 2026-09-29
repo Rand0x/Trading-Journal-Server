@@ -347,3 +347,8 @@ class TestSyncRegressions(unittest.TestCase):
         self.assertEqual(tickets('2026-09-25'), ['full', 'scaled'])
         self.assertEqual(tickets('2026-09-24'), [])
         self.assertEqual(client.get('/api/trades', params={'closed_on': '25.09.2026'}).status_code, 422)
+        # A calendar week (range) includes every trade realized inside it.
+        res = client.get('/api/trades', params={'account_id': self.account, 'closed_from': '2026-09-21', 'closed_to': '2026-09-27'})
+        self.assertEqual(sorted(t['ticket'] for t in res.json()['trades']), ['full', 'other', 'scaled'])
+        res = client.get('/api/trades', params={'account_id': self.account, 'closed_from': '2026-09-26', 'closed_to': '2026-09-26'})
+        self.assertEqual([t['ticket'] for t in res.json()['trades']], ['other'])

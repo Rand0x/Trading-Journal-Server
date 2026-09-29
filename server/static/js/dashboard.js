@@ -52,6 +52,7 @@ const Dashboard = {
   bindUi() {
     if (this.uiBound) return;
     this.uiBound = true;
+    window.addEventListener('resize', () => requestAnimationFrame(() => this.positionDrawdownLabel()));
     const toggle = document.getElementById('equityModeToggle');
     if (toggle) {
       toggle.addEventListener('click', e => {
@@ -216,6 +217,7 @@ const Dashboard = {
     const line = [];
     const drawdown = [];
     let peak = -Infinity;
+    this.equityInfo = new Map();
     pts.forEach(p => {
       let ts = Math.floor(Date.parse(`${String(p.time).replace(' ', 'T').substring(0, 16)}:00Z`) / 1000);
       if (!isFinite(ts)) return;
@@ -223,9 +225,12 @@ const Dashboard = {
       lastTs = ts;
       const value = isR ? Number(p.cumulative_r) || 0 : Number(p.cumulative_pnl) || 0;
       peak = Math.max(peak, value);
+      const dd = Math.min(0, value - peak);
       line.push({ time: ts, value });
-      drawdown.push({ time: ts, value: Math.min(0, value - peak) });
+      drawdown.push({ time: ts, value: dd });
+      this.equityInfo.set(ts, { point: p, value, dd });
     });
+    this.equityFormat = { isR, cur };
 
     const formatter = v => (isR ? `${v.toFixed(1)}R` : this.money(v, cur, { decimals: 0 }));
 
@@ -293,6 +298,19 @@ const Dashboard = {
         const panes = this.equityChart.panes();
         if (panes[1]) panes[1].setHeight(80);
       } catch (e) { /* older builds without pane sizing */ }
+
+      // Labels inside the two panes so it is clear which curve is which
+      this.equityLabelTop = document.createElement('div');
+      this.equityLabelTop.className = 'pane-label';
+      this.equityLabelTop.style.top = '6px';
+      this.equityLabelDd = document.createElement('div');
+      this.equityLabelDd.className = 'pane-label';
+      container.append(this.equityLabelTop, this.equityLabelDd);
+
+      this.equityChart.subscribeCrosshairMove(param => {
+        const info = param && param.time !== undefined ? this.equityInfo.get(param.time) : null;
+        this.renderEquityReadout(info || null);
+      });
     }
 
     this.equitySeries.applyOptions({ priceFormat: { type: 'custom', formatter, minMove: 0.01 } });
@@ -301,8 +319,47 @@ const Dashboard = {
     this.drawdownSeries.setData(drawdown);
     this.equityChart.timeScale().fitContent();
 
+    this.equityLabelTop.textContent = isR ? 'Total realized R' : 'Total realized P&L';
+    this.equityLabelDd.textContent = isR ? 'Drawdown (R below best)' : 'Drawdown (below best total)';
+    requestAnimationFrame(() => this.positionDrawdownLabel());
+    this.renderEquityReadout(null);
+
     const sub = document.getElementById('equitySubtitle');
-    if (sub) sub.textContent = isR ? 'Realized R over time, drawdown below' : 'Realized P&L over time (incl. partial exits), drawdown below';
+    if (sub) sub.textContent = isR
+      ? 'Running total in R (profit ÷ initial risk) — one point per realized exit'
+      : 'Running total of realized P&L — one point per realized exit';
+  },
+
+  positionDrawdownLabel() {
+    if (!this.equityChart || !this.equityLabelDd) return;
+    try {
+      const panes = this.equityChart.panes();
+      this.equityLabelDd.style.top = `${panes[0].getHeight() + 6}px`;
+    } catch (e) {
+      this.equityLabelDd.style.bottom = '110px';
+    }
+  },
+
+  // Readout above the chart: the hovered exit, or the latest state when not hovering.
+  renderEquityReadout(info) {
+    const el = document.getElementById('equityReadout');
+    if (!el || !this.equityInfo || !this.equityInfo.size) return;
+    const { isR, cur } = this.equityFormat || {};
+    const fmt = v => (isR ? this.formatR(v) : this.signed(v, cur));
+    const latest = !info;
+    if (latest) info = [...this.equityInfo.values()].pop();
+    const p = info.point || {};
+    const when = String(p.time || '').replace('T', ' ').substring(0, 16);
+    const change = isR ? Number(p.r_multiple) || 0 : Number(p.trade_pnl) || 0;
+    const exit = p.symbol === 'START'
+      ? '<span>Start of period</span>'
+      : `<span><span class="readout-label">${p.partial ? 'Partial exit' : 'Exit'}</span><b>${this.esc(p.symbol || '')}</b>
+         <span class="${this.pnlClass(change)}">${this.esc(fmt(change))}</span></span>`;
+    el.innerHTML = `
+      <span><span class="readout-label">${latest ? 'Latest' : 'At'}</span><b>${this.esc(when)}</b></span>
+      ${exit}
+      <span><span class="readout-label">Total</span><b class="${this.pnlClass(info.value)}">${this.esc(fmt(info.value))}</b></span>
+      <span><span class="readout-label">Drawdown</span><b class="${info.dd < -0.001 ? 'color-red' : 'color-muted'}">${info.dd < -0.001 ? this.esc(fmt(info.dd)) : 'none — at best total'}</b></span>`;
   },
 
   destroyEquityChart() {
@@ -313,6 +370,8 @@ const Dashboard = {
     this.equitySeries = null;
     this.drawdownSeries = null;
     this.equityChartEl = null;
+    this.equityLabelTop = null;
+    this.equityLabelDd = null;
   },
 
   // ---------------------------------------------------------------- score
@@ -463,14 +522,23 @@ const Dashboard = {
       for (let w = 0; w < rows; w++) {
         const wk = weekTotals[w] || { pnl: 0, r: 0, pct: 0, trades: 0, days: 0 };
         const shown = this.formatCalendarValue(wk.pnl, wk.r, wk.pct, cur);
+        // Monday..Sunday of this calendar row (may reach into the neighbouring months)
+        const monday = new Date(year, month, 1 - lead + 7 * w);
+        const sunday = new Date(year, month, 1 - lead + 7 * w + 6);
+        const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const range = `${monday.getDate()}–${sunday.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
         const card = document.createElement('div');
-        card.className = 'week-card';
+        card.className = `week-card${wk.trades ? ' has-trades' : ''}`;
         card.innerHTML = `
-          <span class="week-label">WEEK ${w + 1}</span>
+          <span class="week-label">WEEK TOTAL<br><span class="week-range">${this.esc(range)}</span></span>
           <div>
             <div class="week-pnl ${wk.trades ? this.pnlClass(shown.value) : 'color-muted'}">${wk.trades ? this.esc(shown.text) : '–'}</div>
             <div class="week-sub">${wk.days} day${wk.days === 1 ? '' : 's'} · ${wk.trades} tr</div>
           </div>`;
+        if (wk.trades) {
+          card.title = `Week ${range}: open all trades realized in this week`;
+          card.addEventListener('click', () => App.navigateToTradesWithRange(ymd(monday), ymd(sunday)));
+        }
         weeks.appendChild(card);
       }
     }

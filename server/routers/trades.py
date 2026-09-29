@@ -304,6 +304,10 @@ def get_trades(
     is_missed: Optional[bool] = Query(None),
     closed_on: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$",
                                      description="Trades that realized P&L on this day (full or partial close)"),
+    closed_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$",
+                                       description="Start of a realization-date range (inclusive)"),
+    closed_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$",
+                                     description="End of a realization-date range (inclusive)"),
     sort_by: str = Query("open_time"),
     sort_order: str = Query("desc"),
     limit: int = Query(50, ge=1, le=1000),
@@ -343,16 +347,20 @@ def get_trades(
             where_clauses.append("t.is_missed = ?")
             params.append(1 if is_missed else 0)
         if closed_on:
-            # Same basis as the dashboard calendar: realized on that day.
+            closed_from = closed_to = closed_on
+        if closed_from or closed_to:
+            # Same basis as the dashboard calendar: P&L realized within the range
+            # (full close or a partial close), independent of the open date.
+            low, high = closed_from or "0000-00-00", closed_to or "9999-99-99"
             where_clauses.append("""(
                 COALESCE(t.is_missed, 0) = 0 AND (
                     (t.status IN ('CLOSED', 'WIN', 'LOSS', 'BE')
-                     AND SUBSTR(REPLACE(t.close_time, '.', '-'), 1, 10) = ?)
+                     AND SUBSTR(REPLACE(t.close_time, '.', '-'), 1, 10) BETWEEN ? AND ?)
                     OR EXISTS (SELECT 1 FROM trade_partial_closes pc
                                WHERE pc.trade_id = t.id
-                                 AND SUBSTR(REPLACE(pc.close_time, '.', '-'), 1, 10) = ?)
+                                 AND SUBSTR(REPLACE(pc.close_time, '.', '-'), 1, 10) BETWEEN ? AND ?)
                 ))""")
-            params.extend([closed_on, closed_on])
+            params.extend([low, high, low, high])
         if search:
             where_clauses.append("(t.symbol LIKE ? OR t.notes LIKE ? OR t.tags LIKE ? OR t.ticket LIKE ?)")
             search_param = f"%{search}%"

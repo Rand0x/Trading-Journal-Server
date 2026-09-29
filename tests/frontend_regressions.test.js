@@ -159,3 +159,21 @@ test('review view loads although Review is a top-level const, not a window prope
   loads = vm.runInContext('globalThis.__reviewLoads', h.context);
   assert.equal(loads, 1);
 });
+
+test('calendar week link filters the trade log by realization range and ignores the open-date preset', async () => {
+  const h = harness({ tradeSearchInput: { value: '' } });
+  const requests = [];
+  h.context.API.getTrades = async params => { requests.push({ ...params }); return { total: 0, trades: [] }; };
+  const trades = h.load('trades.js', 'Trades');
+  trades.renderTable = () => {};
+  trades.renderPagination = () => {};
+  h.context.history = { pushState() {}, replaceState() {} };
+  const app = h.load('app.js', 'App');
+  app.navigateToTradesWithRange('2026-09-21', '2026-09-27');
+  await Promise.resolve();
+  const last = requests.at(-1);
+  assert.equal(last.closed_from, '2026-09-21');
+  assert.equal(last.closed_to, '2026-09-27');
+  assert.equal(last.closed_on, undefined);
+  assert.equal(last.date_from, undefined);
+});

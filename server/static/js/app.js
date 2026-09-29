@@ -313,19 +313,29 @@ const App = {
       searchInput.value = expectedSearch;
       changed = true;
     }
-    const expectedDate = query.date || '';
-    if (typeof Trades !== 'undefined' && Trades.closedOnFilter !== expectedDate) {
-      Trades.setClosedOnFilter(expectedDate);
+    // ?date=YYYY-MM-DD (one day) or ?from=...&to=... (e.g. a calendar week)
+    const from = query.date || query.from || '';
+    const to = query.date || query.to || from;
+    const expected = !from ? '' : (from === to ? from : `${from}..${to}`);
+    if (typeof Trades !== 'undefined' && Trades.closedOnFilter !== expected) {
+      Trades.setClosedRange(from, to);
       changed = true;
     }
     return changed;
   },
 
   navigateToTradesWithDate(dateStr) {
-    this.applyTradeQuery({ date: dateStr || '' });
-    const targetHash = dateStr ? `#trades?date=${encodeURIComponent(dateStr)}` : '#trades';
+    this.navigateToTradesWithRange(dateStr, dateStr);
+  },
+
+  navigateToTradesWithRange(from, to) {
+    const single = from && (!to || to === from);
+    this.applyTradeQuery(single ? { date: from } : { from: from || '', to: to || '' });
+    const targetHash = !from ? '#trades'
+      : single ? `#trades?date=${encodeURIComponent(from)}`
+        : `#trades?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
     if (window.location.hash !== targetHash) {
-      history.pushState({ view: 'trades', date: dateStr }, '', targetHash);
+      history.pushState({ view: 'trades', from, to }, '', targetHash);
     }
     this.navigateTo('trades', false);
   },

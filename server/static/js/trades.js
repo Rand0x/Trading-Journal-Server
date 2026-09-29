@@ -49,25 +49,51 @@ const Trades = {
     const searchVal = document.getElementById('tradeSearchInput')?.value;
     if (searchVal) params.search = searchVal;
 
-    // Calendar day: trades that realized P&L on that day (full or partial close)
-    if (this.closedOnFilter) params.closed_on = this.closedOnFilter;
+    // Calendar day or week: trades that realized P&L in that range (full or partial
+    // close). The global date preset filters by open date, so it is not applied here.
+    if (this.closedFrom) {
+      delete params.date_from;
+      delete params.date_to;
+      if (this.closedFrom === this.closedTo) {
+        params.closed_on = this.closedFrom;
+      } else {
+        params.closed_from = this.closedFrom;
+        params.closed_to = this.closedTo;
+      }
+    }
 
     return params;
   },
 
-  closedOnFilter: '',
+  closedFrom: '',
+  closedTo: '',
+
+  get closedOnFilter() {
+    if (!this.closedFrom) return '';
+    return this.closedFrom === this.closedTo ? this.closedFrom : `${this.closedFrom}..${this.closedTo}`;
+  },
 
   setClosedOnFilter(dateStr) {
-    this.closedOnFilter = /^\d{4}-\d{2}-\d{2}$/.test(dateStr || '') ? dateStr : '';
+    this.setClosedRange(dateStr, dateStr);
+  },
+
+  setClosedRange(from, to) {
+    const valid = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '');
+    this.closedFrom = valid(from) ? from : '';
+    this.closedTo = this.closedFrom ? (valid(to) ? to : this.closedFrom) : '';
     const chip = document.getElementById('tradeDateFilterChip');
     if (chip) {
-      chip.hidden = !this.closedOnFilter;
-      chip.textContent = this.closedOnFilter ? `Realized on ${this.closedOnFilter}  ✕` : '';
+      chip.hidden = !this.closedFrom;
+      const fmt = d => new Date(`${d}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+      chip.textContent = !this.closedFrom ? ''
+        : this.closedFrom === this.closedTo
+          ? `Realized on ${fmt(this.closedFrom)}  ✕`
+          : `Realized ${fmt(this.closedFrom)} – ${fmt(this.closedTo)}  ✕`;
     }
   },
 
   clearClosedOnFilter() {
-    this.setClosedOnFilter('');
+    this.setClosedRange('', '');
     if (typeof history !== 'undefined' && window.location.hash.startsWith('#trades?')) {
       history.replaceState({ view: 'trades' }, '', '#trades');
     }

@@ -798,6 +798,51 @@ button, input, select, textarea { font-family: inherit; }
 
 .equity-chart { width: 100%; height: 340px; position: relative; }
 
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: -4px 0 8px;
+}
+.chart-legend strong { color: var(--text-main); font-weight: 600; }
+.legend-item { display: inline-flex; align-items: center; gap: 7px; }
+.swatch { width: 18px; height: 8px; border-radius: 3px; flex-shrink: 0; }
+.swatch-split { background: linear-gradient(90deg, var(--green) 0 50%, var(--red) 50% 100%); }
+.swatch-dd { background: rgba(239, 68, 68, 0.45); border-top: 2px solid var(--red); height: 8px; }
+
+.chart-readout {
+  min-height: 34px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 7px 12px;
+  margin-bottom: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.chart-readout b { color: var(--text-strong); font-weight: 650; }
+.chart-readout .readout-label { color: var(--text-dim); margin-right: 4px; }
+
+.pane-label {
+  position: absolute;
+  left: 8px;
+  z-index: 3;
+  pointer-events: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: rgba(15, 20, 30, 0.8);
+  padding: 1px 7px;
+  border-radius: 5px;
+}
+
 .chart-container {
   width: 100%;
   height: 260px;
@@ -938,7 +983,10 @@ button, input, select, textarea { font-family: inherit; }
   justify-content: space-between;
   background: var(--bg-subtle);
 }
-.week-card .week-label { font-size: 10.5px; color: var(--text-dim); font-weight: 600; letter-spacing: 0.04em; }
+.week-card .week-label { font-size: 10px; color: var(--text-dim); font-weight: 650; letter-spacing: 0.05em; line-height: 1.3; }
+.week-card .week-range { font-weight: 500; letter-spacing: 0; }
+.week-card.has-trades { cursor: pointer; transition: border-color 0.12s ease; }
+.week-card.has-trades:hover { border-color: var(--accent); border-style: solid; }
 .week-card .week-pnl { font-size: 13px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 .week-card .week-sub { font-size: 10.5px; color: var(--text-dim); text-align: right; }
 
