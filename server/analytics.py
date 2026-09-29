@@ -31,27 +31,30 @@ def compute_r_multiple(
     Deterministically computes the R-Multiple of a trade.
     Priority 1: If net_profit is given and initial_risk is given (> 0):
                 r_multiple = net_profit / initial_risk
+                (initial_risk is always a currency amount; legacy price distances
+                are cleared by a one-time migration in database.py)
     Priority 2: If open_price and stop_loss are provided and stop_loss != open_price:
-                rew / risk_dist (or sum of partials)
+                rew / risk_dist (or volume-weighted sum of partials)
     """
     if net_profit is not None and initial_risk is not None and initial_risk > 0:
         return round(net_profit / initial_risk, 2)
 
     if open_price is not None and open_price > 0 and stop_loss is not None and stop_loss > 0 and open_price != stop_loss:
-        risk_dist = abs(open_price - stop_loss)
+        sl_dist = abs(open_price - stop_loss)
         if partial_closes:
             parent_vol = volume or sum(float(pc.get("volume", 0.0) or 0.0) for pc in partial_closes)
-            if parent_vol > 0 and risk_dist > 0:
+            if parent_vol > 0:
                 total_r = 0.0
                 for pc in partial_closes:
                     pc_vol = float(pc.get("volume", 0.0) or 0.0)
                     pc_price = float(pc.get("close_price", 0.0) or 0.0)
                     pc_rew = (pc_price - open_price) if direction.upper() in ("BUY", "LONG") else (open_price - pc_price)
-                    total_r += (pc_rew / risk_dist) * (pc_vol / parent_vol)
+                    total_r += (pc_rew / sl_dist) * (pc_vol / parent_vol)
                 return round(total_r, 2)
-        if close_price is not None and risk_dist > 0:
+        if close_price is not None:
             rew = (close_price - open_price) if direction.upper() in ("BUY", "LONG") else (open_price - close_price)
-            return round(rew / risk_dist, 2)
+            return round(rew / sl_dist, 2)
+
     return None
 
 def calculate_trade_metrics(trades: List[Dict[str, Any]], initial_balance: float = 10000.0) -> Dict[str, Any]:

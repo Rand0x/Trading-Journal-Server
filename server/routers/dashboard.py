@@ -43,6 +43,7 @@ def get_dashboard_summary(
         current_balance = None
         equity = None
         currency = "USD"
+        currencies = []
         if account_id:
             cursor.execute("SELECT initial_balance, current_balance, equity, currency FROM accounts WHERE id = ?;", (account_id,))
             acc = cursor.fetchone()
@@ -62,6 +63,8 @@ def get_dashboard_summary(
                 equity = float(row[2])
             if row and row[3] == 1 and row[4]:
                 currency = row[4]
+            cursor.execute("SELECT DISTINCT UPPER(COALESCE(NULLIF(currency, ''), 'USD')) FROM accounts ORDER BY 1;")
+            currencies = [r[0] for r in cursor.fetchall()]
 
         # Fetch trades
         cursor.execute(f"""
@@ -85,6 +88,9 @@ def get_dashboard_summary(
         "current_balance": current_balance,
         "equity": equity,
         "currency": currency,
+        # Amounts of accounts in different currencies are summed without FX conversion.
+        "mixed_currencies": len(currencies) > 1,
+        "currencies": currencies,
         "trades_count": len(trades),
         "open_trades_count": metrics.get("open_trades_count", 0),
         "open_pnl": metrics.get("open_pnl", 0.0),

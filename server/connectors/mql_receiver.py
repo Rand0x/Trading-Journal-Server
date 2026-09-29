@@ -55,6 +55,146 @@ def _save_candles(cursor, symbol: str, candles) -> int:
         """, rows)
     return len(rows)
 
+# Journal fields a trader may already have filled in on an OPEN snapshot row.
+_JOURNAL_TEXT_FIELDS = (
+    "notes", "pre_trade_notes", "post_trade_notes", "key_learnings",
+    "emotion_pre", "emotion_during", "signals", "tags", "tp_targets",
+)
+_CLOSED_STATUSES = ("CLOSED", "WIN", "LOSS", "BE")
+_STALE_MATCH_WINDOW_SECONDS = 300
+
+
+def _pending_match_candidates(trade) -> list:
+    """All ticket spellings under which a filled order may have been stored as PENDING."""
+    ids = []
+    for value in (trade.order_id, trade.position_id, trade.ticket):
+        value = str(value or "").strip()
+        if value and value not in ids:
+            ids.append(value)
+    tickets = list(ids)
+    for value in ids:
+        for prefix in ("mt4-order-", "mt5-order-", "ctrader-order-"):
+            tickets.append(prefix + value)
+    return ids, tickets
+
+
+def _merge_stale_open_trade(cursor, stale_id: int, target_id: int, now_str: str):
+    """Move journal data from a stale OPEN row onto the record of the same position.
+
+    The target keeps any value it already has; empty fields are filled from the
+    stale row. Screenshots are re-parented before the stale row is removed so
+    the ON DELETE CASCADE cannot drop them.
+    """
+    text_sets = ",\n".join(
+        f"{col} = CASE WHEN COALESCE(trades.{col}, '') = '' THEN s.{col} ELSE trades.{col} END"
+        for col in _JOURNAL_TEXT_FIELDS
+    )
+    cursor.execute(f"""
+        UPDATE trades
+        SET {text_sets},
+            setup_id = COALESCE(trades.setup_id, s.setup_id),
+            mistake_id = COALESCE(trades.mistake_id, s.mistake_id),
+            initial_risk = COALESCE(trades.initial_risk, s.initial_risk),
+            emotions = CASE WHEN COALESCE(trades.emotions, '') IN ('', 'Disciplined') THEN s.emotions ELSE trades.emotions END,
+            rating = CASE WHEN COALESCE(trades.rating, 5) = 5 THEN s.rating ELSE trades.rating END,
+            updated_at = ?
+        FROM (SELECT * FROM trades WHERE id = ?) AS s
+        WHERE trades.id = ?;
+    """, (now_str, stale_id, target_id))
+    cursor.execute(
+        "UPDATE OR IGNORE trade_screenshots SET trade_id = ? WHERE trade_id = ?;",
+        (target_id, stale_id),
+    )
+    cursor.execute("DELETE FROM trades WHERE id = ?;", (stale_id,))
+
+    # A risk amount entered on the open row defines the R-multiple of the closed record.
+    cursor.execute("""
+        SELECT direction, open_price, stop_loss, close_price, net_profit, initial_risk, volume, status
+        FROM trades WHERE id = ?;
+    """, (target_id,))
+    target = cursor.fetchone()
+    if target and target["status"] in _CLOSED_STATUSES and target["initial_risk"]:
+        cursor.execute(
+            "UPDATE trades SET r_multiple = ? WHERE id = ?;",
+            (compute_r_multiple(
+                direction=target["direction"],
+                open_price=target["open_price"],
+                stop_loss=target["stop_loss"],
+                close_price=target["close_price"],
+                net_profit=target["net_profit"],
+                initial_risk=target["initial_risk"],
+                volume=target["volume"],
+            ), target_id),
+        )
+
+
+def _reconcile_stale_open_trades(cursor, account_id: int, active_tickets: set, now_str: str) -> Dict[str, int]:
+    """Resolve OPEN rows whose position is missing from the EA's open-position snapshot.
+
+    A position that left the snapshot was closed at the broker. If its closed
+    record was stored under a different ticket (order vs. position vs. deal id),
+    the journal data is merged into that record. Without a matching record the
+    row is marked CANCELLED, so a frozen floating P&L no longer counts as open.
+    Manually created trades are never touched.
+    """
+    cursor.execute("""
+        SELECT id, ticket, symbol, direction, volume, open_time, open_price
+        FROM trades t
+        WHERE t.account_id = ? AND t.status = 'OPEN'
+          AND COALESCE(t.ticket, '') != '' AND t.ticket NOT LIKE 'manual%'
+          AND NOT EXISTS (SELECT 1 FROM trade_partial_closes pc WHERE pc.trade_id = t.id)
+        ORDER BY t.id ASC;
+    """, (account_id,))
+    stale_rows = [dict(r) for r in cursor.fetchall() if r["ticket"] not in active_tickets]
+
+    merged = cancelled = 0
+    used_targets = set()
+    for stale in stale_rows:
+        open_price = float(stale["open_price"] or 0.0)
+        price_tol = max(0.0005 * open_price, 0.0001)
+        cursor.execute("""
+            SELECT id, ticket, status
+            FROM trades
+            WHERE account_id = ? AND id != ? AND symbol = ? AND direction = ?
+              AND ABS(open_price - ?) <= ?
+              AND ABS(volume - ?) <= 0.01
+              AND ABS(strftime('%s', open_time) - strftime('%s', ?)) <= ?
+            ORDER BY ABS(strftime('%s', open_time) - strftime('%s', ?)) ASC, id ASC;
+        """, (
+            account_id, stale["id"], stale["symbol"], stale["direction"],
+            open_price, price_tol, float(stale["volume"] or 0.0),
+            stale["open_time"], _STALE_MATCH_WINDOW_SECONDS, stale["open_time"],
+        ))
+        target = None
+        for candidate in cursor.fetchall():
+            if candidate["id"] in used_targets:
+                continue
+            # Same position already closed, or still open under its current ticket.
+            if candidate["status"] in _CLOSED_STATUSES or (
+                candidate["status"] == "OPEN" and candidate["ticket"] in active_tickets
+            ):
+                target = candidate
+                break
+
+        if target:
+            _merge_stale_open_trade(cursor, stale["id"], target["id"], now_str)
+            used_targets.add(target["id"])
+            merged += 1
+        else:
+            cursor.execute(
+                "UPDATE trades SET status = 'CANCELLED', updated_at = ? WHERE id = ?;",
+                (now_str, stale["id"]),
+            )
+            cancelled += 1
+
+    if merged or cancelled:
+        logger.info(
+            "Account %s: resolved stale OPEN trades (merged=%d, cancelled=%d).",
+            account_id, merged, cancelled,
+        )
+    return {"merged": merged, "cancelled": cancelled}
+
+
 def _process_ctrader_grouped_trade(cursor, account_id: int, trade, now_str: str):
     """Persist one cTrader position and all of its closing deals."""
     cursor.execute(
@@ -437,7 +577,6 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     ))
                     existing = pending_match
                     updated_trades += 1
-
             if existing:
                 cursor.execute("SELECT direction, open_price, stop_loss, initial_risk, r_multiple FROM trades WHERE id = ?;", (existing["id"],))
                 t_info = cursor.fetchone()
@@ -588,12 +727,17 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
             cursor.execute("SELECT id FROM trades WHERE account_id = ? AND ticket = ?;", (account_id, trade.ticket))
             existing = cursor.fetchone()
 
-            if not existing and trade.order_id:
-                cursor.execute("""
-                    SELECT id FROM trades
+            if not existing:
+                # MT5 open positions carry only the position id (= opening order
+                # ticket) and MT4 keeps the order ticket, so match on every id.
+                match_ids, match_tickets = _pending_match_candidates(trade)
+                id_placeholders = ", ".join("?" for _ in match_ids)
+                ticket_placeholders = ", ".join("?" for _ in match_tickets)
+                cursor.execute(f"""
+                    SELECT id, order_id FROM trades
                     WHERE account_id = ? AND status = 'PENDING'
-                      AND (order_id = ? OR ticket = ? OR ticket = ? OR ticket = ?);
-                """, (account_id, str(trade.order_id), f"ctrader-order-{trade.order_id}", f"mt5-order-{trade.order_id}", str(trade.order_id)))
+                      AND (order_id IN ({id_placeholders}) OR ticket IN ({ticket_placeholders}));
+                """, (account_id, *match_ids, *match_tickets))
                 pending_match = cursor.fetchone()
                 if pending_match:
                     cursor.execute("""
@@ -603,7 +747,8 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                             commission = ?, swap = ?, gross_profit = ?, net_profit = ?, status = 'OPEN', updated_at = ?
                         WHERE id = ?;
                     """, (
-                        trade.ticket, str(trade.order_id), trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_price,
+                        trade.ticket, str(trade.order_id or pending_match["order_id"] or trade.position_id or ""),
+                        trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_price,
                         clean_sl, clean_tp, trade.commission or 0.0, trade.swap or 0.0,
                         (trade.profit or 0.0) - (trade.commission or 0.0) - (trade.swap or 0.0),
                         trade.profit or 0.0, now_str, pending_match["id"]
@@ -611,21 +756,20 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     updated_trades += 1
                     continue
 
-            calc_init_risk = abs(trade.open_price - clean_sl) if (clean_sl and trade.open_price and clean_sl != trade.open_price) else None
-
             if existing:
                 cursor.execute("""
                     UPDATE trades
                     SET symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?,
                         stop_loss = COALESCE(?, stop_loss), take_profit = COALESCE(?, take_profit),
-                        initial_risk = COALESCE(initial_risk, ?),
+                        order_id = CASE WHEN order_id IS NULL OR order_id = '' THEN ? ELSE order_id END,
                         commission = ?, swap = ?, gross_profit = ?, net_profit = ?, status = 'OPEN',
                         notes = CASE WHEN notes IS NOT NULL AND notes != '' THEN notes ELSE ? END,
                         updated_at = ?
                     WHERE id = ?;
                 """, (
                     trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_price,
-                    clean_sl, clean_tp, calc_init_risk, trade.commission or 0.0, trade.swap or 0.0,
+                    clean_sl, clean_tp, str(trade.order_id or trade.position_id or ""),
+                    trade.commission or 0.0, trade.swap or 0.0,
                     (trade.profit or 0.0) - (trade.commission or 0.0) - (trade.swap or 0.0),
                     trade.profit or 0.0, trade.comment or "", now_str, existing["id"]
                 ))
@@ -634,10 +778,10 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                 cursor.execute("""
                     INSERT INTO trades (
                         account_id, ticket, symbol, direction, volume,
-                        open_time, open_price, stop_loss, take_profit, initial_risk,
+                        open_time, open_price, stop_loss, take_profit,
                         commission, swap, net_profit, status,
-                        notes, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?);
+                        notes, order_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?);
                 """, (
                     account_id,
                     trade.ticket,
@@ -648,11 +792,11 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     trade.open_price,
                     trade.stop_loss,
                     trade.take_profit,
-                    calc_init_risk,
                     trade.commission or 0.0,
                     trade.swap or 0.0,
                     trade.profit or 0.0,
                     trade.comment or "",
+                    str(trade.order_id or trade.position_id or ""),
                     now_str,
                     now_str
                 ))
@@ -660,6 +804,15 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
 
             if trade.candles:
                 candles_saved += _save_candles(cursor, trade.symbol, trade.candles)
+
+        # The EA sends its complete open-position list on every sync. Only
+        # reconcile when that list was actually part of the payload.
+        if payload.source == "mql" and "open_trades" in payload.model_fields_set:
+            _reconcile_stale_open_trades(
+                cursor, account_id,
+                {t.ticket for t in (payload.open_trades or [])},
+                now_str,
+            )
 
         # Process any top-level candles attached directly to the payload
         if payload.candles:

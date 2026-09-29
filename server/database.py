@@ -48,6 +48,62 @@ def get_connection():
     finally:
         conn.close()
 
+def _run_once(cursor, name: str, migration) -> None:
+    """Apply a data migration once and record it in ``app_migrations``."""
+    cursor.execute("SELECT 1 FROM app_migrations WHERE name = ?;", (name,))
+    if cursor.fetchone():
+        return
+    cursor.execute("SAVEPOINT data_migration;")
+    try:
+        migration(cursor)
+    except Exception as e:
+        cursor.execute("ROLLBACK TO data_migration;")
+        cursor.execute("RELEASE data_migration;")
+        logger.warning("Data migration %s failed and will be retried on next start: %s", name, e)
+        return
+    cursor.execute("RELEASE data_migration;")
+    cursor.execute(
+        "INSERT INTO app_migrations (name, applied_at) VALUES (?, ?);",
+        (name, datetime.now(timezone.utc).isoformat()),
+    )
+
+def _clear_point_distance_initial_risk(cursor) -> None:
+    """Remove stop-loss price distances that older sync code stored as initial_risk.
+
+    Earlier receiver versions wrote ``abs(open_price - stop_loss)`` into the
+    currency risk field of synced OPEN trades, inflating the R-multiple. Only
+    synced trades (non-manual tickets) whose value is exactly that distance are
+    reset, so risk amounts entered by the trader stay untouched.
+    """
+    from server.analytics import compute_r_multiple
+    cursor.execute("""
+        SELECT id, direction, open_price, stop_loss, close_price, net_profit, volume
+        FROM trades
+        WHERE initial_risk IS NOT NULL AND open_price > 0 AND stop_loss > 0
+          AND COALESCE(ticket, '') != '' AND ticket NOT LIKE 'manual%'
+          AND ABS(initial_risk - ABS(open_price - stop_loss)) <= 1e-6 * MAX(open_price, 1.0);
+    """)
+    rows = cursor.fetchall()
+    for r in rows:
+        cursor.execute(
+            "SELECT volume, close_price FROM trade_partial_closes WHERE trade_id = ? ORDER BY close_time ASC;",
+            (r["id"],),
+        )
+        partials = [dict(row) for row in cursor.fetchall()]
+        new_r = compute_r_multiple(
+            direction=r["direction"],
+            open_price=r["open_price"],
+            stop_loss=r["stop_loss"],
+            close_price=r["close_price"],
+            net_profit=r["net_profit"],
+            initial_risk=None,
+            partial_closes=partials or None,
+            volume=r["volume"],
+        )
+        cursor.execute("UPDATE trades SET initial_risk = NULL, r_multiple = ? WHERE id = ?;", (new_r, r["id"]))
+    if rows:
+        logger.info("Reset point-distance initial_risk on %d synced trades.", len(rows))
+
 def init_db():
     """Initialize database tables, indexes, and default seeds."""
     os.makedirs(get_db_dir(), exist_ok=True)
@@ -349,6 +405,14 @@ def init_db():
             """)
         except Exception as e:
             logger.warning("Could not normalize legacy dates: %s", e)
+        # One-time data migrations are recorded so they never re-run on later starts.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS app_migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
+        """)
+        _run_once(cursor, "2026_09_clear_point_distance_initial_risk", _clear_point_distance_initial_risk)
 
         conn.commit()
         logger.info("Database initialized successfully with WAL mode.")

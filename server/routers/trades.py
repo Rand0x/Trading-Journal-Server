@@ -21,6 +21,70 @@ from server.connectors.market_data import parse_tp_targets_prices
 
 router = APIRouter(prefix="/api/trades", tags=["Trades"])
 
+GROUP_CLUSTER_GAP_SECONDS = 2 * 3600
+
+
+def _group_status_category(status: Optional[str]) -> str:
+    status = status or "OPEN"
+    return "CLOSED" if status in ("WIN", "LOSS", "BE", "CLOSED") else status
+
+
+def _parse_open_time(value: Optional[str]) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(str(value).replace(" ", "T")[:19])
+    except (TypeError, ValueError):
+        return None
+
+
+def _cluster_by_open_time(legs: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Split legs into clusters chained by open-time gaps of at most 2 hours."""
+    legs = sorted(legs, key=lambda leg: leg.get("open_time") or "")
+    clusters = [[legs[0]]]
+    for prev, curr in zip(legs, legs[1:]):
+        prev_ts, curr_ts = _parse_open_time(prev.get("open_time")), _parse_open_time(curr.get("open_time"))
+        if prev_ts and curr_ts and abs((curr_ts - prev_ts).total_seconds()) > GROUP_CLUSTER_GAP_SECONDS:
+            clusters.append([curr])
+        else:
+            clusters[-1].append(curr)
+    return clusters
+
+
+def _time_cluster_siblings(current: Dict[str, Any], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return the candidates chained to ``current`` by open-time gaps of at most 2 hours."""
+    for cluster in _cluster_by_open_time([current] + candidates):
+        if any(leg is current for leg in cluster):
+            return [leg for leg in cluster if leg is not current]
+    return []
+
+
+def _display_groups(rows: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Group list rows exactly like Trades.groupOpenTrades() and keep the sort order.
+
+    Paginating over these groups keeps every leg of a grouped position on the
+    same page, so the frontend never shows a partial group.
+    """
+    base_groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for row in rows:
+        if row.get("is_missed"):
+            continue
+        key = (
+            row.get("account_id"), (row.get("symbol") or "").upper(), (row.get("direction") or "").upper(),
+            _group_status_category(row.get("status")), f"{float(row.get('open_price') or 0.0):.4f}",
+        )
+        base_groups.setdefault(key, []).append(row)
+
+    group_of: Dict[int, int] = {}
+    for candidates in base_groups.values():
+        for cluster in _cluster_by_open_time(candidates):
+            for leg in cluster:
+                group_of[id(leg)] = id(cluster[0])
+
+    ordered: Dict[int, List[Dict[str, Any]]] = {}
+    for row in rows:
+        ordered.setdefault(group_of.get(id(row), id(row)), []).append(row)
+    return list(ordered.values())
+
+
 def _get_trade_with_partials(cursor, trade_id: int):
     cursor.execute("""
         SELECT t.*, a.name as account_name, a.currency as account_currency,
@@ -52,7 +116,7 @@ def _get_trade_with_partials(cursor, trade_id: int):
     """, (trade_id,))
     result["screenshots"] = [dict(row) for row in cursor.fetchall()]
 
-    # Sibling Open Trades detection (same symbol, direction, entry price, status = OPEN or PENDING)
+    # Sibling leg detection (same symbol, direction, entry price, status category and time cluster)
     open_price = float(result.get("open_price") or 0.0)
     result["is_grouped"] = False
     result["grouped_count"] = 1
@@ -70,51 +134,24 @@ def _get_trade_with_partials(cursor, trade_id: int):
     account_id = result.get("account_id")
     symbol = result.get("symbol")
     direction = result.get("direction")
-    if open_price > 0 and account_id and symbol and direction:
-        price_tol = max(0.0005 * open_price, 0.0001)
-        if result.get("status") in ("OPEN", "PENDING"):
-            cursor.execute("""
-                SELECT t.*
-                FROM trades t
-                WHERE t.account_id = ? AND t.symbol = ? AND t.direction = ?
-                  AND t.status IN ('OPEN', 'PENDING') AND t.id != ?
-                  AND ABS(t.open_price - ?) <= ?;
-            """, (account_id, symbol, direction, trade_id, open_price, price_tol))
-            sibling_rows = [dict(r) for r in cursor.fetchall()]
-        elif result.get("status") == "CANCELLED":
-            open_time_str = result.get("open_time") or ""
-            if open_time_str:
-                cursor.execute("""
-                    SELECT t.*
-                    FROM trades t
-                    WHERE t.account_id = ? AND t.symbol = ? AND t.direction = ?
-                      AND t.status = 'CANCELLED' AND t.id != ?
-                      AND ABS(t.open_price - ?) <= ?
-                      AND (
-                          SUBSTR(t.open_time, 1, 10) = SUBSTR(?, 1, 10)
-                          OR (t.open_time IS NOT NULL AND ABS(strftime('%s', t.open_time) - strftime('%s', ?)) <= 86400)
-                      );
-                """, (account_id, symbol, direction, trade_id, open_price, price_tol, open_time_str, open_time_str))
-            else:
-                cursor.execute("""
-                    SELECT t.*
-                    FROM trades t
-                    WHERE t.account_id = ? AND t.symbol = ? AND t.direction = ?
-                      AND t.status = 'CANCELLED' AND t.id != ?
-                      AND ABS(t.open_price - ?) <= ?;
-                """, (account_id, symbol, direction, trade_id, open_price, price_tol))
-            sibling_rows = [dict(r) for r in cursor.fetchall()]
-        else:
-            cursor.execute("""
-                SELECT t.*
-                FROM trades t
-                WHERE t.account_id = ? AND t.symbol = ? AND t.direction = ?
-                  AND t.id != ?
-                  AND t.status NOT IN ('OPEN', 'PENDING', 'CANCELLED')
-                  AND ABS(t.open_price - ?) <= ?
-                  AND SUBSTR(t.open_time, 1, 16) = SUBSTR(?, 1, 16);
-            """, (account_id, symbol, direction, trade_id, open_price, price_tol, result.get("open_time") or ""))
-            sibling_rows = [dict(r) for r in cursor.fetchall()]
+    if open_price > 0 and account_id and symbol and direction and not result.get("is_missed"):
+        # Same rule as Trades.groupOpenTrades() in trades.js, so a grouped row
+        # in the trade log and its detail view always cover the same legs.
+        cursor.execute("""
+            SELECT t.*
+            FROM trades t
+            WHERE t.account_id = ? AND t.symbol = ? AND t.direction = ?
+              AND t.id != ? AND COALESCE(t.is_missed, 0) = 0
+              AND ABS(t.open_price - ?) < 0.0001;
+        """, (account_id, symbol, direction, trade_id, open_price))
+        category = _group_status_category(result.get("status"))
+        price_key = f"{open_price:.4f}"
+        candidates = [
+            dict(r) for r in cursor.fetchall()
+            if _group_status_category(r["status"]) == category
+            and f"{float(r['open_price'] or 0.0):.4f}" == price_key
+        ]
+        sibling_rows = _time_cluster_siblings(result, candidates)
 
         if sibling_rows:
             current_leg = dict(result)
@@ -326,10 +363,6 @@ def get_trades(
         order_col = allowed_sorts.get(sort_by, "t.open_time")
         order_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
 
-        # Count total
-        cursor.execute(f"SELECT COUNT(*) FROM trades t {where_str};", params)
-        total_count = cursor.fetchone()[0]
-
         # Fetch records
         query = f"""
             SELECT t.*, a.name as account_name, a.currency as account_currency,
@@ -341,14 +374,20 @@ def get_trades(
             LEFT JOIN playbooks p ON t.setup_id = p.id
             LEFT JOIN mistakes m ON t.mistake_id = m.id
             {where_str}
-            ORDER BY {order_col} {order_dir}
-            LIMIT ? OFFSET ?;
+            ORDER BY {order_col} {order_dir}, t.id {order_dir};
         """
-        cursor.execute(query, params + [limit, offset])
-        trades = [dict(r) for r in cursor.fetchall()]
+        cursor.execute(query, params)
+        rows = [dict(r) for r in cursor.fetchall()]
+
+        # Paginate over display rows (grouped positions count once), so all
+        # legs of a group arrive on the same page.
+        groups = _display_groups(rows)
+        page = groups[offset:offset + limit]
+        trades = [leg for group in page for leg in group]
 
         return {
-            "total": total_count,
+            "total": len(groups),
+            "total_legs": len(rows),
             "limit": limit,
             "offset": offset,
             "trades": trades

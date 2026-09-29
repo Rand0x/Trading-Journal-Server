@@ -14,6 +14,7 @@ const Dashboard = {
       this.dashboardData = await API.getDashboard(params);
       const cur = this.dashboardData.currency || App.getActiveCurrency();
       this.currentCurrency = cur;
+      this.renderMixedCurrencyNotice(this.dashboardData);
       this.renderKPIs(this.dashboardData.metrics, cur);
       this.renderCalendar(this.dashboardData.calendar, cur);
       this.renderEquityCurve(this.dashboardData.equity_curve, cur);
@@ -25,7 +26,18 @@ const Dashboard = {
     }
   },
 
+  renderMixedCurrencyNotice(data) {
+    const el = document.getElementById('dashMixedCurrencyNotice');
+    if (!el) return;
+    el.hidden = !(data && data.mixed_currencies);
+    if (!el.hidden) {
+      el.textContent = `Your accounts use different currencies (${data.currencies.join(', ')}). ` +
+        'Totals below add them up without conversion - select a single account for exact figures.';
+    }
+  },
+
   autoRefreshTimer: null,
+  refreshInFlight: false,
 
   checkAutoRefresh() {
     this.stopAutoRefresh();
@@ -37,6 +49,9 @@ const Dashboard = {
         this.stopAutoRefresh();
         return;
       }
+      // Skip ticks while the tab is hidden or the previous request is still running.
+      if (document.hidden || this.refreshInFlight) return;
+      this.refreshInFlight = true;
       try {
         const params = App.getFilterParams();
         this.dashboardData = await API.getDashboard(params);
@@ -53,8 +68,10 @@ const Dashboard = {
         }
       } catch (err) {
         console.error('Dashboard auto-refresh error:', err);
+      } finally {
+        this.refreshInFlight = false;
       }
-    }, 3000);
+    }, 10000);
   },
 
   stopAutoRefresh() {

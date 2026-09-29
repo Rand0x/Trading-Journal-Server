@@ -78,7 +78,7 @@ const Analytics = {
       const pnlClass = s.net_profit >= 0 ? 'color-green' : 'color-red';
       const pfDisplay = s.profit_factor > 100 ? '∞' : s.profit_factor.toFixed(2);
       tr.innerHTML = `
-        <td style="font-weight:700;color:#60a5fa;">${s.symbol}</td>
+        <td style="font-weight:700;color:#60a5fa;">${TradeDetail.escapeHtml(s.symbol)}</td>
         <td>${s.trades}</td>
         <td style="font-weight:700;color:#10b981;">${s.win_rate}%</td>
         <td style="font-weight:700;" class="${pnlClass}">${App.formatMoney(s.net_profit, cur, { showSign: true })}</td>
@@ -106,7 +106,7 @@ const Analytics = {
       const pnlClass = s.net_profit >= 0 ? 'color-green' : 'color-red';
       const pfDisplay = s.profit_factor > 100 ? '∞' : s.profit_factor.toFixed(2);
       tr.innerHTML = `
-        <td style="font-weight:600;color:#fff;">${s.setup_name}</td>
+        <td style="font-weight:600;color:#fff;">${TradeDetail.escapeHtml(s.setup_name)}</td>
         <td>${s.trades}</td>
         <td style="font-weight:700;color:#10b981;">${s.win_rate}%</td>
         <td style="font-weight:700;" class="${pnlClass}">${App.formatMoney(s.net_profit, cur, { showSign: true })}</td>
@@ -130,7 +130,7 @@ const Analytics = {
     mistakes.forEach(m => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td style="font-weight:600;color:#f87171;">${m.mistake_name}</td>
+        <td style="font-weight:600;color:#f87171;">${TradeDetail.escapeHtml(m.mistake_name)}</td>
         <td>${m.count}</td>
         <td style="font-weight:700;color:#ef4444;">-${App.formatMoney(m.total_loss, cur)}</td>
         <td style="color:#fca5a5;">-${App.formatMoney(m.worst_loss, cur)}</td>
@@ -157,7 +157,7 @@ const Analytics = {
       card.innerHTML = `
         <div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-            <span style="font-weight:700;font-size:16px;color:#60a5fa;">${lvl.name}</span>
+            <span style="font-weight:700;font-size:16px;color:#60a5fa;">${TradeDetail.escapeHtml(lvl.name)}</span>
             <span class="badge" style="background:#1e293b;color:#9ca3af;font-size:11px;">Level ${lvl.level}</span>
           </div>
           <div style="margin-bottom:8px;">
@@ -229,9 +229,9 @@ const Analytics = {
       tr.innerHTML = `
         <td>
           <span style="display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap;">
-            <span class="chip-btn" style="background:#1e293b;color:#93c5fd;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${combo.signal_a}</span>
+            <span class="chip-btn" style="background:#1e293b;color:#93c5fd;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${TradeDetail.escapeHtml(combo.signal_a)}</span>
             <span style="color:#6b7280;">+</span>
-            <span class="chip-btn" style="background:#1e293b;color:#93c5fd;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${combo.signal_b}</span>
+            <span class="chip-btn" style="background:#1e293b;color:#93c5fd;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${TradeDetail.escapeHtml(combo.signal_b)}</span>
           </span>
         </td>
         <td>${combo.count} <span style="font-size:11px;color:#9ca3af;">(${combo.wins}W)</span></td>
@@ -263,7 +263,7 @@ const Analytics = {
         const avgR = item.avg_r != null ? item.avg_r : 0;
         tr.innerHTML = `
           <td style="font-weight:600;color:#fff;">
-            <span class="chip-btn" style="background:#1e293b;color:#a5b4fc;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${item.emotion}</span>
+            <span class="chip-btn" style="background:#1e293b;color:#a5b4fc;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${TradeDetail.escapeHtml(item.emotion)}</span>
           </td>
           <td>${item.count} <span style="font-size:11px;color:#9ca3af;">(${item.wins}W / ${item.losses}L)</span></td>
           <td style="font-weight:700;color:#10b981;">${item.win_rate}%</td>

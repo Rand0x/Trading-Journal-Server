@@ -8,6 +8,7 @@ const TradeDetail = {
   currentTimeframe: 'AUTO',
   activeTimeframe: 'M15',
   liveUpdateTimer: null,
+  liveUpdateInFlight: false,
   chartInstance: null,
   candleSeries: null,
   volumeSeries: null,
@@ -285,7 +286,7 @@ const TradeDetail = {
           const rrStr = targetR !== null ? ` · <strong>1 : ${targetR.toFixed(2)} R</strong>` : '';
           const volStr = t.volume ? ` · <span style="color:#60a5fa;font-weight:600;">${Number(t.volume).toFixed(2)} lots</span>` : '';
           const pnlStr = t.net_profit != null && t.net_profit !== '' ? ` · <span style="color:${Number(t.net_profit) >= 0 ? '#10b981' : '#ef4444'};">${App.formatMoney(t.net_profit, tradeCurrency, { showSign: true })}</span>` : '';
-          const ticketStr = t.ticket ? ` <span style="font-size:11px;color:#6b7280;">(Ticket #${t.ticket})</span>` : '';
+          const ticketStr = t.ticket ? ` <span style="font-size:11px;color:#6b7280;">(Ticket #${TradeDetail.escapeHtml(t.ticket)})</span>` : '';
 
           return `
             <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:#0a0e17;border-radius:6px;border:1px solid #1e293b;">
@@ -894,8 +895,15 @@ const TradeDetail = {
   startLiveUpdate() {
     this.stopLiveUpdate();
     const intervalMs = (this.currentTrade && this.currentTrade.status === 'OPEN') ? 2000 : 5000;
-    this.liveUpdateTimer = setInterval(() => {
-      this.updateLiveCandle();
+    this.liveUpdateTimer = setInterval(async () => {
+      // Skip ticks while the tab is hidden or the previous request is still running.
+      if (document.hidden || this.liveUpdateInFlight) return;
+      this.liveUpdateInFlight = true;
+      try {
+        await this.updateLiveCandle();
+      } finally {
+        this.liveUpdateInFlight = false;
+      }
     }, intervalMs);
   },
 

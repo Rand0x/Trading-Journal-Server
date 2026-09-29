@@ -12,6 +12,9 @@ const Trades = {
   activeEditingId: null,
   expandedTradeId: null,
   expandedRow: null,
+  expandedTradeData: null,
+  expandedTradeDataJson: null,
+  expandedFetchSeq: 0,
 
   getRequestParams() {
     const filterParams = App.getFilterParams();
@@ -67,6 +70,7 @@ const Trades = {
   },
 
   autoRefreshTimer: null,
+  refreshInFlight: false,
 
   checkAutoRefresh(trades = []) {
     this.stopAutoRefresh();
@@ -82,6 +86,9 @@ const Trades = {
       if (isModalActive || this.activeEditingId) {
         return;
       }
+      // Skip ticks while the tab is hidden or the previous request is still running.
+      if (document.hidden || this.refreshInFlight) return;
+      this.refreshInFlight = true;
       try {
         const params = this.getRequestParams();
 
@@ -94,8 +101,11 @@ const Trades = {
         if (!stillHasOpen) {
           this.stopAutoRefresh();
         }
-      } catch (err) {}
-    }, 3000);
+      } catch (err) {
+      } finally {
+        this.refreshInFlight = false;
+      }
+    }, 10000);
   },
 
   stopAutoRefresh() {
@@ -112,16 +122,22 @@ const Trades = {
     const baseGroups = new Map();
 
     for (const t of trades) {
-      const isGroupable = (t.status === 'OPEN' || t.status === 'PENDING' || t.status === 'CANCELLED') && !t.is_missed;
+      const isGroupable = !t.is_missed;
       if (!isGroupable) {
         result.push(t);
         continue;
       }
 
-      // Group key: account_id, symbol, direction, status, and open_price with 4-digit precision
+      // Status category: group WIN, LOSS, BE, CLOSED together under 'CLOSED'
+      let statusCategory = t.status || 'OPEN';
+      if (['WIN', 'LOSS', 'BE', 'CLOSED'].includes(statusCategory)) {
+        statusCategory = 'CLOSED';
+      }
+
+      // Group key: account_id, symbol, direction, statusCategory, and open_price with 4-digit precision
       const price = parseFloat(t.open_price) || 0;
       const priceKey = price.toFixed(4);
-      const baseKey = `${t.account_id || ''}_${(t.symbol || '').toUpperCase()}_${(t.direction || '').toUpperCase()}_${t.status}_${priceKey}`;
+      const baseKey = `${t.account_id || ''}_${(t.symbol || '').toUpperCase()}_${(t.direction || '').toUpperCase()}_${statusCategory}_${priceKey}`;
 
       if (!baseGroups.has(baseKey)) {
         baseGroups.set(baseKey, []);
@@ -215,6 +231,43 @@ const Trades = {
       primary.multiple_tps = sortedTps;
       primary.sub_trades = group;
 
+      // For closed groups, compute weighted close price, close time, aggregated status and R-multiple
+      const isAllClosed = group.every(leg => ['WIN', 'LOSS', 'BE', 'CLOSED'].includes(leg.status));
+      if (isAllClosed) {
+        primary.status = totalNetProfit > 0.001 ? 'WIN' : (totalNetProfit < -0.001 ? 'LOSS' : 'BE');
+        let totalCloseValue = 0;
+        let closedVol = 0;
+        let latestCloseTime = '';
+        let totalWeightedR = 0;
+        let rVol = 0;
+
+        for (const leg of group) {
+          const legVol = parseFloat(leg.volume) || 0;
+          const legClosePrice = parseFloat(leg.close_price) || 0;
+          if (legClosePrice > 0 && legVol > 0) {
+            totalCloseValue += legClosePrice * legVol;
+            closedVol += legVol;
+          }
+          if (leg.close_time && (!latestCloseTime || leg.close_time > latestCloseTime)) {
+            latestCloseTime = leg.close_time;
+          }
+          if (leg.r_multiple !== null && leg.r_multiple !== undefined && legVol > 0) {
+            totalWeightedR += parseFloat(leg.r_multiple) * legVol;
+            rVol += legVol;
+          }
+        }
+
+        if (closedVol > 0) {
+          primary.close_price = parseFloat((totalCloseValue / closedVol).toFixed(5));
+        }
+        if (latestCloseTime) {
+          primary.close_time = latestCloseTime;
+        }
+        if (rVol > 0) {
+          primary.r_multiple = parseFloat((totalWeightedR / rVol).toFixed(2));
+        }
+      }
+
       result.push(primary);
     }
 
@@ -225,8 +278,8 @@ const Trades = {
   renderTable(trades = []) {
     const tbody = document.getElementById('tradesTableBody');
     if (!tbody) return;
-    this.expandedTradeId = null;
-    this.expandedRow = null;
+    const prevExpandedTradeId = this.expandedTradeId;
+    const prevExpandedRow = this.expandedRow;
     tbody.innerHTML = '';
 
     const displayTrades = this.groupOpenTrades(trades);
@@ -234,15 +287,31 @@ const Trades = {
     this.rawTrades = trades;
 
     if (displayTrades.length === 0) {
+      this.collapseExpandedTrade();
       tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:30px;color:#6b7280;">No trades match your filter criteria.</td></tr>';
       return;
     }
 
+    let matchedExpanded = false;
+    let matchedTradeId = null;
     displayTrades.forEach(t => {
       const tr = document.createElement('tr');
       tr.className = 'trade-data-row';
       tr.dataset.tradeId = t.id;
-      tr.setAttribute('aria-expanded', 'false');
+      const isThisTradeExpanded = Boolean(
+        prevExpandedTradeId && (
+          t.id === prevExpandedTradeId ||
+          (t.is_grouped && Array.isArray(t.all_ids) && t.all_ids.includes(prevExpandedTradeId))
+        )
+      );
+      if (isThisTradeExpanded) {
+        tr.classList.add('is-expanded');
+        tr.setAttribute('aria-expanded', 'true');
+        matchedExpanded = true;
+        matchedTradeId = t.id;
+      } else {
+        tr.setAttribute('aria-expanded', 'false');
+      }
       tr.title = 'Click to expand trade details';
       const tradeCurrency = t.account_currency || App.getActiveCurrency();
       const pnl = parseFloat(t.net_profit || 0);
@@ -286,8 +355,8 @@ const Trades = {
         statusClass = 'badge-loss';
       }
 
-      const setupBadge = t.setup_name ? `<span class="badge badge-setup">${t.setup_name}</span>` : '<span style="color:#4b5563;">—</span>';
-      const mistakeBadge = t.mistake_name ? `<span class="badge badge-mistake">${t.mistake_name}</span>` : '<span style="color:#4b5563;">—</span>';
+      const setupBadge = t.setup_name ? `<span class="badge badge-setup">${TradeDetail.escapeHtml(t.setup_name)}</span>` : '<span style="color:#4b5563;">—</span>';
+      const mistakeBadge = t.mistake_name ? `<span class="badge badge-mistake">${TradeDetail.escapeHtml(t.mistake_name)}</span>` : '<span style="color:#4b5563;">—</span>';
       const rDisplay = (t.r_multiple !== null && t.r_multiple !== undefined)
         ? `<span style="display:block;font-size:11px;font-weight:600;color:#60a5fa;">${t.r_multiple > 0 ? '+' : ''}${parseFloat(t.r_multiple).toFixed(2)} R</span>`
         : '';
@@ -314,7 +383,7 @@ const Trades = {
       tr.innerHTML = `
         <td style="font-weight:600;color:#fff;">${t.open_time ? t.open_time.substring(0, 16).replace('T', ' ') : ''}</td>
         <td>
-          <strong style="color:#60a5fa;">${t.symbol}</strong>
+          <strong style="color:#60a5fa;">${TradeDetail.escapeHtml(t.symbol)}</strong>
           ${t.is_grouped && t.grouped_count > 1 ? `<span class="badge badge-grouped" title="Merged from ${t.grouped_count} orders with distinct TPs">${t.grouped_count} TPs Grouped</span>` : ''}
           ${t.partial_close_count > 0 ? `<span style="display:block;font-size:10px;color:#a78bfa;">${t.partial_close_count} partial exit(s)</span>` : ''}
           ${t.screenshot_count > 0 ? `<span style="display:block;font-size:10px;color:#60a5fa;">${t.screenshot_count} screenshot(s)</span>` : ''}
@@ -350,7 +419,32 @@ const Trades = {
         this.toggleExpandedTrade(t.id, tr);
       });
       tbody.appendChild(tr);
+
+      if (isThisTradeExpanded) {
+        let detailRow = prevExpandedRow;
+        if (!detailRow) {
+          detailRow = document.createElement('tr');
+          detailRow.className = 'trade-expanded-row';
+          detailRow.dataset.tradeId = t.id;
+          detailRow.innerHTML = `
+            <td colspan="12">
+              <div class="trade-expanded-content">
+                <span class="trade-expanded-loading">Loading trade details and screenshots...</span>
+              </div>
+            </td>`;
+        }
+        detailRow.dataset.tradeId = t.id;
+        tbody.appendChild(detailRow);
+        this.expandedRow = detailRow;
+        this.expandedTradeId = t.id;
+      }
     });
+
+    if (matchedExpanded && matchedTradeId && this.expandedRow) {
+      this.fetchAndRenderExpandedTrade(matchedTradeId, this.expandedRow);
+    } else if (prevExpandedTradeId && !matchedExpanded) {
+      this.collapseExpandedTrade();
+    }
   },
 
   async toggleExpandedTrade(tradeId, row) {
@@ -361,6 +455,8 @@ const Trades = {
 
     this.collapseExpandedTrade();
     this.expandedTradeId = tradeId;
+    this.expandedTradeData = null;
+    this.expandedTradeDataJson = null;
     row.classList.add('is-expanded');
     row.setAttribute('aria-expanded', 'true');
 
@@ -376,16 +472,32 @@ const Trades = {
     row.insertAdjacentElement('afterend', detailRow);
     this.expandedRow = detailRow;
 
+    await this.fetchAndRenderExpandedTrade(tradeId, detailRow);
+  },
+
+  async fetchAndRenderExpandedTrade(tradeId, detailRow) {
+    const seq = ++this.expandedFetchSeq;
     try {
       const trade = await API.getTrade(tradeId);
-      if (this.expandedTradeId !== tradeId || this.expandedRow !== detailRow) return;
+      if (this.expandedTradeId !== tradeId || this.expandedFetchSeq !== seq) return;
+      const jsonStr = JSON.stringify(trade);
+      if (this.expandedTradeDataJson === jsonStr && this.expandedRow === detailRow) {
+        return;
+      }
+      this.expandedTradeData = trade;
+      this.expandedTradeDataJson = jsonStr;
       const content = detailRow.querySelector('.trade-expanded-content');
-      content.innerHTML = this.renderExpandedTrade(trade);
-      this.bindExpandedTradeActions(content, trade);
+      if (content) {
+        content.innerHTML = this.renderExpandedTrade(trade);
+        this.bindExpandedTradeActions(content, trade);
+      }
     } catch (err) {
-      if (this.expandedTradeId !== tradeId || this.expandedRow !== detailRow) return;
-      detailRow.querySelector('.trade-expanded-content').innerHTML =
-        `<span class="trade-expanded-error">Failed to load details: ${TradeDetail.escapeHtml(err.message)}</span>`;
+      if (this.expandedTradeId !== tradeId || this.expandedFetchSeq !== seq) return;
+      const content = detailRow.querySelector('.trade-expanded-content');
+      if (content && !this.expandedTradeData) {
+        content.innerHTML =
+          `<span class="trade-expanded-error">Failed to load details: ${TradeDetail.escapeHtml(err.message)}</span>`;
+      }
     }
   },
 
@@ -398,6 +510,8 @@ const Trades = {
     if (this.expandedRow?.parentNode) this.expandedRow.remove();
     this.expandedTradeId = null;
     this.expandedRow = null;
+    this.expandedTradeData = null;
+    this.expandedTradeDataJson = null;
   },
 
   renderExpandedTrade(trade) {

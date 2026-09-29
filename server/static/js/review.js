@@ -27,6 +27,7 @@ const Review = {
   },
 
   autoRefreshTimer: null,
+  refreshInFlight: false,
 
   checkAutoRefresh(data) {
     this.stopAutoRefresh();
@@ -37,6 +38,9 @@ const Review = {
         this.stopAutoRefresh();
         return;
       }
+      // Skip ticks while the tab is hidden or the previous request is still running.
+      if (document.hidden || this.refreshInFlight) return;
+      this.refreshInFlight = true;
       try {
         const params = App.getFilterParams();
         const query = { week_offset: 0 };
@@ -46,8 +50,11 @@ const Review = {
         if (!freshData.open_trades_count) {
           this.stopAutoRefresh();
         }
-      } catch (err) {}
-    }, 4000);
+      } catch (err) {
+      } finally {
+        this.refreshInFlight = false;
+      }
+    }, 10000);
   },
 
   stopAutoRefresh() {
@@ -188,15 +195,15 @@ const Review = {
     badgeEl.className = `badge badge-${type.toLowerCase()}`;
 
     const setupName = trade.setup_name || (trade.setup_id ? `Setup #${trade.setup_id}` : 'No Setup');
-    const mistakeTag = trade.mistake_name ? `<span class="badge badge-loss" style="font-size:11px;">⚠️ ${trade.mistake_name}</span>` : '';
+    const mistakeTag = trade.mistake_name ? `<span class="badge badge-loss" style="font-size:11px;">⚠️ ${TradeDetail.escapeHtml(trade.mistake_name)}</span>` : '';
     const dateStr = (trade.close_time || trade.open_time || '').substring(0, 16).replace('T', ' ');
 
     let emotionHtml = '';
     if (trade.emotion_pre) {
-      emotionHtml += `<span class="chip-btn" style="background:#1e293b;color:#a5b4fc;font-size:11px;padding:2px 8px;cursor:default;">Pre: ${trade.emotion_pre}</span> `;
+      emotionHtml += `<span class="chip-btn" style="background:#1e293b;color:#a5b4fc;font-size:11px;padding:2px 8px;cursor:default;">Pre: ${TradeDetail.escapeHtml(trade.emotion_pre)}</span> `;
     }
     if (trade.emotion_during) {
-      emotionHtml += `<span class="chip-btn" style="background:#1e293b;color:#93c5fd;font-size:11px;padding:2px 8px;cursor:default;">In: ${trade.emotion_during}</span>`;
+      emotionHtml += `<span class="chip-btn" style="background:#1e293b;color:#93c5fd;font-size:11px;padding:2px 8px;cursor:default;">In: ${TradeDetail.escapeHtml(trade.emotion_during)}</span>`;
     }
 
     const notesSnippet = trade.key_learnings || trade.post_trade_notes || trade.notes || '';
@@ -205,7 +212,7 @@ const Review = {
       <div style="display:flex;flex-direction:column;gap:10px;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div style="display:flex;align-items:center;gap:8px;">
-            <span style="font-weight:700;font-size:16px;color:#fff;">${trade.symbol}</span>
+            <span style="font-weight:700;font-size:16px;color:#fff;">${TradeDetail.escapeHtml(trade.symbol)}</span>
             <span class="badge badge-${(trade.direction || 'BUY').toLowerCase()}">${trade.direction}</span>
             <span style="font-size:12px;color:#9ca3af;">${trade.volume} Lots</span>
           </div>
@@ -220,14 +227,14 @@ const Review = {
         </div>
 
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <span class="badge" style="background:#1e293b;color:#60a5fa;font-size:11px;">🎯 ${setupName}</span>
+          <span class="badge" style="background:#1e293b;color:#60a5fa;font-size:11px;">🎯 ${TradeDetail.escapeHtml(setupName)}</span>
           ${mistakeTag}
           ${emotionHtml}
         </div>
 
         ${notesSnippet ? `
           <div style="font-size:12px;color:#9ca3af;font-style:italic;background:#111827;padding:8px;border-radius:4px;border-left:3px solid ${type === 'WIN' ? '#10b981' : '#ef4444'};">
-            "${notesSnippet.length > 140 ? notesSnippet.substring(0, 140) + '...' : notesSnippet}"
+            "${TradeDetail.escapeHtml(notesSnippet.length > 140 ? notesSnippet.substring(0, 140) + '...' : notesSnippet)}"
           </div>
         ` : ''}
 
@@ -263,12 +270,12 @@ const Review = {
 
       tr.innerHTML = `
         <td style="color:#9ca3af;font-size:12px;">${dateStr}</td>
-        <td style="font-weight:700;color:#60a5fa;">${t.symbol}</td>
+        <td style="font-weight:700;color:#60a5fa;">${TradeDetail.escapeHtml(t.symbol)}</td>
         <td><span class="badge badge-${(t.direction || 'BUY').toLowerCase()}">${t.direction}</span></td>
-        <td>${t.setup_name || (t.setup_id ? `Setup #${t.setup_id}` : '-')}</td>
+        <td>${TradeDetail.escapeHtml(t.setup_name || (t.setup_id ? `Setup #${t.setup_id}` : '-'))}</td>
         <td style="font-weight:700;color:#f59e0b;">${rVal}</td>
-        <td style="font-size:12px;color:#d1d5db;max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${reason}">
-          ${reason}
+        <td style="font-size:12px;color:#d1d5db;max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${TradeDetail.escapeHtml(reason)}">
+          ${TradeDetail.escapeHtml(reason)}
         </td>
       `;
       tr.style.cursor = 'pointer';
