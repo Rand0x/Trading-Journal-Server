@@ -538,7 +538,9 @@ const Dashboard = {
     return `<div class="trade-list-item" data-trade-id="${Number(t.id)}" title="Open trade details">
       <span class="dir-dot ${dir}">${dir === 'sell' ? 'SELL' : 'BUY'}</span>
       <div style="min-width:0;">
-        <div class="sym">${this.esc(t.symbol)}</div>
+        <div class="sym">${this.esc(t.symbol)}${t.legs > 1
+          ? ` <span class="badge badge-grouped" title="Merged from ${Number(t.legs)} orders, like in the trade log">${Number(t.legs)} TPs grouped</span>`
+          : ''}</div>
         <div class="meta">${this.esc(meta)}</div>
       </div>
       <div class="val ${this.pnlClass(pnl)}">${this.esc(this.signed(pnl, t.account_currency || cur))}

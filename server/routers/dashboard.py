@@ -7,6 +7,39 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Query
 from server.database import get_connection
 from server.analytics import calculate_trade_metrics, get_calendar_heatmap, get_equity_curve, get_dashboard_insights
+from server.routers.trades import _display_groups
+
+RECENT_TRADES_LIMIT = 8
+
+
+def _grouped_recent_trades(trades: List[Dict[str, Any]], limit: int = RECENT_TRADES_LIMIT) -> List[Dict[str, Any]]:
+    """Latest closed positions, with sibling legs merged exactly like the trade log."""
+    closed = [t for t in trades if not t.get("is_missed") and t.get("status") in ("CLOSED", "WIN", "LOSS", "BE")]
+    closed.sort(key=lambda t: (t.get("close_time") or t.get("open_time") or "", t.get("id") or 0), reverse=True)
+    result = []
+    for legs in _display_groups(closed)[:limit]:
+        primary = min(legs, key=lambda t: t.get("id") or 0)
+        volume = sum(float(t.get("volume") or 0.0) for t in legs)
+        net = sum(float(t.get("net_profit") or 0.0) for t in legs)
+        r_legs = [(float(t["r_multiple"]), float(t.get("volume") or 0.0)) for t in legs if t.get("r_multiple") is not None]
+        r_volume = sum(v for _, v in r_legs)
+        # Volume-weighted R, the same figure the trade log shows for a grouped row
+        r_multiple = round(sum(r * v for r, v in r_legs) / r_volume, 2) if r_volume > 0 else None
+        result.append({
+            "id": primary.get("id"),
+            "symbol": primary.get("symbol"),
+            "direction": primary.get("direction"),
+            "volume": round(volume, 4),
+            "net_profit": round(net, 2),
+            "r_multiple": r_multiple,
+            "status": "WIN" if net > 0.001 else ("LOSS" if net < -0.001 else "BE"),
+            "open_time": min(t.get("open_time") or "" for t in legs),
+            "close_time": max(t.get("close_time") or "" for t in legs),
+            "setup_name": next((t.get("setup_name") for t in legs if t.get("setup_name")), None),
+            "account_currency": primary.get("account_currency"),
+            "legs": len(legs),
+        })
+    return result
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
 
@@ -96,6 +129,7 @@ def get_dashboard_summary(
     calendar = get_calendar_heatmap(trades, initial_balance)
     equity_curve = get_equity_curve(trades, initial_balance)
     insights = get_dashboard_insights(trades, metrics, initial_balance=initial_balance)
+    insights["recent_trades"] = _grouped_recent_trades(trades)
 
     return {
         "metrics": metrics,

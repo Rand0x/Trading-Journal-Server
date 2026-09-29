@@ -352,3 +352,12 @@ class TestSyncRegressions(unittest.TestCase):
         self.assertEqual(sorted(t['ticket'] for t in res.json()['trades']), ['full', 'other', 'scaled'])
         res = client.get('/api/trades', params={'account_id': self.account, 'closed_from': '2026-09-26', 'closed_to': '2026-09-26'})
         self.assertEqual([t['ticket'] for t in res.json()['trades']], ['other'])
+
+    def test_dashboard_recent_trades_merge_legs_like_trade_log(self):
+        from server.routers.dashboard import get_dashboard_summary
+        legs = [self.trade(f'leg{i}', lots=0.5, profit=p, r_multiple=None) for i, p in enumerate((30, 40, 50))]
+        self.sync(closed_trades=legs + [self.trade('solo', open_time='2026-09-02 10:00:00', close_time='2026-09-02 11:00:00', open_price=1.2, profit=-20)])
+        recent = get_dashboard_summary(account_id=self.account, date_from=None, date_to=None, symbol=None)['insights']['recent_trades']
+        self.assertEqual([(r['legs'], r['net_profit']) for r in recent], [(1, -20.0), (3, 120.0)])
+        self.assertEqual(recent[1]['volume'], 1.5)
+        self.assertEqual(recent[1]['status'], 'WIN')
