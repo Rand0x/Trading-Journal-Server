@@ -107,7 +107,7 @@ for (const event of ['hashchange', 'popstate']) {
     const app = h.load('app.js', 'App');
     app.currentView = 'trades';
     app.setupEventListeners();
-    for (const [hash, search] of [['#trades?search=EURUSD', 'EURUSD'], ['#trades?date=2026-01-02', '2026-01-02'], ['#trades', '']]) {
+    for (const [hash, search, date] of [['#trades?search=EURUSD', 'EURUSD', ''], ['#trades?date=2026-01-02', '', '2026-01-02'], ['#trades', '', '']]) {
       trades.currentOffset = 50;
       const before = requests.length;
       h.context.window.location.hash = hash;
@@ -116,6 +116,8 @@ for (const event of ['hashchange', 'popstate']) {
       assert.equal(input.value, search);
       assert.equal(requests.length, before + 1);
       assert.equal(requests.at(-1).search || '', search);
+      // A calendar day filters by realization date, never by the free-text search
+      assert.equal(requests.at(-1).closed_on || '', date);
       assert.equal(requests.at(-1).offset, 0);
       h.events[event]();
       assert.equal(requests.length, before + 1);

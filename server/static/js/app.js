@@ -160,11 +160,8 @@ const App = {
     await Playbooks.load();
 
     const query = this.getQueryParamsFromHash();
-    if (initialRoute === 'trades' && (query.date || query.search)) {
-      const searchInput = document.getElementById('tradeSearchInput');
-      if (searchInput) {
-        searchInput.value = query.date || query.search;
-      }
+    if (initialRoute === 'trades') {
+      this.applyTradeQuery(query);
     }
 
     const currentHashClean = (window.location.hash || '').replace(/^#\/?/, '').split('?')[0].trim().toLowerCase();
@@ -194,14 +191,7 @@ const App = {
       const query = this.getQueryParamsFromHash();
       let searchChanged = false;
       if (route === 'trades') {
-        const searchInput = document.getElementById('tradeSearchInput');
-        if (searchInput) {
-          const expectedSearch = query.date || query.search || '';
-          if (searchInput.value !== expectedSearch) {
-            searchInput.value = expectedSearch;
-            searchChanged = true;
-          }
-        }
+        searchChanged = this.applyTradeQuery(query);
       }
       if (this.currentView !== route) {
         this.navigateTo(route, false);
@@ -311,11 +301,28 @@ const App = {
     }
   },
 
-  navigateToTradesWithDate(dateStr) {
+  /**
+   * Apply #trades?date=YYYY-MM-DD (realized-on-day filter) and ?search=...
+   * Returns true when either filter changed.
+   */
+  applyTradeQuery(query) {
+    let changed = false;
     const searchInput = document.getElementById('tradeSearchInput');
-    if (searchInput) {
-      searchInput.value = dateStr || '';
+    const expectedSearch = query.search || '';
+    if (searchInput && searchInput.value !== expectedSearch) {
+      searchInput.value = expectedSearch;
+      changed = true;
     }
+    const expectedDate = query.date || '';
+    if (typeof Trades !== 'undefined' && Trades.closedOnFilter !== expectedDate) {
+      Trades.setClosedOnFilter(expectedDate);
+      changed = true;
+    }
+    return changed;
+  },
+
+  navigateToTradesWithDate(dateStr) {
+    this.applyTradeQuery({ date: dateStr || '' });
     const targetHash = dateStr ? `#trades?date=${encodeURIComponent(dateStr)}` : '#trades';
     if (window.location.hash !== targetHash) {
       history.pushState({ view: 'trades', date: dateStr }, '', targetHash);

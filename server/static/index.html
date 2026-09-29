@@ -10,7 +10,7 @@
   <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
   <link rel="alternate icon" href="/favicon.ico">
   <meta name="color-scheme" content="dark">
-  <link rel="stylesheet" href="/static/css/app.css?v=2026.09.29.9">
+  <link rel="stylesheet" href="/static/css/app.css?v=2026.09.29.11">
 </head>
 <body>
   <!-- Shared inline icon set (stroke icons, 24px grid) -->
@@ -334,7 +334,8 @@
         <div class="table-card">
           <!-- Filter Toolbar -->
           <div class="table-header-bar">
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              <button type="button" id="tradeDateFilterChip" class="chip-btn active" hidden onclick="Trades.clearClosedOnFilter()" title="Remove day filter"></button>
               <input type="text" id="tradeSearchInput" class="filter-input" placeholder="Search symbol, note, ticket..." style="width:200px;" oninput="Trades.load()">
               <select id="tradeDirFilter" class="filter-select" onchange="Trades.load()">
                 <option value="">All Directions</option>
@@ -1431,15 +1432,15 @@
 
   <!-- Scripts -->
   <script src="/static/js/lightweight-charts.standalone.production.js"></script>
-  <script src="/static/js/api.js?v=2026.09.29.9"></script>
-  <script src="/static/js/charts.js?v=2026.09.29.9"></script>
-  <script src="/static/js/trade_detail.js?v=2026.09.29.9"></script>
-  <script src="/static/js/dashboard.js?v=2026.09.29.9"></script>
-  <script src="/static/js/trades.js?v=2026.09.29.9"></script>
-  <script src="/static/js/analytics.js?v=2026.09.29.9"></script>
-  <script src="/static/js/playbooks.js?v=2026.09.29.9"></script>
-  <script src="/static/js/accounts.js?v=2026.09.29.9"></script>
-  <script src="/static/js/review.js?v=2026.09.29.9"></script>
-  <script src="/static/js/app.js?v=2026.09.29.9"></script>
+  <script src="/static/js/api.js?v=2026.09.29.11"></script>
+  <script src="/static/js/charts.js?v=2026.09.29.11"></script>
+  <script src="/static/js/trade_detail.js?v=2026.09.29.11"></script>
+  <script src="/static/js/dashboard.js?v=2026.09.29.11"></script>
+  <script src="/static/js/trades.js?v=2026.09.29.11"></script>
+  <script src="/static/js/analytics.js?v=2026.09.29.11"></script>
+  <script src="/static/js/playbooks.js?v=2026.09.29.11"></script>
+  <script src="/static/js/accounts.js?v=2026.09.29.11"></script>
+  <script src="/static/js/review.js?v=2026.09.29.11"></script>
+  <script src="/static/js/app.js?v=2026.09.29.11"></script>
 </body>
 </html>

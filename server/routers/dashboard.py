@@ -3,7 +3,7 @@ Dashboard Router
 Serves executive KPIs, TradeZella-style Calendar Heatmap, and Equity Curve.
 """
 
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Query
 from server.database import get_connection
 from server.analytics import calculate_trade_metrics, get_calendar_heatmap, get_equity_curve, get_dashboard_insights
@@ -77,10 +77,25 @@ def get_dashboard_summary(
         """, params)
         trades = [dict(r) for r in cursor.fetchall()]
 
+        # Partial exits are realized on their own dates (calendar, equity curve).
+        partials_by_trade: Dict[int, List[Dict[str, Any]]] = {}
+        if trades:
+            placeholders = ",".join("?" for _ in trades)
+            cursor.execute(f"""
+                SELECT trade_id, ticket, volume, close_time, close_price, net_profit
+                FROM trade_partial_closes
+                WHERE trade_id IN ({placeholders})
+                ORDER BY close_time ASC, id ASC;
+            """, [t["id"] for t in trades])
+            for pc in cursor.fetchall():
+                partials_by_trade.setdefault(pc["trade_id"], []).append(dict(pc))
+        for t in trades:
+            t["partial_closes"] = partials_by_trade.get(t["id"], [])
+
     metrics = calculate_trade_metrics(trades, initial_balance)
     calendar = get_calendar_heatmap(trades, initial_balance)
     equity_curve = get_equity_curve(trades, initial_balance)
-    insights = get_dashboard_insights(trades, metrics)
+    insights = get_dashboard_insights(trades, metrics, initial_balance=initial_balance)
 
     return {
         "metrics": metrics,

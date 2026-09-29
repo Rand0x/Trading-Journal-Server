@@ -49,7 +49,29 @@ const Trades = {
     const searchVal = document.getElementById('tradeSearchInput')?.value;
     if (searchVal) params.search = searchVal;
 
+    // Calendar day: trades that realized P&L on that day (full or partial close)
+    if (this.closedOnFilter) params.closed_on = this.closedOnFilter;
+
     return params;
+  },
+
+  closedOnFilter: '',
+
+  setClosedOnFilter(dateStr) {
+    this.closedOnFilter = /^\d{4}-\d{2}-\d{2}$/.test(dateStr || '') ? dateStr : '';
+    const chip = document.getElementById('tradeDateFilterChip');
+    if (chip) {
+      chip.hidden = !this.closedOnFilter;
+      chip.textContent = this.closedOnFilter ? `Realized on ${this.closedOnFilter}  ✕` : '';
+    }
+  },
+
+  clearClosedOnFilter() {
+    this.setClosedOnFilter('');
+    if (typeof history !== 'undefined' && window.location.hash.startsWith('#trades?')) {
+      history.replaceState({ view: 'trades' }, '', '#trades');
+    }
+    this.load();
   },
 
   async load(page = 0) {

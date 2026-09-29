@@ -9,6 +9,11 @@ from server.connectors.mql_receiver import process_mql_payload
 from server.models import MQLSyncPayload
 
 
+def datetime_str(ts):
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+
 class TestSyncRegressions(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -323,6 +328,22 @@ class TestSyncRegressions(unittest.TestCase):
         self.assertIn(('M1', bars['before_trade']), left)
 
 
-def datetime_str(ts):
-    from datetime import datetime, timezone
-    return datetime.fromtimestamp(ts, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    def test_trade_list_filters_by_realization_day(self):
+        from fastapi.testclient import TestClient
+        from server.main import app
+        self.sync(closed_trades=[
+            self.trade('full', open_time='2026-09-24 18:30:00', close_time='2026-09-25 03:10:00', profit=-50),
+            self.trade('other', open_time='2026-09-25 10:00:00', close_time='2026-09-26 10:00:00'),
+            self.trade('scaled', open_time='2026-09-20 10:00:00', close_time='2026-09-27 10:00:00',
+                       partial_closes=[self.partial('p1', close_time='2026-09-25 09:00:00', volume=0.5),
+                                       self.partial('p2', close_time='2026-09-27 10:00:00', volume=0.5)]),
+        ])
+        client = TestClient(app)
+        def tickets(day):
+            res = client.get('/api/trades', params={'account_id': self.account, 'closed_on': day})
+            self.assertEqual(res.status_code, 200)
+            return sorted(t['ticket'] for t in res.json()['trades'])
+        # Opened on the 24th but closed on the 25th; the scaled position realized a partial on the 25th.
+        self.assertEqual(tickets('2026-09-25'), ['full', 'scaled'])
+        self.assertEqual(tickets('2026-09-24'), [])
+        self.assertEqual(client.get('/api/trades', params={'closed_on': '25.09.2026'}).status_code, 422)

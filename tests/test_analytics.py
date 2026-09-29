@@ -111,6 +111,39 @@ class TestAnalytics(unittest.TestCase):
         self.assertEqual(by_key["discipline"], 50.0)
         self.assertAlmostEqual(score["score"], sum(by_key.values()) / 6, places=1)
 
+    def test_calendar_and_equity_use_realization_dates(self):
+        trades = [
+            # Scaled out: 0.5 lots closed on the 2nd, remainder closed on the 4th.
+            {"id": 1, "symbol": "EURUSD", "status": "WIN", "net_profit": 300.0, "volume": 1.0, "r_multiple": 3.0,
+             "open_time": "2026-09-01 10:00:00", "close_time": "2026-09-04 12:00:00",
+             "partial_closes": [
+                 {"volume": 0.5, "close_time": "2026-09-02 09:00:00", "net_profit": 100.0},
+                 {"volume": 0.5, "close_time": "2026-09-04 12:00:00", "net_profit": 200.0},
+             ]},
+            # Still open with one realized partial on the 3rd; its floating P&L is ignored.
+            {"id": 2, "symbol": "XAUUSD", "status": "OPEN", "net_profit": 999.0, "volume": 1.0,
+             "open_time": "2026-09-02 08:00:00",
+             "partial_closes": [{"volume": 0.4, "close_time": "2026-09-03 15:00:00", "net_profit": -40.0}]},
+            # Open without partials: nothing realized yet.
+            {"id": 3, "symbol": "GBPUSD", "status": "OPEN", "net_profit": 55.0, "open_time": "2026-09-03 09:00:00"},
+            # Opened on the 4th, closed on the 5th: counts on the 5th.
+            {"id": 4, "symbol": "US30", "status": "LOSS", "net_profit": -80.0, "r_multiple": -1.0,
+             "open_time": "2026-09-04 22:00:00", "close_time": "2026-09-05 01:00:00"},
+        ]
+        cal = get_calendar_heatmap(trades, initial_balance=10000.0)
+        self.assertEqual(sorted(cal), ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"])
+        self.assertEqual(cal["2026-09-02"]["net_profit"], 100.0)
+        self.assertEqual(cal["2026-09-02"]["r_multiple"], 1.5)          # half the volume of a 3R trade
+        self.assertEqual(cal["2026-09-03"]["net_profit"], -40.0)
+        self.assertEqual(cal["2026-09-04"]["net_profit"], 200.0)
+        self.assertEqual(cal["2026-09-05"]["net_profit"], -80.0)
+        self.assertEqual((cal["2026-09-05"]["wins"], cal["2026-09-05"]["losses"]), (0, 1))
+
+        equity = get_equity_curve(trades, initial_balance=10000.0)
+        self.assertEqual(equity[0]["symbol"], "START")
+        self.assertEqual([p["cumulative_pnl"] for p in equity[1:]], [100.0, 60.0, 260.0, 180.0])
+        self.assertEqual(equity[-1]["balance"], 10180.0)
+
     def test_dashboard_insights_empty(self):
         from server.analytics import get_dashboard_insights
         ins = get_dashboard_insights([], calculate_trade_metrics([], 10000.0))

@@ -302,83 +302,117 @@ def calculate_trade_metrics(trades: List[Dict[str, Any]], initial_balance: float
         "total_pnl": round(net_profit + open_pnl, 2),
     }
 
+def get_realized_events(trades: List[Dict[str, Any]], initial_balance: float = 10000.0) -> List[Dict[str, Any]]:
+    """
+    Every realized P&L event, in chronological order.
+
+    - A closing deal of a scaled-out position counts on its own close time.
+    - A fully closed trade counts on its close time (minus what its partial
+      closes already realized, e.g. entry commission).
+    - Floating P&L of open positions is never included.
+    Missed, pending and cancelled trades are excluded. Each event carries the
+    R share of its trade (volume-weighted for partial closes).
+    """
+    events = []
+    for t in trades:
+        if t.get("is_missed") or t.get("status") in ("CANCELLED", "PENDING"):
+            continue
+        is_closed = t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or (
+            t.get("status") != "OPEN" and t.get("close_time")
+        )
+        total_pnl = float(t.get("net_profit") or 0.0)
+        total_r = float(t["r_multiple"]) if t.get("r_multiple") is not None else None
+        partials = [pc for pc in (t.get("partial_closes") or []) if pc.get("close_time")]
+        volume = float(t.get("volume") or 0.0) or sum(float(pc.get("volume") or 0.0) for pc in partials)
+
+        def cash_r(pnl):
+            # Without a known risk, 1 R is approximated as 1 % of the starting balance.
+            return pnl / (initial_balance * 0.01) if initial_balance > 0 else 0.0
+
+        base = {"trade_id": t.get("id"), "symbol": t.get("symbol", ""), "open_time": t.get("open_time")}
+        realized = 0.0
+        realized_r = 0.0
+        for pc in partials:
+            pnl = float(pc.get("net_profit") or 0.0)
+            if total_r is None:
+                r_val = cash_r(pnl)
+            else:
+                r_val = total_r * float(pc.get("volume") or 0.0) / volume if volume > 0 else 0.0
+            events.append({**base, "time": _normalize_date_str(pc["close_time"]), "pnl": pnl, "r": r_val, "closes_trade": False})
+            realized += pnl
+            realized_r += r_val
+
+        if is_closed:
+            close_time = t.get("close_time") or t.get("open_time")
+            if not close_time:
+                continue
+            remainder = total_pnl - realized
+            if partials and abs(remainder) < 0.005 and (total_r is None or abs(total_r - realized_r) < 0.005):
+                events[-1]["closes_trade"] = True
+                continue
+            r_rem = (total_r - realized_r) if total_r is not None else cash_r(remainder)
+            events.append({**base, "time": _normalize_date_str(close_time), "pnl": remainder, "r": r_rem, "closes_trade": True})
+
+    events.sort(key=lambda e: e["time"])
+    return events
+
+
 def get_calendar_heatmap(trades: List[Dict[str, Any]], initial_balance: float = 10000.0) -> Dict[str, Dict[str, Any]]:
     """
-    Groups closed trades by date (YYYY-MM-DD) for TradeZella-style calendar heatmap.
-    Excludes missed trades (is_missed = 1).
+    Realized P&L per calendar day (YYYY-MM-DD) for the TradeZella-style heatmap.
+    Uses get_realized_events(): partial exits count on the day they were
+    realized, open positions contribute nothing until they close.
+    A trade counts once per day it realized P&L; win/loss is judged on what it
+    realized that day.
     Returns:
     {
        "2026-09-01": {"date": "2026-09-01", "net_profit": 450.50, "r_multiple": 2.4, "pct_return": 4.51, "trades_count": 3, "wins": 2, "losses": 1},
        ...
     }
     """
-    days = {}
-    valid_trades = [t for t in trades if not t.get("is_missed") and t.get("status") not in ("CANCELLED", "PENDING")]
-    for t in valid_trades:
-        close_time = t.get("close_time") or t.get("open_time")
-        if not close_time:
-            continue
-        # Extract YYYY-MM-DD
-        date_str = _normalize_date_str(close_time)[:10]
-        pnl = float(t.get("net_profit") or 0.0)
-        r_mult = float(t["r_multiple"]) if t.get("r_multiple") is not None else None
+    days: Dict[str, Dict[str, Any]] = {}
+    per_trade: Dict[str, Dict[Any, float]] = {}
+    for e in get_realized_events(trades, initial_balance):
+        date_str = e["time"][:10]
+        day = days.setdefault(date_str, {
+            "date": date_str, "net_profit": 0.0, "r_multiple": 0.0, "pct_return": 0.0,
+            "trades_count": 0, "wins": 0, "losses": 0, "breakevens": 0,
+        })
+        day["net_profit"] += e["pnl"]
+        day["r_multiple"] += e["r"]
+        trade_key = e["trade_id"] if e["trade_id"] is not None else id(e)
+        per_trade.setdefault(date_str, {})
+        per_trade[date_str][trade_key] = per_trade[date_str].get(trade_key, 0.0) + e["pnl"]
 
-        if date_str not in days:
-            days[date_str] = {
-                "date": date_str,
-                "net_profit": 0.0,
-                "r_multiple": 0.0,
-                "pct_return": 0.0,
-                "trades_count": 0,
-                "wins": 0,
-                "losses": 0,
-                "breakevens": 0,
-            }
-
-        days[date_str]["net_profit"] += pnl
-        if r_mult is not None:
-            days[date_str]["r_multiple"] += r_mult
-        elif initial_balance > 0:
-            days[date_str]["r_multiple"] += pnl / (initial_balance * 0.01)
-
-        days[date_str]["trades_count"] += 1
-        if pnl > 0.001:
-            days[date_str]["wins"] += 1
-        elif pnl < -0.001:
-            days[date_str]["losses"] += 1
-        else:
-            days[date_str]["breakevens"] += 1
-
-    # Round all values and compute pct_return
-    for d, data in days.items():
+    for date_str, data in days.items():
+        results = per_trade.get(date_str, {}).values()
+        data["trades_count"] = len(results)
+        data["wins"] = sum(1 for v in results if v > 0.001)
+        data["losses"] = sum(1 for v in results if v < -0.001)
+        data["breakevens"] = data["trades_count"] - data["wins"] - data["losses"]
         data["net_profit"] = round(data["net_profit"], 2)
         data["r_multiple"] = round(data["r_multiple"], 2)
-        if initial_balance > 0:
-            data["pct_return"] = round((data["net_profit"] / initial_balance) * 100.0, 2)
-        else:
-            data["pct_return"] = 0.0
+        data["pct_return"] = round((data["net_profit"] / initial_balance) * 100.0, 2) if initial_balance > 0 else 0.0
 
     return days
 
+
 def get_equity_curve(trades: List[Dict[str, Any]], initial_balance: float = 10000.0) -> List[Dict[str, Any]]:
     """
-    Builds cumulative equity curve points chronologically.
-    Excludes missed trades (is_missed = 1).
+    Cumulative realized equity, one point per realized event (see get_realized_events).
+    Excludes missed trades (is_missed = 1) and floating P&L.
     """
-    valid_trades = [t for t in trades if not t.get("is_missed") and t.get("status") not in ("CANCELLED", "PENDING")]
-    closed = [t for t in valid_trades if t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or t.get("close_time")]
-    sorted_trades = sorted(closed, key=lambda x: x.get("close_time") or x.get("open_time") or "")
-
+    events = get_realized_events(trades, initial_balance)
     points = []
     running_balance = initial_balance
     cumulative_pnl = 0.0
     cumulative_r = 0.0
 
-    # Start point
-    if sorted_trades:
-        first_time = sorted_trades[0].get("open_time") or sorted_trades[0].get("close_time") or ""
+    if events:
+        first_open = _normalize_date_str(events[0].get("open_time") or "")
+        start = first_open if first_open and first_open < events[0]["time"] else events[0]["time"]
         points.append({
-            "time": first_time[:16].replace("T", " "),
+            "time": start[:16].replace("T", " "),
             "balance": round(running_balance, 2),
             "cumulative_pnl": 0.0,
             "cumulative_r": 0.0,
@@ -388,23 +422,20 @@ def get_equity_curve(trades: List[Dict[str, Any]], initial_balance: float = 1000
             "symbol": "START"
         })
 
-    for t in sorted_trades:
-        pnl = float(t.get("net_profit") or 0.0)
-        running_balance += pnl
-        cumulative_pnl += pnl
-        r_val = float(t["r_multiple"]) if t.get("r_multiple") is not None else (pnl / (initial_balance * 0.01) if initial_balance > 0 else 0.0)
-        cumulative_r += r_val
-        c_time = t.get("close_time") or t.get("open_time") or ""
-
+    for e in events:
+        running_balance += e["pnl"]
+        cumulative_pnl += e["pnl"]
+        cumulative_r += e["r"]
         points.append({
-            "time": c_time[:16].replace("T", " "),
+            "time": e["time"][:16].replace("T", " "),
             "balance": round(running_balance, 2),
             "cumulative_pnl": round(cumulative_pnl, 2),
             "cumulative_r": round(cumulative_r, 2),
-            "trade_pnl": round(pnl, 2),
-            "r_multiple": round(r_val, 2),
-            "trade_id": t.get("id"),
-            "symbol": t.get("symbol", "")
+            "trade_pnl": round(e["pnl"], 2),
+            "r_multiple": round(e["r"], 2),
+            "trade_id": e["trade_id"],
+            "symbol": e["symbol"],
+            "partial": not e["closes_trade"],
         })
 
     return points
@@ -1034,9 +1065,11 @@ def _journal_score(metrics: Dict[str, Any], green_day_rate: float, plan_rate: fl
     return {"score": total, "components": components}
 
 
-def get_dashboard_insights(trades: List[Dict[str, Any]], metrics: Dict[str, Any], recent_limit: int = 8) -> Dict[str, Any]:
+def get_dashboard_insights(trades: List[Dict[str, Any]], metrics: Dict[str, Any], recent_limit: int = 8,
+                           initial_balance: float = 10000.0) -> Dict[str, Any]:
     """Deterministic breakdowns for the dashboard beyond the headline KPIs."""
     closed = [t for t in trades if _is_realized(t)]
+    events = get_realized_events(trades, initial_balance)
 
     def pnl(t):
         return float(t.get("net_profit") or 0.0)
@@ -1078,12 +1111,10 @@ def get_dashboard_insights(trades: List[Dict[str, Any]], metrics: Dict[str, Any]
         "all_min": avg_hold(closed),
     }
 
-    # Day-level statistics (by close date, like the calendar)
+    # Day-level statistics on realized P&L (same basis as the calendar)
     days: Dict[str, float] = {}
-    for t in closed:
-        key = _normalize_date_str(t.get("close_time") or t.get("open_time") or "")[:10]
-        if key:
-            days[key] = days.get(key, 0.0) + pnl(t)
+    for e in events:
+        days[e["time"][:10]] = days.get(e["time"][:10], 0.0) + e["pnl"]
     green = sum(1 for v in days.values() if v > 0.001)
     red = sum(1 for v in days.values() if v < -0.001)
     best_day = max(days.items(), key=lambda kv: kv[1]) if days else None
@@ -1098,17 +1129,20 @@ def get_dashboard_insights(trades: List[Dict[str, Any]], metrics: Dict[str, Any]
         "worst_day": {"date": worst_day[0], "net_profit": round(worst_day[1], 2)} if worst_day else None,
     }
 
-    # Monthly results
+    # Monthly results: realized P&L and R by realization date; trades and win
+    # rate count the trades that were fully closed in that month.
     months: Dict[str, Dict[str, float]] = {}
+    for e in events:
+        m = months.setdefault(e["time"][:7], {"net_profit": 0.0, "trades": 0, "wins": 0, "r": 0.0})
+        m["net_profit"] += e["pnl"]
+        m["r"] += e["r"]
     for t in closed:
         key = _normalize_date_str(t.get("close_time") or t.get("open_time") or "")[:7]
         if not key:
             continue
         m = months.setdefault(key, {"net_profit": 0.0, "trades": 0, "wins": 0, "r": 0.0})
-        m["net_profit"] += pnl(t)
         m["trades"] += 1
         m["wins"] += 1 if pnl(t) > 0.001 else 0
-        m["r"] += float(t.get("r_multiple") or 0.0)
     monthly = [
         {"month": key, "net_profit": round(m["net_profit"], 2), "trades": m["trades"],
          "win_rate": round(m["wins"] / m["trades"] * 100.0, 1) if m["trades"] else 0.0,
@@ -1136,6 +1170,7 @@ def get_dashboard_insights(trades: List[Dict[str, Any]], metrics: Dict[str, Any]
         }
 
     return {
+        "realized_pnl": round(sum(e["pnl"] for e in events), 2),
         "r_distribution": r_distribution,
         "long_short": long_short,
         "holding": holding,

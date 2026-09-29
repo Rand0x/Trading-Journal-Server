@@ -129,7 +129,9 @@ const Dashboard = {
   renderKPIs(m, currency) {
     const cur = currency || this.currentCurrency || App.getActiveCurrency();
     const data = this.dashboardData || {};
-    const closedPnl = m.net_profit || 0;
+    // Realized P&L incl. partial exits of open positions (same basis as calendar and equity curve)
+    const insights = data.insights || {};
+    const closedPnl = insights.realized_pnl !== undefined ? insights.realized_pnl : (m.net_profit || 0);
     const openPnl = (m.open_pnl !== undefined) ? m.open_pnl : (data.open_pnl || 0);
     const openCount = (m.open_trades_count !== undefined) ? m.open_trades_count : (data.open_trades_count || 0);
 
@@ -139,8 +141,8 @@ const Dashboard = {
     pnlEl.className = `kpi-value ${this.pnlClass(closedPnl)}`;
     const pnlSub = document.getElementById('dashNetPnlSub');
     pnlSub.innerHTML = openCount > 0
-      ? `Closed trades · floating <span class="${this.pnlClass(openPnl)}" style="font-weight:650;">${this.esc(this.signed(openPnl, cur))}</span>`
-      : `${m.total_trades || 0} closed trades · ${this.formatR(m.total_r, 1)}`;
+      ? `Realized · floating <span class="${this.pnlClass(openPnl)}" style="font-weight:650;">${this.esc(this.signed(openPnl, cur))}</span>`
+      : `Realized · ${m.total_trades || 0} closed trades · ${this.formatR(m.total_r, 1)}`;
 
     const initial = Number(data.initial_balance) || 0;
     const retPct = initial > 0 ? (closedPnl / initial) * 100 : 0;
@@ -226,8 +228,6 @@ const Dashboard = {
     });
 
     const formatter = v => (isR ? `${v.toFixed(1)}R` : this.money(v, cur, { decimals: 0 }));
-    const up = line[line.length - 1].value >= 0;
-    const lineColor = up ? Charts.COLORS.pos : Charts.COLORS.neg;
 
     if (!this.equityChart || !container.contains(this.equityChartEl)) {
       this.destroyEquityChart();
@@ -242,14 +242,40 @@ const Dashboard = {
           panes: { separatorColor: '#1c2433', enableResize: false },
         },
         grid: { vertLines: { visible: false }, horzLines: { color: '#161d2a' } },
-        rightPriceScale: { borderVisible: false },
-        timeScale: { borderVisible: false, timeVisible: false },
+        rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.12, bottom: 0.08 } },
+        timeScale: {
+          borderVisible: false,
+          timeVisible: true,
+          secondsVisible: false,
+          // Day and month changes as "24 Sep" / "Sep 26", several exits on one day as clock times.
+          tickMarkFormatter: (ts, type) => {
+            const d = new Date(ts * 1000);
+            const T = LightweightCharts.TickMarkType;
+            if (type === T.Year) return String(d.getUTCFullYear());
+            if (type === T.Month) return d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' });
+            if (type === T.DayOfMonth) return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+            return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+          },
+        },
+        localization: {
+          timeFormatter: ts => new Date(ts * 1000).toLocaleString('en-GB', {
+            day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
+          }),
+        },
         crosshair: { mode: LightweightCharts.CrosshairMode.Magnet },
         handleScroll: false,
         handleScale: false,
       });
       this.equityChartEl = container.firstElementChild;
-      this.equitySeries = this.equityChart.addSeries(LightweightCharts.AreaSeries, {
+      // Baseline at zero: green while in profit, red while under water.
+      this.equitySeries = this.equityChart.addSeries(LightweightCharts.BaselineSeries, {
+        baseValue: { type: 'price', price: 0 },
+        topLineColor: Charts.COLORS.pos,
+        topFillColor1: 'rgba(16, 185, 129, 0.28)',
+        topFillColor2: 'rgba(16, 185, 129, 0.02)',
+        bottomLineColor: Charts.COLORS.neg,
+        bottomFillColor1: 'rgba(239, 68, 68, 0.02)',
+        bottomFillColor2: 'rgba(239, 68, 68, 0.28)',
         lineWidth: 2,
         priceLineVisible: false,
         lastValueVisible: true,
@@ -269,19 +295,14 @@ const Dashboard = {
       } catch (e) { /* older builds without pane sizing */ }
     }
 
-    this.equitySeries.applyOptions({
-      lineColor,
-      topColor: up ? 'rgba(16, 185, 129, 0.28)' : 'rgba(239, 68, 68, 0.28)',
-      bottomColor: 'rgba(15, 20, 30, 0)',
-      priceFormat: { type: 'custom', formatter, minMove: 0.01 },
-    });
+    this.equitySeries.applyOptions({ priceFormat: { type: 'custom', formatter, minMove: 0.01 } });
     this.drawdownSeries.applyOptions({ priceFormat: { type: 'custom', formatter, minMove: 0.01 } });
     this.equitySeries.setData(line);
     this.drawdownSeries.setData(drawdown);
     this.equityChart.timeScale().fitContent();
 
     const sub = document.getElementById('equitySubtitle');
-    if (sub) sub.textContent = isR ? 'Cumulative R with drawdown in R' : 'Cumulative closed P&L with drawdown';
+    if (sub) sub.textContent = isR ? 'Realized R over time, drawdown below' : 'Realized P&L over time (incl. partial exits), drawdown below';
   },
 
   destroyEquityChart() {

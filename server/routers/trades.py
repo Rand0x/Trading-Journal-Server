@@ -302,6 +302,8 @@ def get_trades(
     search: Optional[str] = Query(None),
     signals: Optional[str] = Query(None),
     is_missed: Optional[bool] = Query(None),
+    closed_on: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$",
+                                     description="Trades that realized P&L on this day (full or partial close)"),
     sort_by: str = Query("open_time"),
     sort_order: str = Query("desc"),
     limit: int = Query(50, ge=1, le=1000),
@@ -340,6 +342,17 @@ def get_trades(
         if is_missed is not None:
             where_clauses.append("t.is_missed = ?")
             params.append(1 if is_missed else 0)
+        if closed_on:
+            # Same basis as the dashboard calendar: realized on that day.
+            where_clauses.append("""(
+                COALESCE(t.is_missed, 0) = 0 AND (
+                    (t.status IN ('CLOSED', 'WIN', 'LOSS', 'BE')
+                     AND SUBSTR(REPLACE(t.close_time, '.', '-'), 1, 10) = ?)
+                    OR EXISTS (SELECT 1 FROM trade_partial_closes pc
+                               WHERE pc.trade_id = t.id
+                                 AND SUBSTR(REPLACE(pc.close_time, '.', '-'), 1, 10) = ?)
+                ))""")
+            params.extend([closed_on, closed_on])
         if search:
             where_clauses.append("(t.symbol LIKE ? OR t.notes LIKE ? OR t.tags LIKE ? OR t.ticket LIKE ?)")
             search_param = f"%{search}%"
