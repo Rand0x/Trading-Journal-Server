@@ -810,7 +810,6 @@ button, input, select, textarea { font-family: inherit; }
 .legend-item { display: inline-flex; align-items: center; gap: 7px; }
 .swatch { width: 18px; height: 8px; border-radius: 3px; flex-shrink: 0; }
 .swatch-split { background: linear-gradient(90deg, var(--green) 0 50%, var(--red) 50% 100%); }
-.swatch-dd { background: rgba(239, 68, 68, 0.45); border-top: 2px solid var(--red); height: 8px; }
 
 .chart-readout {
   min-height: 34px;
@@ -830,18 +829,6 @@ button, input, select, textarea { font-family: inherit; }
 .chart-readout b { color: var(--text-strong); font-weight: 650; }
 .chart-readout .readout-label { color: var(--text-dim); margin-right: 4px; }
 
-.pane-label {
-  position: absolute;
-  left: 8px;
-  z-index: 3;
-  pointer-events: none;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  background: rgba(15, 20, 30, 0.8);
-  padding: 1px 7px;
-  border-radius: 5px;
-}
 
 .chart-container {
   width: 100%;

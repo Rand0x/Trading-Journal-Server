@@ -1,5 +1,5 @@
 /**
- * Dashboard: KPIs, equity & drawdown, journal score, calendar and breakdowns.
+ * Dashboard: KPIs, equity curve, journal score, calendar and breakdowns.
  * Every number comes from /api/dashboard; this module only renders.
  */
 
@@ -10,7 +10,6 @@ const Dashboard = {
   equityMode: 'money', // 'money', 'r'
   equityChart: null,
   equitySeries: null,
-  drawdownSeries: null,
   uiBound: false,
 
   async load() {
@@ -52,7 +51,6 @@ const Dashboard = {
   bindUi() {
     if (this.uiBound) return;
     this.uiBound = true;
-    window.addEventListener('resize', () => requestAnimationFrame(() => this.positionDrawdownLabel()));
     const toggle = document.getElementById('equityModeToggle');
     if (toggle) {
       toggle.addEventListener('click', e => {
@@ -215,7 +213,6 @@ const Dashboard = {
     // Strictly increasing UTC timestamps (several exits can share a minute).
     let lastTs = 0;
     const line = [];
-    const drawdown = [];
     let peak = -Infinity;
     this.equityInfo = new Map();
     pts.forEach(p => {
@@ -227,7 +224,6 @@ const Dashboard = {
       peak = Math.max(peak, value);
       const dd = Math.min(0, value - peak);
       line.push({ time: ts, value });
-      drawdown.push({ time: ts, value: dd });
       this.equityInfo.set(ts, { point: p, value, dd });
     });
     this.equityFormat = { isR, cur };
@@ -285,27 +281,6 @@ const Dashboard = {
         priceLineVisible: false,
         lastValueVisible: true,
       });
-      this.drawdownSeries = this.equityChart.addSeries(LightweightCharts.AreaSeries, {
-        lineColor: 'rgba(239, 68, 68, 0.9)',
-        topColor: 'rgba(239, 68, 68, 0.05)',
-        bottomColor: 'rgba(239, 68, 68, 0.35)',
-        invertFilledArea: true,
-        lineWidth: 1,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      }, 1);
-      try {
-        const panes = this.equityChart.panes();
-        if (panes[1]) panes[1].setHeight(80);
-      } catch (e) { /* older builds without pane sizing */ }
-
-      // Labels inside the two panes so it is clear which curve is which
-      this.equityLabelTop = document.createElement('div');
-      this.equityLabelTop.className = 'pane-label';
-      this.equityLabelTop.style.top = '6px';
-      this.equityLabelDd = document.createElement('div');
-      this.equityLabelDd.className = 'pane-label';
-      container.append(this.equityLabelTop, this.equityLabelDd);
 
       this.equityChart.subscribeCrosshairMove(param => {
         const info = param && param.time !== undefined ? this.equityInfo.get(param.time) : null;
@@ -314,30 +289,15 @@ const Dashboard = {
     }
 
     this.equitySeries.applyOptions({ priceFormat: { type: 'custom', formatter, minMove: 0.01 } });
-    this.drawdownSeries.applyOptions({ priceFormat: { type: 'custom', formatter, minMove: 0.01 } });
     this.equitySeries.setData(line);
-    this.drawdownSeries.setData(drawdown);
     this.equityChart.timeScale().fitContent();
 
-    this.equityLabelTop.textContent = isR ? 'Total realized R' : 'Total realized P&L';
-    this.equityLabelDd.textContent = isR ? 'Drawdown (R below best)' : 'Drawdown (below best total)';
-    requestAnimationFrame(() => this.positionDrawdownLabel());
     this.renderEquityReadout(null);
 
     const sub = document.getElementById('equitySubtitle');
     if (sub) sub.textContent = isR
       ? 'Running total in R (profit ÷ initial risk) — one point per realized exit'
       : 'Running total of realized P&L — one point per realized exit';
-  },
-
-  positionDrawdownLabel() {
-    if (!this.equityChart || !this.equityLabelDd) return;
-    try {
-      const panes = this.equityChart.panes();
-      this.equityLabelDd.style.top = `${panes[0].getHeight() + 6}px`;
-    } catch (e) {
-      this.equityLabelDd.style.bottom = '110px';
-    }
   },
 
   // Readout above the chart: the hovered exit, or the latest state when not hovering.
@@ -368,10 +328,7 @@ const Dashboard = {
     }
     this.equityChart = null;
     this.equitySeries = null;
-    this.drawdownSeries = null;
     this.equityChartEl = null;
-    this.equityLabelTop = null;
-    this.equityLabelDd = null;
   },
 
   // ---------------------------------------------------------------- score
