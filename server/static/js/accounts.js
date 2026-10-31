@@ -48,7 +48,7 @@ const Accounts = {
         this.stopAutoRefresh();
         return;
       }
-      const isModalActive = document.querySelector('.modal.active');
+      const isModalActive = document.querySelector('.modal-overlay.active');
       if (isModalActive) return;
 
       try {
@@ -154,6 +154,11 @@ const Accounts = {
   },
 
   updateGlobalAccountSelect(accounts = []) {
+    // A deleted account must not stay selected: every view would filter on
+    // an id that no longer exists and show nothing.
+    if (App.activeAccountId && !accounts.some(a => a.id === App.activeAccountId)) {
+      App.activeAccountId = null;
+    }
     const selects = [
       document.getElementById('globalAccountSelect'),
       document.getElementById('importAccountSelect'),
@@ -221,7 +226,7 @@ const Accounts = {
     try {
       await API.deleteAccount(id);
       App.showToast('Account deleted.', 'success');
-      this.load();
+      await this.load();
       Dashboard.load();
     } catch (err) {
       App.showToast(`Error: ${err.message}`, 'error');

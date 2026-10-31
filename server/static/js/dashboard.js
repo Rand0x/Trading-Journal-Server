@@ -291,11 +291,15 @@ const Dashboard = {
   },
 
   calendarPrevMonth() {
+    // Pin to the 1st first: on the 29th-31st setMonth() overflows into the
+    // following month (Oct 31 - 1 month = "Sep 31" = Oct 1).
+    this.currentCalendarDate.setDate(1);
     this.currentCalendarDate.setMonth(this.currentCalendarDate.getMonth() - 1);
     this.renderCalendar(this.dashboardData ? this.dashboardData.calendar : {}, this.currentCurrency);
   },
 
   calendarNextMonth() {
+    this.currentCalendarDate.setDate(1);
     this.currentCalendarDate.setMonth(this.currentCalendarDate.getMonth() + 1);
     this.renderCalendar(this.dashboardData ? this.dashboardData.calendar : {}, this.currentCurrency);
   },

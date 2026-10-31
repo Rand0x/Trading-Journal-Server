@@ -78,7 +78,8 @@ const Trades = {
         this.stopAutoRefresh();
         return;
       }
-      const isModalActive = document.querySelector('.modal.active');
+      // Dialogs use the .modal-overlay class; '.modal.active' never matched.
+      const isModalActive = document.querySelector('.modal-overlay.active');
       if (isModalActive || this.activeEditingId) {
         return;
       }
@@ -588,7 +589,7 @@ const Trades = {
     const list = document.getElementById('tfDynamicTpList');
     if (!list) return [];
     const targets = [];
-    const openTime = document.getElementById('tfOpenTime')?.value || new Date().toISOString();
+    const openTime = document.getElementById('tfOpenTime')?.value || App.toLocalDateTimeInput();
     list.querySelectorAll('.dynamic-tp-row').forEach((r, idx) => {
       const price = parseFloat(r.querySelector('.tp-price')?.value);
       const volRaw = r.querySelector('.tp-vol')?.value;
@@ -994,14 +995,21 @@ const Trades = {
     document.getElementById('tradeModalTitle').textContent = 'Log New Trade';
     document.getElementById('tradeForm').reset();
     this.activeEditingId = null;
+    this.editingAllIds = null;
+    this.editingSubTrades = null;
+    this.editingHadPartials = false;
+    this.editingLegSnapshot = null;
+    // form.reset() does not clear hidden inputs whose value was set from JS,
+    // so a previously edited trade's TP would leak into a new trade.
+    const tpHidden = document.getElementById('tfTakeProfit');
+    if (tpHidden) tpHidden.value = '';
 
     if (document.getElementById('tfStatus')) {
       document.getElementById('tfStatus').value = 'AUTO';
     }
 
-    // Set default timestamps
-    const now = new Date();
-    const nowStr = now.toISOString().substring(0, 16);
+    // Set default timestamps (local time, as shown by datetime-local inputs)
+    const nowStr = App.toLocalDateTimeInput();
     if (document.getElementById('tfOpenTime')) document.getElementById('tfOpenTime').value = nowStr;
     if (document.getElementById('tfCloseTime')) document.getElementById('tfCloseTime').value = '';
 
@@ -1304,6 +1312,8 @@ const Trades = {
       }
 
       this.recalculateRMultiple();
+      this.editingHadPartials = Array.isArray(trade.partial_closes) && trade.partial_closes.length > 0;
+      this.editingLegSnapshot = isGrouped ? this.snapshotLegFields() : null;
       this.checkTwinTrades();
     } catch (err) {
       console.error('Error opening edit modal:', err);
@@ -1313,6 +1323,29 @@ const Trades = {
 
   closeModal() {
     document.getElementById('addTradeModal').classList.remove('active');
+    // A stale id would pause the trade log's live auto-refresh forever.
+    this.activeEditingId = null;
+    this.editingAllIds = null;
+    this.editingSubTrades = null;
+  },
+
+  // Form fields that differ per merged leg. They are only written to every
+  // leg when the user actually changed them in the edit form.
+  LEG_SPECIFIC_FIELDS: {
+    open_time: 'tfOpenTime',
+    close_time: 'tfCloseTime',
+    open_price: 'tfOpenPrice',
+    close_price: 'tfClosePrice',
+    stop_loss: 'tfStopLoss',
+    status: 'tfStatus'
+  },
+
+  snapshotLegFields() {
+    const snapshot = {};
+    Object.entries(this.LEG_SPECIFIC_FIELDS).forEach(([field, id]) => {
+      snapshot[field] = document.getElementById(id)?.value ?? '';
+    });
+    return snapshot;
   },
 
   async saveTradeFromForm(e) {
@@ -1340,7 +1373,7 @@ const Trades = {
       }
     }
 
-    const open_time_val = document.getElementById('tfOpenTime')?.value || new Date().toISOString().substring(0, 16);
+    const open_time_val = document.getElementById('tfOpenTime')?.value || App.toLocalDateTimeInput();
     const open_time = open_time_val.replace('T', ' ');
     const close_time_val = document.getElementById('tfCloseTime')?.value;
     const close_time = close_time_val ? close_time_val.replace('T', ' ') : (['PENDING', 'OPEN'].includes(status) ? null : open_time);
@@ -1372,6 +1405,8 @@ const Trades = {
       emotion_pre, emotion_during, signals, timeframe
     };
 
+    const isGroupedEdit = Boolean(this.activeEditingId && this.editingAllIds && this.editingAllIds.length > 1);
+
     // Collect dynamic TP targets
     const dynamicTargets = this.collectDynamicTps();
     if (dynamicTargets.length > 0) {
@@ -1379,33 +1414,63 @@ const Trades = {
       if (!payload.take_profit) {
         payload.take_profit = dynamicTargets[dynamicTargets.length - 1].price;
       }
-      // If the trade is CLOSED and targets have lots, also save as partial closes
-      if (['CLOSED', 'WIN', 'LOSS', 'BE'].includes(status) || close_price) {
-        const closedPartials = dynamicTargets
-          .filter(t => t.volume && t.volume > 0)
-          .map((t, idx) => ({
-            ticket: `manual_tp_${idx + 1}_${Date.now()}`,
-            close_price: t.price,
-            volume: t.volume,
-            net_profit: t.net_profit || 0,
-            close_time: t.close_time
-          }));
-        if (closedPartials.length > 0) {
-          payload.partial_closes = closedPartials;
-        }
+      // Save TP rows as partial closes only when they describe realized
+      // exits: every row with lots must carry its own P&L. The server rebuilds
+      // the trade's P&L, close price and status from partial closes, so
+      // planned TPs without P&L would overwrite the real result with 0.
+      // Existing partial exits (broker deals or added in the trade detail
+      // view) are kept as they are; merged legs are handled per leg below.
+      const rowsWithLots = dynamicTargets.filter(t => t.volume && t.volume > 0);
+      const rowsAreRealizedExits = rowsWithLots.length > 0 && rowsWithLots.every(t => t.net_profit !== null);
+      const isClosedTrade = ['CLOSED', 'WIN', 'LOSS', 'BE'].includes(status) || close_price;
+      if (isClosedTrade && rowsAreRealizedExits && !this.editingHadPartials && !isGroupedEdit) {
+        payload.partial_closes = rowsWithLots.map((t, idx) => ({
+          ticket: `manual_tp_${idx + 1}_${Date.now()}`,
+          close_price: t.price,
+          volume: t.volume,
+          net_profit: t.net_profit,
+          close_time: close_time || open_time
+        }));
       }
     }
 
     try {
       if (this.activeEditingId) {
-        if (this.editingAllIds && this.editingAllIds.length > 1) {
+        if (isGroupedEdit) {
+          const changedLegFields = this.snapshotLegFields();
           for (let i = 0; i < this.editingAllIds.length; i++) {
             const legId = this.editingAllIds[i];
             const legPayload = { ...payload };
-            if (dynamicTargets && dynamicTargets[i]) {
-              legPayload.take_profit = dynamicTargets[i].price;
-              if (dynamicTargets[i].volume && dynamicTargets[i].volume > 0) {
-                legPayload.volume = dynamicTargets[i].volume;
+            // The form shows group totals for P&L, commission and swap; copying
+            // them onto every leg would multiply the trade's result.
+            delete legPayload.net_profit;
+            delete legPayload.commission;
+            delete legPayload.swap;
+            delete legPayload.volume;
+            delete legPayload.r_multiple;
+            delete legPayload.partial_closes;
+            // Keep each leg's own times/prices unless the user edited them.
+            Object.keys(this.LEG_SPECIFIC_FIELDS).forEach(field => {
+              if (this.editingLegSnapshot && changedLegFields[field] === this.editingLegSnapshot[field]) {
+                delete legPayload[field];
+              }
+            });
+            const legTarget = dynamicTargets[i];
+            if (legTarget) {
+              legPayload.take_profit = legTarget.price;
+              if (legTarget.volume && legTarget.volume > 0) {
+                legPayload.volume = legTarget.volume;
+              }
+              if (legTarget.net_profit !== null) {
+                legPayload.net_profit = legTarget.net_profit;
+              }
+            }
+            if (selectedStatus === 'AUTO') {
+              // An AUTO status derived from the group total is wrong per leg.
+              if (legPayload.net_profit !== undefined && ['WIN', 'LOSS', 'BE'].includes(status)) {
+                legPayload.status = legPayload.net_profit > 0.001 ? 'WIN' : (legPayload.net_profit < -0.001 ? 'LOSS' : 'BE');
+              } else {
+                delete legPayload.status;
               }
             }
             await API.updateTrade(legId, legPayload);

@@ -146,3 +146,70 @@ test('auto-refresh preserves every active load filter and page', async () => {
   assert.equal(requests[0].signals, 'Breakout');
   assert.deepEqual(requests[1], requests[0]);
 });
+
+function tradeFormHarness(formValues) {
+  const elements = Object.fromEntries(Object.entries(formValues).map(([id, value]) => [id, { value }]));
+  elements.addTradeModal = { classList: { remove() {}, add() {} } };
+  const h = harness(elements);
+  const updates = [];
+  h.context.API.updateTrade = async (id, payload) => { updates.push({ id, payload }); return {}; };
+  h.context.App.showToast = () => {};
+  h.context.App.toLocalDateTimeInput = () => '2026-09-01T10:00';
+  const trades = h.load('trades.js', 'Trades');
+  trades.load = () => {};
+  return { trades, updates };
+}
+
+const closedTradeForm = {
+  tfAccount: '1', tfSymbol: 'EURUSD', tfDirection: 'BUY', tfStatus: 'WIN', tfVolume: '1.00',
+  tfOpenPrice: '1.1000', tfClosePrice: '1.1050', tfStopLoss: '1.0950', tfTakeProfit: '1.1200',
+  tfNetProfit: '500.00', tfCommission: '-7.00', tfSwap: '0.00',
+  tfOpenTime: '2026-09-01T10:00', tfCloseTime: '2026-09-01T14:00',
+};
+
+test('editing a closed trade does not turn a planned TP without P&L into a zero-P&L partial close', async () => {
+  const { trades, updates } = tradeFormHarness(closedTradeForm);
+  trades.activeEditingId = 9;
+  trades.editingHadPartials = false;
+  // The edit modal pre-fills one TP row with the TP price and the full volume, but no P&L.
+  trades.collectDynamicTps = () => [{ index: 1, price: 1.12, volume: 1, net_profit: null, close_time: '2026-09-01 10:00' }];
+  await trades.saveTradeFromForm({ preventDefault() {} });
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].payload.partial_closes, undefined);
+  assert.equal(updates[0].payload.net_profit, 500);
+});
+
+test('TP rows that all carry realized P&L are still saved as partial closes at the exit time', async () => {
+  const { trades, updates } = tradeFormHarness(closedTradeForm);
+  trades.activeEditingId = 9;
+  trades.editingHadPartials = false;
+  trades.collectDynamicTps = () => [
+    { index: 1, price: 1.105, volume: 0.5, net_profit: 250 },
+    { index: 2, price: 1.11, volume: 0.5, net_profit: 500 },
+  ];
+  await trades.saveTradeFromForm({ preventDefault() {} });
+  const partials = updates[0].payload.partial_closes;
+  assert.equal(partials.length, 2);
+  assert.deepEqual(partials.map(p => [p.volume, p.net_profit, p.close_time]), [[0.5, 250, '2026-09-01 14:00'], [0.5, 500, '2026-09-01 14:00']]);
+});
+
+test('merged-leg edit sends each leg its own P&L and volume, never the group totals', async () => {
+  const groupForm = { ...closedTradeForm, tfStatus: 'OPEN', tfVolume: '1.50', tfNetProfit: '80.00', tfClosePrice: '', tfCloseTime: '' };
+  const { trades, updates } = tradeFormHarness(groupForm);
+  trades.activeEditingId = 11;
+  trades.editingAllIds = [11, 12];
+  trades.editingLegSnapshot = trades.snapshotLegFields();
+  trades.collectDynamicTps = () => [
+    { index: 1, price: 1.11, volume: 1, net_profit: 50 },
+    { index: 2, price: 1.12, volume: 0.5, net_profit: 30 },
+  ];
+  await trades.saveTradeFromForm({ preventDefault() {} });
+  assert.deepEqual(updates.map(u => u.id), [11, 12]);
+  assert.deepEqual(updates.map(u => [u.payload.net_profit, u.payload.volume, u.payload.take_profit]), [[50, 1, 1.11], [30, 0.5, 1.12]]);
+  for (const { payload } of updates) {
+    assert.equal(payload.partial_closes, undefined);
+    assert.equal(payload.commission, undefined);
+    assert.equal(payload.open_time, undefined, 'unchanged per-leg fields keep each leg value');
+    assert.equal(payload.status, undefined);
+  }
+});

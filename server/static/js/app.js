@@ -308,22 +308,37 @@ const App = {
     return params;
   },
 
+  /**
+   * Local 'YYYY-MM-DDTHH:mm' (the datetime-local input format).
+   * toISOString() is UTC and shifts the date/time by the browser's offset,
+   * e.g. "Today" between 00:00 and 02:00 CEST would select yesterday.
+   */
+  toLocalDateTimeInput(date = new Date()) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  },
+
+  toLocalDateString(date = new Date()) {
+    return this.toLocalDateTimeInput(date).substring(0, 10);
+  },
+
   applyDatePreset(preset) {
     const now = new Date();
     this.dateFrom = null;
     this.dateTo = null;
 
     if (preset === 'today') {
-      this.dateFrom = now.toISOString().substring(0, 10);
+      this.dateFrom = this.toLocalDateString(now);
       this.dateTo = this.dateFrom;
     } else if (preset === 'week') {
-      const firstDay = new Date(now.setDate(now.getDate() - now.getDay()));
-      this.dateFrom = firstDay.toISOString().substring(0, 10);
+      // Monday-based, like the weekly review.
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
+      this.dateFrom = this.toLocalDateString(firstDay);
     } else if (preset === 'month') {
       this.dateFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
     } else if (preset === '30days') {
-      const past = new Date(Date.now() - 30 * 24 * 3600 * 1000);
-      this.dateFrom = past.toISOString().substring(0, 10);
+      const past = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
+      this.dateFrom = this.toLocalDateString(past);
     }
   },
 

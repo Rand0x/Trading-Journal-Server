@@ -59,6 +59,10 @@ const TradeDetail = {
     this.stopLiveUpdate();
     const modal = document.getElementById('tradeDetailModal');
     modal.classList.remove('active');
+    if (this.chartResizeObserver) {
+      this.chartResizeObserver.disconnect();
+      this.chartResizeObserver = null;
+    }
     if (this.chartInstance) {
       try {
         this.chartInstance.remove();
@@ -725,13 +729,15 @@ const TradeDetail = {
     // Fit content
     this.chartInstance.timeScale().fitContent();
 
-    // Handle responsive container resize
-    const resizeObserver = new ResizeObserver(entries => {
+    // Handle responsive container resize (one observer per open chart; it is
+    // re-created on every initChart call, so disconnect the previous one).
+    if (this.chartResizeObserver) this.chartResizeObserver.disconnect();
+    this.chartResizeObserver = new ResizeObserver(entries => {
       if (entries.length === 0 || !this.chartInstance) return;
       const { width, height } = entries[0].contentRect;
       this.chartInstance.applyOptions({ width, height: height || 450 });
     });
-    resizeObserver.observe(container);
+    this.chartResizeObserver.observe(container);
   },
 
   async switchTimeframe(tf) {
@@ -856,7 +862,7 @@ const TradeDetail = {
           const accounts = await API.getAccounts();
           const acc = accounts.find(a => a.id === trade.account_id);
           if (acc && acc.platform === 'cTrader' && acc.ctrader_account_id) {
-            await API.syncCtrader({ account_id: acc.id });
+            await API.syncCTrader({ account_id: acc.id });
           }
         } catch (syncErr) {
           console.warn('Active sync attempt skipped:', syncErr);
@@ -893,6 +899,10 @@ const TradeDetail = {
 
   startLiveUpdate() {
     this.stopLiveUpdate();
+    // Closed/cancelled replays end at the exit; appending today's forming
+    // candle would glue the current price onto a historical chart.
+    const status = this.currentTrade && this.currentTrade.status;
+    if (status !== 'OPEN' && status !== 'PENDING') return;
     const intervalMs = (this.currentTrade && this.currentTrade.status === 'OPEN') ? 2000 : 5000;
     this.liveUpdateTimer = setInterval(() => {
       this.updateLiveCandle();
