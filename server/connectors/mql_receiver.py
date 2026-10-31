@@ -396,8 +396,11 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                 match_tickets.append(str(trade.order_id))
 
             ticket_placeholders = ", ".join("?" for _ in match_tickets)
-            cursor.execute(f"SELECT id, ticket, order_id FROM trades WHERE account_id = ? AND (ticket IN ({ticket_placeholders}) OR order_id IN ({ticket_placeholders}));", (account_id, *match_tickets, *match_tickets))
+            cursor.execute(f"SELECT id, ticket, order_id, status FROM trades WHERE account_id = ? AND (ticket IN ({ticket_placeholders}) OR order_id IN ({ticket_placeholders}));", (account_id, *match_tickets, *match_tickets))
             existing = cursor.fetchone()
+            # The order filled and closed between two syncs: the matched row
+            # still holds the order's placement time, limit price and volume.
+            filled_between_syncs = bool(existing) and existing["status"] in ("PENDING", "CANCELLED")
 
             if not existing and (trade.order_id or trade.position_id):
                 alt_ids = [v for v in [str(trade.order_id or ""), str(trade.position_id or "")] if v]
@@ -490,6 +493,15 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
                     now_str,
                     existing["id"]
                 ))
+                if filled_between_syncs:
+                    cursor.execute("""
+                        UPDATE trades
+                        SET symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?
+                        WHERE id = ?;
+                    """, (
+                        trade.symbol.upper(), direction, trade.lots, trade.open_time,
+                        trade.open_price, existing["id"]
+                    ))
                 updated_trades += 1
             else:
                 calc_r = compute_r_multiple(
@@ -588,22 +600,39 @@ def process_mql_payload(api_key: str, payload: MQLSyncPayload) -> Dict[str, Any]
             cursor.execute("SELECT id FROM trades WHERE account_id = ? AND ticket = ?;", (account_id, trade.ticket))
             existing = cursor.fetchone()
 
-            if not existing and trade.order_id:
-                cursor.execute("""
+            link_ids = [str(trade.order_id)] if trade.order_id else []
+            if payload.source == "mql":
+                # The MT4/MT5 EAs send no order_id for open positions, but MT4
+                # keeps the order ticket after a fill and an MT5 position id
+                # equals the ticket of the order that opened it. Without this,
+                # the annotated PENDING row is swept to CANCELLED and the fill
+                # becomes a new trade without notes/playbook/screenshots.
+                for candidate in (trade.ticket, trade.position_id):
+                    if candidate and str(candidate) not in link_ids:
+                        link_ids.append(str(candidate))
+
+            if not existing and link_ids:
+                pending_tickets = []
+                for link_id in link_ids:
+                    pending_tickets.extend([
+                        link_id, f"ctrader-order-{link_id}", f"mt5-order-{link_id}", f"mt4-order-{link_id}"
+                    ])
+                cursor.execute(f"""
                     SELECT id FROM trades
                     WHERE account_id = ? AND status = 'PENDING'
-                      AND (order_id = ? OR ticket = ? OR ticket = ? OR ticket = ?);
-                """, (account_id, str(trade.order_id), f"ctrader-order-{trade.order_id}", f"mt5-order-{trade.order_id}", str(trade.order_id)))
+                      AND (order_id IN ({", ".join("?" for _ in link_ids)})
+                           OR ticket IN ({", ".join("?" for _ in pending_tickets)}));
+                """, (account_id, *link_ids, *pending_tickets))
                 pending_match = cursor.fetchone()
                 if pending_match:
                     cursor.execute("""
                         UPDATE trades
-                        SET ticket = ?, order_id = ?, symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?,
+                        SET ticket = ?, order_id = COALESCE(NULLIF(?, ''), order_id), symbol = ?, direction = ?, volume = ?, open_time = ?, open_price = ?,
                             stop_loss = COALESCE(?, stop_loss), take_profit = COALESCE(?, take_profit),
                             commission = ?, swap = ?, gross_profit = ?, net_profit = ?, status = 'OPEN', updated_at = ?
                         WHERE id = ?;
                     """, (
-                        trade.ticket, str(trade.order_id), trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_price,
+                        trade.ticket, str(trade.order_id or ""), trade.symbol.upper(), direction, trade.lots, trade.open_time, trade.open_price,
                         clean_sl, clean_tp, trade.commission or 0.0, trade.swap or 0.0,
                         (trade.profit or 0.0) - (trade.commission or 0.0) - (trade.swap or 0.0),
                         trade.profit or 0.0, now_str, pending_match["id"]

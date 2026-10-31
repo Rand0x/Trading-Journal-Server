@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Query, Response
-from server.database import get_connection
+from server.database import add_date_range_filter, get_connection
 from server.models import (
     TradeCreate, TradeUpdate, TradeResponse, TradePartialCloseCreate,
     TradeScreenshotCreate
@@ -294,19 +294,19 @@ def get_trades(
         if mistake_id:
             where_clauses.append("t.mistake_id = ?")
             params.append(mistake_id)
-        if date_from:
-            where_clauses.append("t.open_time >= ?")
-            params.append(date_from)
-        if date_to:
-            where_clauses.append("t.open_time <= ?")
-            params.append(date_to + " 23:59:59")
+        add_date_range_filter(where_clauses, params, "t.open_time", date_from, date_to)
         if is_missed is not None:
             where_clauses.append("t.is_missed = ?")
             params.append(1 if is_missed else 0)
         if search:
-            where_clauses.append("(t.symbol LIKE ? OR t.notes LIKE ? OR t.tags LIKE ? OR t.ticket LIKE ?)")
-            search_param = f"%{search}%"
-            params.extend([search_param, search_param, search_param, search_param])
+            # open_time/close_time make a "YYYY-MM-DD" search (used by the
+            # dashboard calendar day click) find that day's trades.
+            where_clauses.append(
+                "(t.symbol LIKE ? OR t.notes LIKE ? OR t.tags LIKE ? OR t.ticket LIKE ?"
+                " OR t.open_time LIKE ? OR t.close_time LIKE ?)"
+            )
+            search_param = f"%{search.strip()}%"
+            params.extend([search_param] * 6)
         if signals:
             where_clauses.append("(t.signals LIKE ? OR t.tags LIKE ?)")
             sig_param = f"%{signals.strip()}%"
@@ -518,6 +518,10 @@ def create_trade(trade: TradeCreate):
             trade.tp_targets or "",
             now_str, now_str
         ))
+        # UNIQUE(account_id, ticket) uses ON CONFLICT IGNORE, so a duplicate
+        # ticket inserts nothing and lastrowid would point at a stale row.
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=409, detail="A trade with this ticket already exists for this account")
         trade_id = cursor.lastrowid
 
         for index, partial in enumerate(partial_closes, start=1):
@@ -562,7 +566,9 @@ def update_trade(trade_id: int, trade: TradeUpdate):
             cp_val = changes.get("close_price", existing["close_price"])
             np_val = changes.get("net_profit", existing["net_profit"])
             ir_val = changes.get("initial_risk", existing["initial_risk"])
-            if op_val is not None and sl_val is not None:
+            # initial_risk alone is enough (R = net_profit / initial_risk);
+            # a stop loss is only required for the price-distance fallback.
+            if (op_val is not None and sl_val is not None) or (ir_val is not None and ir_val > 0):
                 recomputed_r = compute_r_multiple(dir_val, op_val, sl_val, cp_val, net_profit=np_val, initial_risk=ir_val)
                 if recomputed_r is not None:
                     changes["r_multiple"] = recomputed_r

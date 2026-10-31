@@ -47,7 +47,9 @@ class TestStatementParser(unittest.TestCase):
         self.assertEqual(trades[0]["ticket"], "mt4_500123")
         self.assertEqual(trades[0]["symbol"], "eurusd")
         self.assertEqual(trades[0]["direction"], "BUY")
-        self.assertEqual(trades[0]["net_profit"], 350.00)
+        # MT4 "Profit" is gross; net includes the -7.00 commission.
+        self.assertEqual(trades[0]["gross_profit"], 350.00)
+        self.assertEqual(trades[0]["net_profit"], 343.00)
 
 if __name__ == "__main__":
     unittest.main()

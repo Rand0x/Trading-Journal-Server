@@ -6,7 +6,7 @@ import logging
 import secrets
 from contextlib import contextmanager
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,37 @@ def get_connection():
         yield conn
     finally:
         conn.close()
+
+
+def add_date_range_filter(
+    where_clauses: List[str],
+    params: List[Any],
+    column: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> None:
+    """Append an inclusive calendar-day range filter on a TEXT timestamp column.
+
+    Timestamps are stored in mixed formats ("2026-05-10 15:30:00" from
+    MetaTrader/manual entry, "2026-05-10T15:30:00.0000000Z" from cTrader).
+    Comparing against "<date_to> 23:59:59" drops every "T" timestamp on the
+    last day because "T" sorts after " ". An exclusive upper bound at the next
+    day's date works for both formats.
+    """
+    if date_from:
+        where_clauses.append(f"{column} >= ?")
+        params.append(date_from.strip())
+    if date_to:
+        value = date_to.strip()
+        try:
+            next_day = (date.fromisoformat(value) + timedelta(days=1)).isoformat()
+        except ValueError:
+            # Not a plain YYYY-MM-DD value (e.g. includes a time): compare as given.
+            where_clauses.append(f"{column} <= ?")
+            params.append(value)
+            return
+        where_clauses.append(f"{column} < ?")
+        params.append(next_day)
 
 def init_db():
     """Initialize database tables, indexes, and default seeds."""

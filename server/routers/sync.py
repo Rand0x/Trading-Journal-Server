@@ -76,10 +76,11 @@ def trigger_ctrader_sync(req: CTraderSyncRequest):
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE accounts
-                SET ctrader_client_id = COALESCE(?, ctrader_client_id),
-                    ctrader_client_secret = COALESCE(?, ctrader_client_secret),
-                    ctrader_access_token = COALESCE(?, ctrader_access_token),
-                    ctrader_account_id = COALESCE(?, ctrader_account_id),
+                -- Blank form fields mean "keep the stored value", not "erase it".
+                SET ctrader_client_id = COALESCE(NULLIF(?, ''), ctrader_client_id),
+                    ctrader_client_secret = COALESCE(NULLIF(?, ''), ctrader_client_secret),
+                    ctrader_access_token = COALESCE(NULLIF(?, ''), ctrader_access_token),
+                    ctrader_account_id = COALESCE(NULLIF(?, ''), ctrader_account_id),
                     ctrader_is_live = ?
                 WHERE id = ?;
             """, (
@@ -124,7 +125,9 @@ async def import_statement_file(file: UploadFile = File(...), account_id: int = 
         content_bytes = await file.read()
         # Decode as utf-8 or latin-1
         try:
-            content_str = content_bytes.decode("utf-8")
+            # utf-8-sig strips a leading BOM (Excel/cTrader CSV exports) that
+            # would otherwise end up in the first header name.
+            content_str = content_bytes.decode("utf-8-sig")
         except UnicodeDecodeError:
             content_str = content_bytes.decode("latin-1")
 
@@ -163,7 +166,10 @@ def _extract_candle_rows(payload: Any, default_symbol: str = "", default_tf: str
             rows.extend(_extract_candle_rows(b, default_symbol, default_tf))
 
     sym = (data.get("symbol") or default_symbol or "").strip().upper()
-    batch_tf = (data.get("timeframe") or default_tf or "").strip().upper()
+    # Only an explicit batch timeframe overrides the per-candle value. Falling
+    # back to default_tf here would relabel live M1/M5/H1/H4/D1 bars (which
+    # carry their own "timeframe" but no top-level one) as M15.
+    batch_tf = (data.get("timeframe") or "").strip().upper()
 
     candles = data.get("candles")
     if isinstance(candles, list):
@@ -175,7 +181,7 @@ def _extract_candle_rows(payload: Any, default_symbol: str = "", default_tf: str
             else:
                 continue
             c_sym = (c_dict.get("symbol") or sym).strip().upper()
-            c_tf = (batch_tf or c_dict.get("timeframe") or "M15").strip().upper()
+            c_tf = (batch_tf or c_dict.get("timeframe") or default_tf or "M15").strip().upper()
             c_time = int(c_dict.get("time", c_dict.get("timestamp", 0)))
             if c_sym and c_time > 0 and "open" in c_dict and "close" in c_dict:
                 rows.append((
@@ -192,7 +198,7 @@ def _extract_candle_rows(payload: Any, default_symbol: str = "", default_tf: str
         # Single candle object directly passed
         c_time = int(data.get("time", data.get("timestamp", 0)))
         if c_time > 0:
-            c_tf = (batch_tf or data.get("timeframe") or "M15").strip().upper()
+            c_tf = (batch_tf or default_tf or "M15").strip().upper()
             rows.append((
                 sym,
                 c_tf,

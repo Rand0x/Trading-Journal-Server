@@ -5,7 +5,7 @@ Serves executive KPIs, TradeZella-style Calendar Heatmap, and Equity Curve.
 
 from typing import Optional
 from fastapi import APIRouter, Query
-from server.database import get_connection
+from server.database import add_date_range_filter, get_connection
 from server.analytics import calculate_trade_metrics, get_calendar_heatmap, get_equity_curve
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
@@ -29,12 +29,7 @@ def get_dashboard_summary(
         if symbol:
             where_clauses.append("t.symbol = ?")
             params.append(symbol.upper())
-        if date_from:
-            where_clauses.append("t.open_time >= ?")
-            params.append(date_from)
-        if date_to:
-            where_clauses.append("t.open_time <= ?")
-            params.append(date_to + " 23:59:59")
+        add_date_range_filter(where_clauses, params, "t.open_time", date_from, date_to)
 
         where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 

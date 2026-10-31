@@ -89,6 +89,8 @@ class AccountResponse(BaseModel):
     auto_sync_enabled: Optional[bool] = True
     sync_interval_minutes: Optional[int] = 5
     ctrader_is_live: Optional[bool] = False
+    # Not a secret; lets the UI know whether Open API sync is configured.
+    ctrader_account_id: Optional[str] = ""
     api_key: Optional[str] = None
     last_synced_at: Optional[str] = None
     created_at: str

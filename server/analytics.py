@@ -211,8 +211,13 @@ def calculate_trade_metrics(trades: List[Dict[str, Any]], initial_balance: float
         dd_amount = peak_balance - running_balance
         if dd_amount > max_dd_amount:
             max_dd_amount = dd_amount
-            if peak_balance > 0:
-                max_dd_pct = (dd_amount / peak_balance) * 100.0
+        # The deepest percentage drawdown can happen at a different point than
+        # the largest absolute one (e.g. after the balance has grown), so
+        # track both independently.
+        if peak_balance > 0:
+            dd_pct = (dd_amount / peak_balance) * 100.0
+            if dd_pct > max_dd_pct:
+                max_dd_pct = dd_pct
 
         # Streak tracking
         if pnl > 0.001:
@@ -311,7 +316,10 @@ def get_calendar_heatmap(trades: List[Dict[str, Any]], initial_balance: float = 
     """
     days = {}
     valid_trades = [t for t in trades if not t.get("is_missed") and t.get("status") not in ("CANCELLED", "PENDING")]
-    for t in valid_trades:
+    # Only realized results belong in the calendar; floating P&L of open
+    # positions would otherwise be booked as a win/loss on the open date.
+    closed_trades = [t for t in valid_trades if t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or t.get("close_time")]
+    for t in closed_trades:
         close_time = t.get("close_time") or t.get("open_time")
         if not close_time:
             continue
@@ -588,8 +596,15 @@ def get_performance_by_setup(trades: List[Dict[str, Any]], playbooks: Dict[int, 
 def get_cost_of_mistakes(trades: List[Dict[str, Any]], mistakes_map: Dict[int, str]) -> List[Dict[str, Any]]:
     """Calculates exactly how much money each mistake has cost the trader."""
     stats = {}
+    # Match /api/mistakes: only realized, non-missed trades have a cost.
+    closed_trades = [
+        t for t in trades
+        if not t.get("is_missed")
+        and t.get("status") not in ("CANCELLED", "PENDING")
+        and (t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or t.get("close_time"))
+    ]
 
-    for t in trades:
+    for t in closed_trades:
         mistake_id = t.get("mistake_id")
         if not mistake_id:
             continue
@@ -915,8 +930,12 @@ def get_weekly_review(trades: List[Dict[str, Any]], week_offset: int = 0) -> Dic
             closed_week_trades,
             key=lambda x: float(x.get("net_profit") or 0.0)
         )
-        worst_trade = sorted_by_perf[0]
-        best_trade = sorted_by_perf[-1]
+        # Only a winner can be the best trade and only a loser the worst one;
+        # otherwise a losing week shows its smallest loss as "Best Trade".
+        if float(sorted_by_perf[0].get("net_profit") or 0.0) < -0.001:
+            worst_trade = sorted_by_perf[0]
+        if float(sorted_by_perf[-1].get("net_profit") or 0.0) > 0.001:
+            best_trade = sorted_by_perf[-1]
 
     sorted_chrono = sorted(closed_week_trades, key=lambda x: x.get("close_time") or x.get("open_time") or "")
     max_w = 0

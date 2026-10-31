@@ -6,7 +6,7 @@ Take-Profit scale-outs, Signal Combinations, Psychology, and Weekly Review.
 
 from typing import Optional
 from fastapi import APIRouter, Query
-from server.database import get_connection
+from server.database import add_date_range_filter, get_connection
 from server.analytics import (
     get_performance_by_day_of_week,
     get_performance_by_hour,
@@ -31,12 +31,7 @@ def _fetch_filtered_trades(account_id: Optional[int], date_from: Optional[str], 
         if account_id:
             where_clauses.append("t.account_id = ?")
             params.append(account_id)
-        if date_from:
-            where_clauses.append("t.open_time >= ?")
-            params.append(date_from)
-        if date_to:
-            where_clauses.append("t.open_time <= ?")
-            params.append(date_to + " 23:59:59")
+        add_date_range_filter(where_clauses, params, "t.open_time", date_from, date_to)
 
         where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         cursor.execute(f"""

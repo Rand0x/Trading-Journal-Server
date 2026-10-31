@@ -282,7 +282,9 @@ class CTraderConnector:
                     float(deal.get("executionTimestamp", 0)) / 1000,
                     tz=timezone.utc,
                 ).isoformat()
-                direction = "BUY" if int(deal.get("tradeSide", 2)) == 1 else "SELL"
+                # A closing deal trades against the position: a long position
+                # is closed by a SELL deal (tradeSide 2) and vice versa.
+                direction = "SELL" if int(deal.get("tradeSide", 2)) == 1 else "BUY"
                 volume = float(deal.get("filledVolume", 0)) / 100.0
                 close_price = float(deal.get("executionPrice", 0))
                 open_price = float(close_detail.get("entryPrice", close_price))

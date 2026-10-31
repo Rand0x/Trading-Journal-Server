@@ -4,6 +4,7 @@ Parses HTML reports and CSV exports to import full trade histories effortlessly.
 """
 
 import csv
+import hashlib
 import io
 import re
 import logging
@@ -29,6 +30,28 @@ def _detect_statement_currency(file_content: str, filename: str) -> Optional[str
         return match.group(1).upper()
 
     return None
+
+
+def _row_ticket(prefix: str, values, seen: Dict[str, int]) -> str:
+    """Build a stable ticket from a statement row's raw content.
+
+    Positional tickets ("tz_1", "csv_1", ...) collide between different files
+    imported into the same account, and UNIQUE(account_id, ticket) silently
+    drops the second file's rows. A content hash keeps re-imports of the same
+    file idempotent while distinct trades get distinct tickets. Identical rows
+    inside one file are told apart by their occurrence number.
+    """
+    raw = "\x1f".join("" if v is None else str(v).strip() for v in values)
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    occurrence = seen.get(digest, 0)
+    seen[digest] = occurrence + 1
+    return f"{prefix}_{digest}" if occurrence == 0 else f"{prefix}_{digest}_{occurrence}"
+
+
+def _to_float(value: Any) -> float:
+    """Parse statement numbers such as "1 250.00", "1,250.00" or "$-300"."""
+    cleaned = str(value or "").replace("\xa0", "").replace(" ", "").replace(",", "").replace("$", "").strip()
+    return float(cleaned) if cleaned else 0.0
 
 def parse_and_import_statement(file_content: str, filename: str, account_id: int) -> Dict[str, Any]:
     """
@@ -116,8 +139,14 @@ def parse_and_import_statement(file_content: str, filename: str, account_id: int
                     now_str,
                     now_str
                 ))
-                imported += 1
+                # The UNIQUE(account_id, ticket) constraint uses ON CONFLICT
+                # IGNORE, so duplicates do not raise; they insert zero rows.
+                if cursor.rowcount == 0:
+                    skipped += 1
+                else:
+                    imported += 1
             except Exception as e:
+                logger.warning("Skipping statement row %s: %s", ticket, e)
                 skipped += 1
 
         conn.commit()
@@ -134,10 +163,17 @@ def _parse_mt4_html(html: str) -> List[Dict[str, Any]]:
     trades = []
     # Match table rows in Closed Transactions
     # <tr><td>Ticket</td><td>Open Time</td><td>Type</td><td>Size</td><td>Item</td><td>Price</td><td>S/L</td><td>T/P</td><td>Close Time</td><td>Price</td><td>Commission</td><td>Taxes</td><td>Swap</td><td>Profit</td></tr>
-    row_pattern = re.compile(r'<tr[^>]*>\s*<td[^>]*>(\d+)</td>\s*<td[^>]*>([\d\.\s:]+)</td>\s*<td[^>]*>(buy|sell)</td>\s*<td[^>]*>([\d\.]+)</td>\s*<td[^>]*>([\w\.\#]+)</td>\s*<td[^>]*>([\d\.]+)</td>\s*<td[^>]*>([\d\.]+)</td>\s*<td[^>]*>([\d\.]+)</td>\s*<td[^>]*>([\d\.\s:]+)</td>\s*<td[^>]*>([\d\.]+)</td>\s*<td[^>]*>(-?[\d\.]+)</td>\s*<td[^>]*>(-?[\d\.]+)</td>\s*<td[^>]*>(-?[\d\.]+)</td>\s*<td[^>]*>(-?[\d\.]+)</td>', re.IGNORECASE)
+    # Money columns may use space thousand separators ("1 250.00").
+    money = r'(-?[\d\.][\d\. ]*)'
+    row_pattern = re.compile(r'<tr[^>]*>\s*<td[^>]*>(\d+)</td>\s*<td[^>]*>([\d\.\s:]+)</td>\s*<td[^>]*>(buy|sell)</td>\s*<td[^>]*>([\d\.]+)</td>\s*<td[^>]*>([\w\.\#]+)</td>\s*<td[^>]*>([\d\.]+)</td>\s*<td[^>]*>([\d\.]+)</td>\s*<td[^>]*>([\d\.]+)</td>\s*<td[^>]*>([\d\.\s:]+)</td>\s*<td[^>]*>([\d\.]+)</td>\s*<td[^>]*>' + money + r'</td>\s*<td[^>]*>' + money + r'</td>\s*<td[^>]*>' + money + r'</td>\s*<td[^>]*>' + money + r'</td>', re.IGNORECASE)
 
     for m in row_pattern.finditer(html):
         ticket, open_t, t_type, size, item, open_p, sl, tp, close_t, close_p, comm, taxes, swap, profit = m.groups()
+        # MT4's "Profit" column is the gross trade result; commission, taxes
+        # and swap are separate (usually negative) columns.
+        commission = _to_float(comm) + _to_float(taxes)
+        swap_val = _to_float(swap)
+        gross = _to_float(profit)
         trades.append({
             "ticket": f"mt4_{ticket}",
             "symbol": item.strip(),
@@ -149,10 +185,10 @@ def _parse_mt4_html(html: str) -> List[Dict[str, Any]]:
             "close_price": float(close_p),
             "stop_loss": float(sl) if float(sl) > 0 else None,
             "take_profit": float(tp) if float(tp) > 0 else None,
-            "commission": float(comm),
-            "swap": float(swap),
-            "net_profit": float(profit),
-            "gross_profit": float(profit) - float(comm) - float(swap)
+            "commission": commission,
+            "swap": swap_val,
+            "net_profit": gross + commission + swap_val,
+            "gross_profit": gross
         })
     return trades
 
@@ -183,6 +219,7 @@ def _parse_mt5_html(html: str) -> List[Dict[str, Any]]:
 def _parse_generic_html(html: str) -> List[Dict[str, Any]]:
     """Fallback HTML table row scanner."""
     trades = []
+    seen_tickets: Dict[str, int] = {}
     # Find all <tr> tags and extract text
     rows = re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL | re.IGNORECASE)
     for r in rows:
@@ -193,7 +230,7 @@ def _parse_generic_html(html: str) -> List[Dict[str, Any]]:
                 if c.lower() in ("buy", "sell"):
                     try:
                         trades.append({
-                            "ticket": f"row_{len(trades)+1}",
+                            "ticket": _row_ticket("row", cols, seen_tickets),
                             "direction": c.upper(),
                             "symbol": cols[i+2] if i+2 < len(cols) else "EURUSD",
                             "volume": float(cols[i+1]) if i+1 < len(cols) else 1.0,
@@ -217,8 +254,10 @@ def _parse_csv(content: str) -> List[Dict[str, Any]]:
         return []
 
     headers = {h.strip().lower().replace(" ", "_").replace("/", "_").replace("&", ""): h for h in reader.fieldnames}
+    seen_tickets: Dict[str, int] = {}
 
     for row in reader:
+        raw_values = [row.get(h) for h in reader.fieldnames]
         # Standardize cTrader
         if "deal_id" in headers or "opening_direction" in headers:
             sym = row.get(headers.get("symbol", ""))
@@ -231,7 +270,8 @@ def _parse_csv(content: str) -> List[Dict[str, Any]]:
             net_p = row.get(headers.get("net_usd", row.get(headers.get("net_profit", "0.0"))), "0.0")
             comm = row.get(headers.get("commission", "0.0"), "0.0")
             swap = row.get(headers.get("swap", "0.0"), "0.0")
-            ticket = row.get(headers.get("deal_id", f"ctrader_{len(trades)+1}"))
+            ticket = (row.get(headers["deal_id"]) or "").strip() if "deal_id" in headers else ""
+            ticket = ticket or _row_ticket("ctrader", raw_values, seen_tickets)
 
             trades.append({
                 "ticket": ticket,
@@ -261,7 +301,7 @@ def _parse_csv(content: str) -> List[Dict[str, Any]]:
 
             clean_pnl = pnl.replace("$", "").replace(",", "").strip()
             trades.append({
-                "ticket": f"tz_{len(trades)+1}",
+                "ticket": _row_ticket("tz", raw_values, seen_tickets),
                 "symbol": sym or "UNKNOWN",
                 "direction": "BUY" if "buy" in direction.lower() or "long" in direction.lower() else "SELL",
                 "volume": float(vol.replace(",", "") or 1.0),
@@ -282,7 +322,7 @@ def _parse_csv(content: str) -> List[Dict[str, Any]]:
                     pnl_key = next((k for k in ("profit", "net_profit", "pnl", "net_pnl") if k in headers), None)
                     pnl = float(row.get(headers[pnl_key], "0.0").replace("$", "").replace(",", "") or 0.0) if pnl_key else 0.0
                     trades.append({
-                        "ticket": f"csv_{len(trades)+1}",
+                        "ticket": _row_ticket("csv", raw_values, seen_tickets),
                         "symbol": sym,
                         "direction": "BUY",
                         "volume": 1.0,
