@@ -213,3 +213,35 @@ test('merged-leg edit sends each leg its own P&L and volume, never the group tot
     assert.equal(payload.status, undefined);
   }
 });
+
+test('overview chart: hovering picks the nearest account line, or none when far away', () => {
+  const dashboard = harness().load('dashboard.js', 'Dashboard');
+  const series = [
+    { key: 'acc-1', coords: [{ x: 0, y: 100 }, { x: 100, y: 50 }] },
+    { key: 'acc-2', coords: [{ x: 0, y: 100 }, { x: 100, y: 10 }] },
+  ];
+  assert.equal(dashboard.nearestSeriesKey(series, 50, 76, 14), 'acc-1');
+  assert.equal(dashboard.nearestSeriesKey(series, 100, 12, 14), 'acc-2');
+  assert.equal(dashboard.nearestSeriesKey(series, 50, 200, 14), null);
+});
+
+test('overview chart: accounts share one time axis and hold their last return to the right edge', () => {
+  const dashboard = harness().load('dashboard.js', 'Dashboard');
+  const t = s => dashboard.parseCurveTime(s);
+  const series = [
+    { key: 'acc-1', points: [{ t: t('2026-09-01 10:00'), pct: 0 }, { t: t('2026-09-03 10:00'), pct: 10 }] },
+    { key: 'acc-2', points: [{ t: t('2026-09-02 10:00'), pct: 0 }, { t: t('2026-09-05 10:00'), pct: 20 }] },
+  ];
+  const layout = dashboard.layoutReturnChart(series, 400, 280);
+  const right = layout.padding.left + layout.chartW;
+  // acc-2 starts later on the shared axis, both lines end at the right edge.
+  assert.ok(series[1].coords[0].x > series[0].coords[0].x);
+  assert.equal(series[0].coords.at(-1).x, right);
+  assert.equal(series[0].coords.at(-1).y, series[0].coords.at(-2).y);
+  assert.equal(series[1].coords.at(-1).x, right);
+  // Higher return is drawn higher up.
+  assert.ok(series[1].coords.at(-1).y < series[0].coords.at(-1).y);
+  // Tooltip value is the last realized step at or before the hovered time.
+  assert.equal(dashboard.curvePointAt(series[0].points, t('2026-09-02 12:00')).pct, 0);
+  assert.equal(dashboard.curvePointAt(series[0].points, t('2026-09-04 00:00')).pct, 10);
+});

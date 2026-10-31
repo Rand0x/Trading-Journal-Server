@@ -6,7 +6,9 @@ Serves executive KPIs, TradeZella-style Calendar Heatmap, and Equity Curve.
 from typing import Optional
 from fastapi import APIRouter, Query
 from server.database import add_date_range_filter, get_connection
-from server.analytics import calculate_trade_metrics, get_calendar_heatmap, get_equity_curve
+from server.analytics import (
+    calculate_trade_metrics, get_calendar_heatmap, get_equity_curve, get_account_return_curves
+)
 
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
 
@@ -38,6 +40,7 @@ def get_dashboard_summary(
         current_balance = None
         equity = None
         currency = "USD"
+        overview_accounts = []
         if account_id:
             cursor.execute("SELECT initial_balance, current_balance, equity, currency FROM accounts WHERE id = ?;", (account_id,))
             acc = cursor.fetchone()
@@ -57,6 +60,8 @@ def get_dashboard_summary(
                 equity = float(row[2])
             if row and row[3] == 1 and row[4]:
                 currency = row[4]
+            cursor.execute("SELECT id, name, currency, initial_balance FROM accounts ORDER BY id ASC;")
+            overview_accounts = [dict(r) for r in cursor.fetchall()]
 
         # Fetch trades
         cursor.execute(f"""
@@ -71,11 +76,17 @@ def get_dashboard_summary(
     metrics = calculate_trade_metrics(trades, initial_balance)
     calendar = get_calendar_heatmap(trades, initial_balance)
     equity_curve = get_equity_curve(trades, initial_balance)
+    # With several accounts, summed amounts mix currencies and let the largest
+    # account dominate; the overview chart shows one % curve per account.
+    account_curves = (
+        get_account_return_curves(trades, overview_accounts) if len(overview_accounts) > 1 else None
+    )
 
     return {
         "metrics": metrics,
         "calendar": calendar,
         "equity_curve": equity_curve,
+        "account_curves": account_curves,
         "initial_balance": initial_balance,
         "current_balance": current_balance,
         "equity": equity,

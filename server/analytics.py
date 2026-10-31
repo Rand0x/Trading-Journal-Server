@@ -414,6 +414,71 @@ def get_equity_curve(trades: List[Dict[str, Any]], initial_balance: float = 1000
 
     return points
 
+def get_account_return_curves(trades: List[Dict[str, Any]], accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Currency-neutral equity curves for the multi-account overview.
+
+    Each account gets its own curve in percent of its own starting balance
+    (10,000 GBP -> 11,000 GBP is +10 %), so accounts of different size and
+    currency can be compared on one chart. The "average" curve weights every
+    account equally: at each point in time it is the mean of the accounts'
+    cumulative returns (an account counts as 0 % before its first trade).
+    Accounts without closed trades in the selection, or without a starting
+    balance, are left out of both.
+    """
+    curves = []
+    for account in accounts:
+        initial_balance = float(account.get("initial_balance") or 0.0)
+        if initial_balance <= 0:
+            continue
+        account_trades = [t for t in trades if t.get("account_id") == account.get("id")]
+        points = get_equity_curve(account_trades, initial_balance)
+        if not points:
+            continue
+        pct_points = [
+            {
+                "time": p["time"],
+                "pct": round(p["cumulative_pnl"] / initial_balance * 100.0, 2),
+                "cumulative_pnl": p["cumulative_pnl"],
+                "trade_pnl": p["trade_pnl"],
+                "trade_id": p["trade_id"],
+                "symbol": p["symbol"],
+            }
+            for p in points
+        ]
+        curves.append({
+            "account_id": account.get("id"),
+            "name": account.get("name") or f"Account {account.get('id')}",
+            "currency": (account.get("currency") or "USD").upper(),
+            "initial_balance": initial_balance,
+            "net_profit": pct_points[-1]["cumulative_pnl"],
+            "return_pct": pct_points[-1]["pct"],
+            "trades": len(pct_points) - 1,
+            "points": pct_points,
+        })
+
+    average = []
+    if curves:
+        events = sorted(
+            (p["time"], index, p["pct"])
+            for index, curve in enumerate(curves)
+            for p in curve["points"]
+        )
+        current = [0.0] * len(curves)
+        for time_str, index, pct in events:
+            current[index] = pct
+            value = round(sum(current) / len(curves), 2)
+            if average and average[-1]["time"] == time_str:
+                average[-1]["pct"] = value
+            else:
+                average.append({"time": time_str, "pct": value})
+
+    return {
+        "accounts": curves,
+        "average": average,
+        "average_return_pct": average[-1]["pct"] if average else 0.0,
+    }
+
 def get_performance_by_day_of_week(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Performance breakdown by Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday."""
     day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
