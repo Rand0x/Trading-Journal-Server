@@ -409,6 +409,7 @@ void SyncToServer()
    // Open positions
    string openTradesJson = "[";
    int totalPositions = PositionsTotal();
+   int openAdded = 0; // count written items: a skipped index 0 must not produce "[,{...}]"
    for(int p = 0; p < totalPositions; p++)
    {
       ulong posTicket = PositionGetTicket(p);
@@ -421,7 +422,7 @@ void SyncToServer()
       double pOpenPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double pSL = PositionGetDouble(POSITION_SL);
       double pTP = PositionGetDouble(POSITION_TP);
-      double pProfit = PositionGetDouble(POSITION_PROFIT);
+      double pProfit = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP); // net floating P&L incl. swap
       datetime pTime = (datetime)PositionGetInteger(POSITION_TIME);
 
       string openCandlesJson = "[]";
@@ -431,7 +432,7 @@ void SyncToServer()
          openCandlesJson = GetCandlesJson(pSymbol, openChartTf, pTime, TimeCurrent(), InpCandleBars);
       }
 
-      if(p > 0) openTradesJson += ",";
+      if(openAdded > 0) openTradesJson += ",";
       openTradesJson += StringFormat(
          "{\"ticket\":\"%s\",\"position_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.8f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"profit\":%.2f,\"candles\":%s}",
          IntegerToString(primaryTicket),
@@ -446,6 +447,7 @@ void SyncToServer()
          pProfit,
          openCandlesJson
       );
+      openAdded++;
    }
    openTradesJson += "]";
 
@@ -480,7 +482,7 @@ void SyncToServer()
 
       if(addedPending > 0) pendingOrdersJson += ",";
       pendingOrdersJson += StringFormat(
-         "{\"ticket\":\"mt5-order-%s\",\"order_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"comment\":\"%s\",\"status\":\"PENDING\",\"candles\":%s}",
+         "{\"ticket\":\"mt5-order-%s\",\"order_id\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.8f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"comment\":\"%s\",\"status\":\"PENDING\",\"candles\":%s}",
          IntegerToString(oTicket),
          IntegerToString(oTicket),
          oSymbol,
@@ -639,7 +641,7 @@ void SendLiveCandles()
       ulong posId = PositionGetInteger(POSITION_IDENTIFIER);
       ulong primaryTicket = (posId > 0) ? posId : posTicket;
       string pSymbol = PositionGetString(POSITION_SYMBOL);
-      double pProfit = PositionGetDouble(POSITION_PROFIT);
+      double pProfit = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP); // net floating P&L incl. swap
       double pPriceCurrent = PositionGetDouble(POSITION_PRICE_CURRENT);
       double pSL = PositionGetDouble(POSITION_SL);
       double pTP = PositionGetDouble(POSITION_TP);

@@ -337,7 +337,7 @@ void SyncToServer()
       double tp = OrderTakeProfit();
       double comm = OrderCommission();
       double swap = OrderSwap();
-      double profit = OrderProfit();
+      double profit = OrderProfit() + OrderCommission() + OrderSwap(); // server stores "profit" as net P&L
       datetime openTime = OrderOpenTime();
       datetime closeTime = OrderCloseTime();
       string comment = OrderComment();
@@ -351,7 +351,7 @@ void SyncToServer()
 
       if(addedTrades > 0) closedTradesJson += ",";
       closedTradesJson += StringFormat(
-         "{\"ticket\":\"%d\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"close_time\":\"%s\",\"open_price\":%.5f,\"close_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"commission\":%.2f,\"swap\":%.2f,\"profit\":%.2f,\"comment\":\"%s\",\"candles\":%s}",
+         "{\"ticket\":\"%d\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.8f,\"open_time\":\"%s\",\"close_time\":\"%s\",\"open_price\":%.5f,\"close_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"commission\":%.2f,\"swap\":%.2f,\"profit\":%.2f,\"comment\":\"%s\",\"candles\":%s}",
          ticket,
          symbol,
          orderType,
@@ -392,7 +392,7 @@ void SyncToServer()
 
       if(openAdded > 0) openTradesJson += ",";
       openTradesJson += StringFormat(
-         "{\"ticket\":\"%d\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"profit\":%.2f,\"candles\":%s}",
+         "{\"ticket\":\"%d\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.8f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"profit\":%.2f,\"candles\":%s}",
          OrderTicket(),
          OrderSymbol(),
          oType,
@@ -401,7 +401,7 @@ void SyncToServer()
          OrderOpenPrice(),
          OrderStopLoss(),
          OrderTakeProfit(),
-         OrderProfit(),
+         OrderProfit() + OrderCommission() + OrderSwap(),
          openCandlesJson
       );
       openAdded++;
@@ -429,7 +429,7 @@ void SyncToServer()
 
       if(addedPending > 0) pendingOrdersJson += ",";
       pendingOrdersJson += StringFormat(
-         "{\"ticket\":\"mt4-order-%d\",\"order_id\":\"%d\",\"order_type\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.2f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"comment\":\"%s\",\"status\":\"PENDING\",\"candles\":%s}",
+         "{\"ticket\":\"mt4-order-%d\",\"order_id\":\"%d\",\"order_type\":\"%s\",\"symbol\":\"%s\",\"type\":%d,\"lots\":%.8f,\"open_time\":\"%s\",\"open_price\":%.5f,\"stop_loss\":%.5f,\"take_profit\":%.5f,\"comment\":\"%s\",\"status\":\"PENDING\",\"candles\":%s}",
          OrderTicket(),
          OrderTicket(),
          pOrderType,
@@ -568,7 +568,7 @@ void SendLiveCandles()
 
       int ticket = OrderTicket();
       string oSym = OrderSymbol();
-      double profit = OrderProfit();
+      double profit = OrderProfit() + OrderCommission() + OrderSwap(); // server stores "profit" as net P&L
       double curPrice = OrderClosePrice();
       double sl = OrderStopLoss();
       double tp = OrderTakeProfit();
