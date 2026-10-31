@@ -1,0 +1,32 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "journal-demo",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "server.main"
+      ],
+      "port": 8000,
+      "env": {
+        "DB_DIR": "C:/Users/CHRIST~1/AppData/Local/Temp/claude/C--Users-Christoph-Documents-Gemini-Trading-Journal-Server-Raspi/24330c5a-9776-45ba-944a-28b96e56a247/scratchpad/demo"
+      }
+    },
+    {
+      "name": "journal-pi-copy",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "server.main:app",
+        "--port",
+        "8001"
+      ],
+      "port": 8001,
+      "env": {
+        "DB_DIR": "C:/Users/CHRIST~1/AppData/Local/Temp/claude/C--Users-Christoph-Documents-Gemini-Trading-Journal-Server-Raspi/24330c5a-9776-45ba-944a-28b96e56a247/scratchpad/pi_live"
+      }
+    }
+  ]
+}
