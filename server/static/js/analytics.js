@@ -10,6 +10,10 @@ const Analytics = {
       const data = await API.getAnalyticsOverview(params);
       const cur = data.currency || App.getActiveCurrency();
       this.currentCurrency = cur;
+      // All accounts with several accounts: show % (share of the equal-weighted
+      // return) instead of amounts summed across different currencies.
+      this.isOverview = Boolean(data.is_overview);
+      App.applyOverviewLabels('#view-analytics', this.isOverview);
       this.renderDayOfWeek(data.by_day_of_week, cur);
       this.renderHourOfDay(data.by_hour, cur);
       this.renderSymbols(data.by_symbol, cur);
@@ -24,6 +28,30 @@ const Analytics = {
     }
   },
 
+  isOverview: false,
+
+  /** Amount (single account) or share of the equal-weighted return in % (overview). */
+  resultValue(item) {
+    return Number((this.isOverview ? item.return_pct : item.net_profit) || 0);
+  },
+
+  formatResult(item, cur) {
+    return this.isOverview
+      ? App.formatPct(item.return_pct)
+      : App.formatMoney(item.net_profit, cur, { showSign: true });
+  },
+
+  /** The server sorts by amount; in the overview order by the % that is shown. */
+  sortForView(list = [], pctKey = 'return_pct') {
+    if (!this.isOverview) return list;
+    return [...list].sort((a, b) => Number(b[pctKey] || 0) - Number(a[pctKey] || 0));
+  },
+
+  profitFactorOf(item) {
+    const pf = Number((this.isOverview ? item.profit_factor_pct : item.profit_factor) || 0);
+    return pf > 100 ? '∞' : pf.toFixed(2);
+  },
+
   renderDayOfWeek(days = [], currency) {
     const cur = currency || this.currentCurrency || App.getActiveCurrency();
     const container = document.getElementById('analyticsDayOfWeekContainer');
@@ -33,20 +61,20 @@ const Analytics = {
     tableBody.innerHTML = '';
     days.forEach(d => {
       const tr = document.createElement('tr');
-      const pnlClass = d.net_profit >= 0 ? 'color-green' : 'color-red';
+      const pnlClass = this.resultValue(d) >= 0 ? 'color-green' : 'color-red';
       tr.innerHTML = `
         <td style="font-weight:600;color:#fff;">${d.day}</td>
         <td>${d.trades}</td>
         <td>${d.wins}</td>
         <td>${d.losses}</td>
         <td style="font-weight:700;color:#60a5fa;">${d.win_rate}%</td>
-        <td style="font-weight:700;" class="${pnlClass}">${App.formatMoney(d.net_profit, cur, { showSign: true })}</td>
+        <td style="font-weight:700;" class="${pnlClass}">${this.formatResult(d, cur)}</td>
       `;
       tableBody.appendChild(tr);
     });
 
     // Render bar chart in canvas
-    this.drawBarChart(container, days.map(d => ({ label: d.day.substring(0, 3), value: d.net_profit })), cur);
+    this.drawBarChart(container, days.map(d => ({ label: d.day.substring(0, 3), value: this.resultValue(d) })), cur);
   },
 
   renderHourOfDay(hours = [], currency) {
@@ -57,7 +85,7 @@ const Analytics = {
     // Filter to active trading hours or all 24h
     const items = hours.map(h => ({
       label: h.hour.substring(0, 2),
-      value: h.net_profit
+      value: this.resultValue(h)
     }));
     this.drawBarChart(container, items, cur);
   },
@@ -73,18 +101,19 @@ const Analytics = {
       return;
     }
 
-    symbols.forEach(s => {
+    this.sortForView(symbols).forEach(s => {
       const tr = document.createElement('tr');
-      const pnlClass = s.net_profit >= 0 ? 'color-green' : 'color-red';
-      const pfDisplay = s.profit_factor > 100 ? '∞' : s.profit_factor.toFixed(2);
+      const pnlClass = this.resultValue(s) >= 0 ? 'color-green' : 'color-red';
+      const avgTrade = this.isOverview ? (s.avg_trade_pct || 0) : s.avg_trade;
+      const avgText = this.isOverview ? App.formatPct(avgTrade) : App.formatMoney(s.avg_trade, cur);
       tr.innerHTML = `
         <td style="font-weight:700;color:#60a5fa;">${s.symbol}</td>
         <td>${s.trades}</td>
         <td style="font-weight:700;color:#10b981;">${s.win_rate}%</td>
-        <td style="font-weight:700;" class="${pnlClass}">${App.formatMoney(s.net_profit, cur, { showSign: true })}</td>
-        <td>${pfDisplay}</td>
+        <td style="font-weight:700;" class="${pnlClass}">${this.formatResult(s, cur)}</td>
+        <td>${this.profitFactorOf(s)}</td>
         <td>${s.volume} lots</td>
-        <td class="${s.avg_trade >= 0 ? 'color-green' : 'color-red'}">${App.formatMoney(s.avg_trade, cur)}</td>
+        <td class="${avgTrade >= 0 ? 'color-green' : 'color-red'}">${avgText}</td>
       `;
       tbody.appendChild(tr);
     });
@@ -101,16 +130,15 @@ const Analytics = {
       return;
     }
 
-    setups.forEach(s => {
+    this.sortForView(setups).forEach(s => {
       const tr = document.createElement('tr');
-      const pnlClass = s.net_profit >= 0 ? 'color-green' : 'color-red';
-      const pfDisplay = s.profit_factor > 100 ? '∞' : s.profit_factor.toFixed(2);
+      const pnlClass = this.resultValue(s) >= 0 ? 'color-green' : 'color-red';
       tr.innerHTML = `
         <td style="font-weight:600;color:#fff;">${s.setup_name}</td>
         <td>${s.trades}</td>
         <td style="font-weight:700;color:#10b981;">${s.win_rate}%</td>
-        <td style="font-weight:700;" class="${pnlClass}">${App.formatMoney(s.net_profit, cur, { showSign: true })}</td>
-        <td>${pfDisplay}</td>
+        <td style="font-weight:700;" class="${pnlClass}">${this.formatResult(s, cur)}</td>
+        <td>${this.profitFactorOf(s)}</td>
       `;
       tbody.appendChild(tr);
     });
@@ -127,14 +155,17 @@ const Analytics = {
       return;
     }
 
-    mistakes.forEach(m => {
+    this.sortForView(mistakes, 'total_loss_pct').forEach(m => {
       const tr = document.createElement('tr');
+      const cost = (money, pct) => (this.isOverview
+        ? App.formatPct(-(pct || 0))
+        : `-${App.formatMoney(money, cur)}`);
       tr.innerHTML = `
         <td style="font-weight:600;color:#f87171;">${m.mistake_name}</td>
         <td>${m.count}</td>
-        <td style="font-weight:700;color:#ef4444;">-${App.formatMoney(m.total_loss, cur)}</td>
-        <td style="color:#fca5a5;">-${App.formatMoney(m.worst_loss, cur)}</td>
-        <td style="color:#fca5a5;">-${App.formatMoney(m.avg_loss, cur)}</td>
+        <td style="font-weight:700;color:#ef4444;">${cost(m.total_loss, m.total_loss_pct)}</td>
+        <td style="color:#fca5a5;">${cost(m.worst_loss, m.worst_loss_pct)}</td>
+        <td style="color:#fca5a5;">${cost(m.avg_loss, m.avg_loss_pct)}</td>
       `;
       tbody.appendChild(tr);
     });
@@ -223,7 +254,7 @@ const Analytics = {
 
     signalsData.combinations.forEach(combo => {
       const tr = document.createElement('tr');
-      const pnlClass = combo.net_profit >= 0 ? 'color-green' : 'color-red';
+      const pnlClass = this.resultValue(combo) >= 0 ? 'color-green' : 'color-red';
       const upliftClass = combo.uplift > 0 ? 'color-green' : (combo.uplift < 0 ? 'color-red' : '');
       const upliftPrefix = combo.uplift > 0 ? '+' : '';
       tr.innerHTML = `
@@ -236,7 +267,7 @@ const Analytics = {
         </td>
         <td>${combo.count} <span style="font-size:11px;color:#9ca3af;">(${combo.wins}W)</span></td>
         <td style="font-weight:700;color:#10b981;">${combo.win_rate}%</td>
-        <td style="font-weight:700;" class="${pnlClass}">${App.formatMoney(combo.net_profit, cur, { showSign: true })}</td>
+        <td style="font-weight:700;" class="${pnlClass}">${this.formatResult(combo, cur)}</td>
         <td style="font-weight:600;color:#60a5fa;">${combo.avg_r >= 0 ? '+' : ''}${combo.avg_r.toFixed(2)} R</td>
         <td style="font-weight:700;" class="${upliftClass}">${upliftPrefix}${combo.uplift.toFixed(2)} R</td>
       `;
@@ -258,7 +289,7 @@ const Analytics = {
 
       list.forEach(item => {
         const tr = document.createElement('tr');
-        const pnlClass = item.net_profit >= 0 ? 'color-green' : 'color-red';
+        const pnlClass = this.resultValue(item) >= 0 ? 'color-green' : 'color-red';
         const totalR = item.total_r != null ? item.total_r : 0;
         const avgR = item.avg_r != null ? item.avg_r : 0;
         tr.innerHTML = `
@@ -267,7 +298,7 @@ const Analytics = {
           </td>
           <td>${item.count} <span style="font-size:11px;color:#9ca3af;">(${item.wins}W / ${item.losses}L)</span></td>
           <td style="font-weight:700;color:#10b981;">${item.win_rate}%</td>
-          <td style="font-weight:700;" class="${pnlClass}">${App.formatMoney(item.net_profit, cur, { showSign: true })}</td>
+          <td style="font-weight:700;" class="${pnlClass}">${this.formatResult(item, cur)}</td>
           <td style="font-weight:600;color:#60a5fa;">${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)} R <span style="font-size:11px;color:#9ca3af;">(Ø ${avgR >= 0 ? '+' : ''}${avgR.toFixed(2)} R)</span></td>
         `;
         tbody.appendChild(tr);
@@ -295,7 +326,10 @@ const Analytics = {
     const padding = { top: 20, right: 20, bottom: 35, left: 55 };
 
     const values = items.map(i => i.value);
-    const maxAbs = Math.max(...values.map(Math.abs), 50);
+    const maxAbs = Math.max(...values.map(Math.abs), this.isOverview ? 0.5 : 50);
+    const axisLabel = sign => (this.isOverview
+      ? `${sign}${maxAbs.toFixed(maxAbs < 10 ? 1 : 0)}%`
+      : `${sign}${sym}${Math.round(maxAbs)}`);
 
     const chartW = width - padding.left - padding.right;
     const chartH = height - padding.top - padding.bottom;
@@ -313,8 +347,8 @@ const Analytics = {
     ctx.fillStyle = '#6b7280';
     ctx.font = '10px -apple-system, sans-serif';
     ctx.textAlign = 'right';
-    ctx.fillText(`+${sym}${Math.round(maxAbs)}`, padding.left - 6, padding.top + 8);
-    ctx.fillText(`-${sym}${Math.round(maxAbs)}`, padding.left - 6, height - padding.bottom);
+    ctx.fillText(axisLabel('+'), padding.left - 6, padding.top + 8);
+    ctx.fillText(axisLabel('-'), padding.left - 6, height - padding.bottom);
 
     const step = chartW / items.length;
     const barWidth = Math.max(3, Math.min(24, step - 4));

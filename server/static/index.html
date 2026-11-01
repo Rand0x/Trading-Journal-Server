@@ -328,7 +328,7 @@
         <div class="section-header">
           <div>
             <h2 class="section-title">Performance Analytics</h2>
-            <span class="section-subtitle">Deep quantitative statistical edge breakdown</span>
+            <span class="section-subtitle" data-overview-label="All accounts · Ø = share of the equal-weighted return, in % of each account (a breakdown adds up to the dashboard's average return)">Deep quantitative statistical edge breakdown</span>
           </div>
         </div>
 
@@ -337,13 +337,13 @@
           <div class="chart-card">
             <div class="chart-header">
               <span class="chart-title">Performance by Day of Week</span>
-              <span class="section-subtitle">Monday - Sunday Net P&L</span>
+              <span class="section-subtitle" data-overview-label="Monday - Sunday Return (Ø %)">Monday - Sunday Net P&L</span>
             </div>
             <div id="analyticsDayOfWeekContainer" class="chart-container"></div>
             <div style="margin-top:14px;overflow-x:auto;">
               <table class="data-table" style="font-size:12px;">
                 <thead>
-                  <tr><th>Day</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Net P&L</th></tr>
+                  <tr><th>Day</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th data-overview-label="Return (Ø)">Net P&L</th></tr>
                 </thead>
                 <tbody id="analyticsDayOfWeekTableBody"></tbody>
               </table>
@@ -369,7 +369,7 @@
             <table class="data-table">
               <thead>
                 <tr>
-                  <th>Symbol</th><th>Trades</th><th>Win Rate</th><th>Net P&L</th><th>Profit Factor</th><th>Volume</th><th>Avg Trade</th>
+                  <th>Symbol</th><th>Trades</th><th>Win Rate</th><th data-overview-label="Return (Ø)">Net P&L</th><th>Profit Factor</th><th>Volume</th><th data-overview-label="Avg Trade (%)">Avg Trade</th>
                 </tr>
               </thead>
               <tbody id="analyticsSymbolsTableBody"></tbody>
@@ -386,7 +386,7 @@
             <div class="data-table-wrapper">
               <table class="data-table">
                 <thead>
-                  <tr><th>Playbook</th><th>Trades</th><th>Win Rate</th><th>Net P&L</th><th>Profit Factor</th></tr>
+                  <tr><th>Playbook</th><th>Trades</th><th>Win Rate</th><th data-overview-label="Return (Ø)">Net P&L</th><th>Profit Factor</th></tr>
                 </thead>
                 <tbody id="analyticsSetupsTableBody"></tbody>
               </table>
@@ -401,7 +401,7 @@
             <div class="data-table-wrapper">
               <table class="data-table">
                 <thead>
-                  <tr><th>Mistake</th><th>Occurrences</th><th>Total Lost</th><th>Worst Loss</th><th>Avg Cost</th></tr>
+                  <tr><th>Mistake</th><th>Occurrences</th><th data-overview-label="Cost (Ø)">Total Lost</th><th data-overview-label="Worst Loss (%)">Worst Loss</th><th data-overview-label="Avg Cost (%)">Avg Cost</th></tr>
                 </thead>
                 <tbody id="analyticsMistakesTableBody"></tbody>
               </table>
@@ -437,7 +437,7 @@
                   <th>Signal Combination</th>
                   <th>Trades</th>
                   <th>Win Rate</th>
-                  <th>Total P&L</th>
+                  <th data-overview-label="Return (Ø)">Total P&L</th>
                   <th>Expectancy (EV in R)</th>
                   <th>Uplift vs. Solo</th>
                 </tr>
@@ -461,7 +461,7 @@
             <div class="data-table-wrapper">
               <table class="data-table">
                 <thead>
-                  <tr><th>Emotion</th><th>Trades</th><th>Win Rate</th><th>Net P&L</th><th>Total R</th></tr>
+                  <tr><th>Emotion</th><th>Trades</th><th>Win Rate</th><th data-overview-label="Return (Ø)">Net P&L</th><th>Total R</th></tr>
                 </thead>
                 <tbody id="analyticsEmotionPreTableBody"></tbody>
               </table>
@@ -478,7 +478,7 @@
             <div class="data-table-wrapper">
               <table class="data-table">
                 <thead>
-                  <tr><th>Emotion</th><th>Trades</th><th>Win Rate</th><th>Net P&L</th><th>Total R</th></tr>
+                  <tr><th>Emotion</th><th>Trades</th><th>Win Rate</th><th data-overview-label="Return (Ø)">Net P&L</th><th>Total R</th></tr>
                 </thead>
                 <tbody id="analyticsEmotionDuringTableBody"></tbody>
               </table>
@@ -530,7 +530,7 @@
         <!-- Weekly Summary Cards -->
         <div class="metrics-grid" style="margin-bottom:24px;">
           <div class="metric-card">
-            <span class="metric-label">Week P&L</span>
+            <span class="metric-label" id="revNetPnlLabel" data-overview-label="Week Return (Ø)">Week P&L</span>
             <span id="revNetPnl" class="metric-value color-green">0.00</span>
             <span id="revTotalR" class="metric-sub">+0.00 R</span>
           </div>

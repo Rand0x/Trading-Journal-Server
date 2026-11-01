@@ -17,10 +17,19 @@ from server.analytics import (
     get_take_profit_analysis,
     get_signal_combinations,
     get_psychology_performance,
-    get_weekly_review
+    get_weekly_review,
+    attach_trade_returns
 )
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
+
+
+def _is_multi_account_overview(account_id: Optional[int]) -> bool:
+    """All-accounts view with several accounts: amounts must not be summed across currencies."""
+    if account_id:
+        return False
+    with get_connection() as conn:
+        return conn.execute("SELECT COUNT(*) FROM accounts;").fetchone()[0] > 1
 
 def _fetch_filtered_trades(account_id: Optional[int], date_from: Optional[str], date_to: Optional[str]):
     with get_connection() as conn:
@@ -35,14 +44,20 @@ def _fetch_filtered_trades(account_id: Optional[int], date_from: Optional[str], 
 
         where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         cursor.execute(f"""
-            SELECT t.*, p.name as setup_name, m.name as mistake_name
+            SELECT t.*, p.name as setup_name, m.name as mistake_name,
+                   a.name as account_name, a.currency as account_currency
             FROM trades t
             LEFT JOIN playbooks p ON t.setup_id = p.id
             LEFT JOIN mistakes m ON t.mistake_id = m.id
+            LEFT JOIN accounts a ON t.account_id = a.id
             {where_str}
             ORDER BY t.open_time ASC;
         """, params)
         trades = [dict(r) for r in cursor.fetchall()]
+
+        # trade_pct / return_contrib for the currency-neutral (%) breakdowns.
+        cursor.execute("SELECT id, initial_balance FROM accounts;")
+        attach_trade_returns(trades, [dict(r) for r in cursor.fetchall()])
 
         if trades:
             trade_ids = [t["id"] for t in trades]
@@ -101,6 +116,10 @@ def get_analytics_overview(
     return {
         "metrics": calculate_trade_metrics(trades),
         "currency": currency,
+        # True for "All Accounts" with several accounts: the UI then shows the
+        # *_pct fields (share of the equal-weighted average return) instead of
+        # amounts summed across currencies.
+        "is_overview": _is_multi_account_overview(account_id),
         "by_day_of_week": get_performance_by_day_of_week(trades),
         "by_hour": get_performance_by_hour(trades),
         "by_symbol": get_performance_by_symbol(trades),
@@ -157,5 +176,8 @@ def get_weekly_review_report(
     week_offset: int = Query(0, description="0 = current week, -1 = previous week, etc.")
 ):
     trades, _, _ = _fetch_filtered_trades(account_id, None, None)
-    return get_weekly_review(trades, week_offset=week_offset)
+    is_overview = _is_multi_account_overview(account_id)
+    review = get_weekly_review(trades, week_offset=week_offset, rank_by_pct=is_overview)
+    review["is_overview"] = is_overview
+    return review
 

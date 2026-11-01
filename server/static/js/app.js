@@ -283,7 +283,9 @@ const App = {
         Accounts.load();
         break;
       case 'review':
-        if (window.Review) Review.load();
+        // `const Review` (like the other modules) is not a window property,
+        // so `window.Review` was always undefined and the review never loaded.
+        if (typeof Review !== 'undefined') Review.load();
         break;
     }
   },
@@ -320,6 +322,23 @@ const App = {
 
   toLocalDateString(date = new Date()) {
     return this.toLocalDateTimeInput(date).substring(0, 10);
+  },
+
+  formatPct(value, decimals = 2) {
+    const v = Number(value || 0);
+    return `${v > 0 ? '+' : ''}${v.toFixed(decimals)} %`;
+  },
+
+  /**
+   * Swap labels marked with data-overview-label inside a view: the
+   * all-accounts overview shows % of each account instead of amounts that
+   * would mix currencies. The original label is remembered for switching back.
+   */
+  applyOverviewLabels(rootSelector, isOverview) {
+    document.querySelectorAll(`${rootSelector} [data-overview-label]`).forEach(el => {
+      if (el.dataset.defaultLabel === undefined) el.dataset.defaultLabel = el.textContent;
+      el.textContent = isOverview ? el.dataset.overviewLabel : el.dataset.defaultLabel;
+    });
   },
 
   applyDatePreset(preset) {

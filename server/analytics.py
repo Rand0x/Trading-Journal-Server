@@ -17,6 +17,38 @@ def _normalize_date_str(time_str: Optional[str]) -> str:
         s = s[:4] + "-" + s[5:7] + "-" + s[8:]
     return s
 
+def _annualized_daily_sharpe(daily_values: Dict[str, float]) -> float:
+    """
+    Sharpe ratio (risk-free rate 0) from daily results, annualized with
+    sqrt(252) trading days. Weekdays without a closed trade count as 0 so
+    quiet days are not skipped; weekend days only count when traded.
+    The ratio is scale-free, so daily amounts and daily % give the same value.
+    """
+    parsed = {}
+    for key, value in daily_values.items():
+        try:
+            parsed[date.fromisoformat(str(key)[:10])] = float(value or 0.0)
+        except ValueError:
+            continue
+    if not parsed:
+        return 0.0
+    series = []
+    day = min(parsed)
+    end = max(parsed)
+    while day <= end:
+        if day in parsed:
+            series.append(parsed[day])
+        elif day.weekday() < 5:
+            series.append(0.0)
+        day += timedelta(days=1)
+    if len(series) < 2:
+        return 0.0
+    mean = sum(series) / len(series)
+    variance = sum((x - mean) ** 2 for x in series) / (len(series) - 1)
+    if variance <= 0:
+        return 0.0
+    return round(mean / math.sqrt(variance) * math.sqrt(252), 2)
+
 def compute_r_multiple(
     direction: str,
     open_price: Optional[float],
@@ -160,12 +192,13 @@ def calculate_trade_metrics(trades: List[Dict[str, Any]], initial_balance: float
     else:
         kelly_criterion = 0.0
 
-    # Sharpe Ratio (Trade returns standard deviation)
-    pnl_series = [float(t.get("net_profit") or 0.0) for t in closed_trades]
-    mean_pnl = sum(pnl_series) / total_closed
-    variance = sum((x - mean_pnl) ** 2 for x in pnl_series) / total_closed
-    std_dev = math.sqrt(variance) if variance > 0 else 0.0
-    sharpe_ratio = round((mean_pnl / std_dev) * math.sqrt(252), 2) if std_dev > 0 else 0.0
+    # Sharpe Ratio from daily results (per-trade values annualized with
+    # sqrt(252) treated every trade as a trading day and inflated the ratio).
+    daily_pnl: Dict[str, float] = {}
+    for t in closed_trades:
+        day_key = _normalize_date_str(t.get("close_time") or t.get("open_time"))[:10]
+        daily_pnl[day_key] = daily_pnl.get(day_key, 0.0) + float(t.get("net_profit") or 0.0)
+    sharpe_ratio = _annualized_daily_sharpe(daily_pnl)
 
     # Drawdown & Streaks calculation
     # Sort trades chronologically by close_time or open_time
@@ -500,6 +533,61 @@ def _trade_r(t: Dict[str, Any], initial_balance: float) -> float:
     return 0.0
 
 
+def attach_trade_returns(trades: List[Dict[str, Any]], accounts: List[Dict[str, Any]]) -> int:
+    """
+    Annotate trades for currency-neutral breakdowns of several accounts.
+
+    trade_pct: the trade's P&L in % of its own account's starting balance
+               (None when the account has no starting balance).
+    return_contrib: trade_pct / N, N = accounts with closed trades. Summed
+               over any group (symbol, weekday, setup, ...) it is that group's
+               share of the equal-weighted average return, so all groups of a
+               breakdown add up to the dashboard's average return.
+    Returns N.
+    """
+    balances = {a.get("id"): float(a.get("initial_balance") or 0.0) for a in accounts}
+    active = {
+        t.get("account_id") for t in trades
+        if _is_closed_trade(t) and balances.get(t.get("account_id"), 0.0) > 0
+    }
+    n = len(active)
+    for t in trades:
+        balance = balances.get(t.get("account_id"), 0.0)
+        pct = float(t.get("net_profit") or 0.0) / balance * 100.0 if balance > 0 else None
+        t["trade_pct"] = pct
+        t["return_contrib"] = pct / n if (pct is not None and n) else 0.0
+    return n
+
+
+def _pct_profit_factor(gross_win_pct: float, gross_loss_pct: float) -> float:
+    if gross_loss_pct > 0:
+        return round(gross_win_pct / gross_loss_pct, 2)
+    return 999.0 if gross_win_pct > 0 else 0.0
+
+
+def _add_pct(stats: Dict[str, Any], t: Dict[str, Any]) -> None:
+    """Accumulate currency-neutral figures for one trade into a breakdown bucket."""
+    stats["return_pct"] = stats.get("return_pct", 0.0) + float(t.get("return_contrib") or 0.0)
+    pct = t.get("trade_pct")
+    if pct is None:
+        return
+    stats["pct_n"] = stats.get("pct_n", 0) + 1
+    stats["pct_sum"] = stats.get("pct_sum", 0.0) + pct
+    if pct > 0:
+        stats["pct_win"] = stats.get("pct_win", 0.0) + pct
+    elif pct < 0:
+        stats["pct_loss"] = stats.get("pct_loss", 0.0) - pct
+
+
+def _pct_fields(stats: Dict[str, Any]) -> Dict[str, float]:
+    n = stats.get("pct_n", 0)
+    return {
+        "return_pct": round(stats.get("return_pct", 0.0), 2),
+        "avg_trade_pct": round(stats.get("pct_sum", 0.0) / n, 2) if n else 0.0,
+        "profit_factor_pct": _pct_profit_factor(stats.get("pct_win", 0.0), stats.get("pct_loss", 0.0)),
+    }
+
+
 def get_overview_summary(
     trades: List[Dict[str, Any]], accounts: List[Dict[str, Any]], curves: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -584,12 +672,8 @@ def get_overview_summary(
     avg_win = gross_win / len(wins) if wins else 0.0
     avg_loss = gross_loss / len(losses) if losses else 0.0
 
-    sharpe = 0.0
-    if trade_pcts:
-        mean = sum(trade_pcts) / len(trade_pcts)
-        variance = sum((p - mean) ** 2 for p in trade_pcts) / len(trade_pcts)
-        if variance > 0:
-            sharpe = round(mean / math.sqrt(variance) * math.sqrt(252), 2)
+    # Sharpe from the equal-weighted daily returns (same series as the calendar).
+    sharpe = _annualized_daily_sharpe({day: b["pct_return"] for day, b in day_buckets.items()})
 
     # Drawdown of the equal-weighted average curve, as % of its equity peak.
     peak_equity = 1.0
@@ -647,6 +731,7 @@ def get_performance_by_day_of_week(trades: List[Dict[str, Any]]) -> List[Dict[st
 
             buckets[w]["trades"] += 1
             buckets[w]["net_profit"] += pnl
+            _add_pct(buckets[w], t)
             if pnl > 0.001:
                 buckets[w]["wins"] += 1
             elif pnl < -0.001:
@@ -665,7 +750,8 @@ def get_performance_by_day_of_week(trades: List[Dict[str, Any]]) -> List[Dict[st
             "wins": b["wins"],
             "losses": b["losses"],
             "win_rate": wr,
-            "net_profit": round(b["net_profit"], 2)
+            "net_profit": round(b["net_profit"], 2),
+            "return_pct": round(b.get("return_pct", 0.0), 2)
         })
 
     return result
@@ -687,6 +773,7 @@ def get_performance_by_hour(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
             hours[h]["trades"] += 1
             hours[h]["net_profit"] += pnl
+            _add_pct(hours[h], t)
             if pnl > 0.001:
                 hours[h]["wins"] += 1
             elif pnl < -0.001:
@@ -703,7 +790,8 @@ def get_performance_by_hour(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "hour": b["hour"],
             "trades": tr,
             "win_rate": wr,
-            "net_profit": round(b["net_profit"], 2)
+            "net_profit": round(b["net_profit"], 2),
+            "return_pct": round(b.get("return_pct", 0.0), 2)
         })
 
     return result
@@ -732,6 +820,7 @@ def get_performance_by_symbol(trades: List[Dict[str, Any]]) -> List[Dict[str, An
         symbols[sym]["trades"] += 1
         symbols[sym]["net_profit"] += pnl
         symbols[sym]["volume"] += float(t.get("volume") or 0.0)
+        _add_pct(symbols[sym], t)
 
         if pnl > 0.001:
             symbols[sym]["wins"] += 1
@@ -752,7 +841,8 @@ def get_performance_by_symbol(trades: List[Dict[str, Any]]) -> List[Dict[str, An
             "net_profit": round(data["net_profit"], 2),
             "profit_factor": pf,
             "volume": round(data["volume"], 2),
-            "avg_trade": round(data["net_profit"] / tr, 2) if tr > 0 else 0.0
+            "avg_trade": round(data["net_profit"] / tr, 2) if tr > 0 else 0.0,
+            **_pct_fields(data)
         })
 
     # Sort by highest net profit
@@ -782,6 +872,7 @@ def get_performance_by_setup(trades: List[Dict[str, Any]], playbooks: Dict[int, 
 
         stats[setup_name]["trades"] += 1
         stats[setup_name]["net_profit"] += pnl
+        _add_pct(stats[setup_name], t)
 
         if pnl > 0.001:
             stats[setup_name]["wins"] += 1
@@ -801,7 +892,8 @@ def get_performance_by_setup(trades: List[Dict[str, Any]], playbooks: Dict[int, 
             "win_rate": wr,
             "net_profit": round(data["net_profit"], 2),
             "profit_factor": pf,
-            "avg_trade": round(data["net_profit"] / tr, 2) if tr > 0 else 0.0
+            "avg_trade": round(data["net_profit"] / tr, 2) if tr > 0 else 0.0,
+            **_pct_fields(data)
         })
 
     result.sort(key=lambda x: x["net_profit"], reverse=True)
@@ -831,7 +923,11 @@ def get_cost_of_mistakes(trades: List[Dict[str, Any]], mistakes_map: Dict[int, s
                 "mistake_name": mistake_name,
                 "count": 0,
                 "total_loss": 0.0,
-                "worst_loss": 0.0
+                "worst_loss": 0.0,
+                # Currency-neutral: share of the average return / % of own account.
+                "total_loss_pct": 0.0,
+                "worst_loss_pct": 0.0,
+                "loss_pct_sum": 0.0
             }
 
         stats[mistake_name]["count"] += 1
@@ -839,6 +935,11 @@ def get_cost_of_mistakes(trades: List[Dict[str, Any]], mistakes_map: Dict[int, s
             stats[mistake_name]["total_loss"] += abs(pnl)
             if abs(pnl) > stats[mistake_name]["worst_loss"]:
                 stats[mistake_name]["worst_loss"] = abs(pnl)
+            stats[mistake_name]["total_loss_pct"] += abs(float(t.get("return_contrib") or 0.0))
+            if t.get("trade_pct") is not None:
+                loss_pct = abs(t["trade_pct"])
+                stats[mistake_name]["loss_pct_sum"] += loss_pct
+                stats[mistake_name]["worst_loss_pct"] = max(stats[mistake_name]["worst_loss_pct"], loss_pct)
 
     result = []
     for name, data in stats.items():
@@ -847,7 +948,10 @@ def get_cost_of_mistakes(trades: List[Dict[str, Any]], mistakes_map: Dict[int, s
             "count": data["count"],
             "total_loss": round(data["total_loss"], 2),
             "worst_loss": round(data["worst_loss"], 2),
-            "avg_loss": round(data["total_loss"] / data["count"], 2) if data["count"] > 0 else 0.0
+            "avg_loss": round(data["total_loss"] / data["count"], 2) if data["count"] > 0 else 0.0,
+            "total_loss_pct": round(data["total_loss_pct"], 2),
+            "worst_loss_pct": round(data["worst_loss_pct"], 2),
+            "avg_loss_pct": round(data["loss_pct_sum"] / data["count"], 2) if data["count"] > 0 else 0.0
         })
 
     result.sort(key=lambda x: x["total_loss"], reverse=True)
@@ -1028,6 +1132,7 @@ def get_signal_combinations(trades: List[Dict[str, Any]], min_samples: int = 2) 
                 "wins": len(wins),
                 "win_rate": wr,
                 "net_profit": net_profit_sum,
+                "return_pct": round(sum(float(t.get("return_contrib") or 0.0) for t in matching), 2),
                 "avg_r": avg_r,
                 "uplift": uplift
             })
@@ -1071,6 +1176,7 @@ def get_psychology_performance(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
                 b = buckets[emo]
                 b["count"] += 1
                 b["net_profit"] += pnl
+                b["return_pct"] = b.get("return_pct", 0.0) + float(t.get("return_contrib") or 0.0)
                 if is_win:
                     b["wins"] += 1
                 else:
@@ -1090,6 +1196,7 @@ def get_psychology_performance(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "losses": b["losses"],
                 "win_rate": wr,
                 "net_profit": round(b["net_profit"], 2),
+                "return_pct": round(b.get("return_pct", 0.0), 2),
                 "total_r": round(b["r_sum"], 2),
                 "avg_r": avg_r
             })
@@ -1101,9 +1208,13 @@ def get_psychology_performance(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
         "emotion_during": analyze_field("emotion_during")
     }
 
-def get_weekly_review(trades: List[Dict[str, Any]], week_offset: int = 0) -> Dict[str, Any]:
+def get_weekly_review(trades: List[Dict[str, Any]], week_offset: int = 0, rank_by_pct: bool = False) -> Dict[str, Any]:
     """
     Generates an automated weekly review with KPIs, best/worst trade, and emotional patterns.
+
+    With trades annotated by attach_trade_returns() it also reports the
+    week's equal-weighted return in %. rank_by_pct picks best/worst trade by
+    % of their own account instead of by amount (needed across currencies).
     """
     today = date.today()
     monday_this_week = today - timedelta(days=today.weekday())
@@ -1135,20 +1246,32 @@ def get_weekly_review(trades: List[Dict[str, Any]], week_offset: int = 0) -> Dic
     r_vals = [float(t["r_multiple"]) for t in closed_week_trades if t.get("r_multiple") is not None]
     total_r = round(sum(r_vals), 2)
 
+    # Equal-weighted week return across the accounts that closed trades.
+    pct_closed = [t for t in closed_week_trades if t.get("trade_pct") is not None]
+    week_accounts = {t.get("account_id") for t in pct_closed}
+    week_return_pct = sum(t["trade_pct"] for t in pct_closed) / len(week_accounts) if week_accounts else 0.0
+    open_by_account: Dict[Any, float] = {}
+    for t in open_week_trades:
+        if t.get("trade_pct") is not None:
+            open_by_account[t.get("account_id")] = open_by_account.get(t.get("account_id"), 0.0) + t["trade_pct"]
+    open_return_pct = sum(open_by_account.values()) / len(open_by_account) if open_by_account else 0.0
+
+    def performance(trade: Dict[str, Any]) -> float:
+        if rank_by_pct and trade.get("trade_pct") is not None:
+            return float(trade["trade_pct"])
+        return float(trade.get("net_profit") or 0.0)
+
     win_rate = round((len(wins) / len(closed_week_trades)) * 100.0, 1) if closed_week_trades else 0.0
 
     best_trade = None
     worst_trade = None
     if closed_week_trades:
-        sorted_by_perf = sorted(
-            closed_week_trades,
-            key=lambda x: float(x.get("net_profit") or 0.0)
-        )
+        sorted_by_perf = sorted(closed_week_trades, key=performance)
         # Only a winner can be the best trade and only a loser the worst one;
         # otherwise a losing week shows its smallest loss as "Best Trade".
-        if float(sorted_by_perf[0].get("net_profit") or 0.0) < -0.001:
+        if performance(sorted_by_perf[0]) < -0.001:
             worst_trade = sorted_by_perf[0]
-        if float(sorted_by_perf[-1].get("net_profit") or 0.0) > 0.001:
+        if performance(sorted_by_perf[-1]) > 0.001:
             best_trade = sorted_by_perf[-1]
 
     sorted_chrono = sorted(closed_week_trades, key=lambda x: x.get("close_time") or x.get("open_time") or "")
@@ -1215,5 +1338,8 @@ def get_weekly_review(trades: List[Dict[str, Any]], week_offset: int = 0) -> Dic
         "missing_r_count": missing_r_count,
         "open_trades_count": open_trades_count,
         "open_pnl": round(open_net, 2),
-        "total_pnl": round(total_net + open_net, 2)
+        "total_pnl": round(total_net + open_net, 2),
+        "return_pct": round(week_return_pct, 2),
+        "open_return_pct": round(open_return_pct, 2),
+        "return_accounts": len(week_accounts),
     }

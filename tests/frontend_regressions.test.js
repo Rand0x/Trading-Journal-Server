@@ -295,3 +295,20 @@ test('calendar falls back from currency to percent in the all-accounts overview'
   assert.equal(dashboard.effectiveCalendarMode(), 'currency');
   assert.deepEqual(dashboard.getCalendarData(), { money: true });
 });
+
+test('analytics rows show the equal-weighted % in the overview and amounts for one account', () => {
+  const h = harness();
+  h.context.App.formatMoney = (value, currency) => `${currency} ${value}`;
+  h.context.App.formatPct = value => `${value > 0 ? '+' : ''}${Number(value).toFixed(2)} %`;
+  const analytics = h.load('analytics.js', 'Analytics');
+  const row = { net_profit: 21000, return_pct: 15, profit_factor: 2.5, profit_factor_pct: 7 };
+
+  analytics.isOverview = true;
+  assert.equal(analytics.formatResult(row, 'USD'), '+15.00 %');
+  assert.equal(analytics.resultValue(row), 15);
+  assert.equal(analytics.profitFactorOf(row), '7.00');
+
+  analytics.isOverview = false;
+  assert.equal(analytics.formatResult(row, 'GBP'), 'GBP 21000');
+  assert.equal(analytics.profitFactorOf(row), '2.50');
+});

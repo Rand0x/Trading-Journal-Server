@@ -74,6 +74,10 @@ const Review = {
 
   renderReview(data) {
     const cur = this.currentCurrency || 'USD';
+    // All accounts with several accounts: % of each account, never summed amounts.
+    const isOverview = Boolean(data.is_overview);
+    this.isOverview = isOverview;
+    App.applyOverviewLabels('#view-review', isOverview);
 
     // Week label
     const weekLabelEl = document.getElementById('reviewWeekLabel');
@@ -90,7 +94,11 @@ const Review = {
     const closedPnl = data.net_profit || 0;
     const totalPnl = data.total_pnl !== undefined ? data.total_pnl : (closedPnl + openPnl);
 
-    if (pnlEl) {
+    if (pnlEl && isOverview) {
+      const weekPct = data.return_pct || 0;
+      pnlEl.textContent = App.formatPct(weekPct);
+      pnlEl.className = `metric-value ${weekPct >= 0 ? 'color-green' : 'color-red'}`;
+    } else if (pnlEl) {
       if (openCount > 0) {
         pnlEl.textContent = App.formatMoney(totalPnl, cur, { showSign: true });
         pnlEl.className = `metric-value ${totalPnl >= 0 ? 'color-green' : 'color-red'}`;
@@ -104,7 +112,8 @@ const Review = {
       const totalR = data.total_r || 0;
       const rText = `${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)} R`;
       if (openCount > 0) {
-        rEl.textContent = `${rText} · Open: ${App.formatMoney(openPnl, cur, { showSign: true })} (${openCount})`;
+        const openText = isOverview ? App.formatPct(data.open_return_pct || 0) : App.formatMoney(openPnl, cur, { showSign: true });
+        rEl.textContent = `${rText} · Open: ${openText} (${openCount})`;
       } else {
         rEl.textContent = rText;
       }
@@ -183,8 +192,14 @@ const Review = {
     }
 
     const rText = trade.r_multiple != null ? `${Number(trade.r_multiple) >= 0 ? '+' : ''}${Number(trade.r_multiple).toFixed(2)} R` : '';
-    const pnlText = App.formatMoney(trade.net_profit, cur, { showSign: true });
+    // Always in the trade's own account currency; in the overview also as %
+    // of that account, which is what best/worst are ranked by there.
+    let pnlText = App.formatMoney(trade.net_profit, trade.account_currency || cur, { showSign: true });
+    if (this.isOverview && trade.trade_pct != null) pnlText += ` · ${App.formatPct(trade.trade_pct)}`;
     badgeEl.textContent = rText ? `${pnlText} (${rText})` : pnlText;
+    const accountTag = this.isOverview && trade.account_name
+      ? `<span style="font-size:12px;color:#9ca3af;">· ${String(trade.account_name).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)}</span>`
+      : '';
     badgeEl.className = `badge badge-${type.toLowerCase()}`;
 
     const setupName = trade.setup_name || (trade.setup_id ? `Setup #${trade.setup_id}` : 'No Setup');
@@ -208,6 +223,7 @@ const Review = {
             <span style="font-weight:700;font-size:16px;color:#fff;">${trade.symbol}</span>
             <span class="badge badge-${(trade.direction || 'BUY').toLowerCase()}">${trade.direction}</span>
             <span style="font-size:12px;color:#9ca3af;">${trade.volume} Lots</span>
+            ${accountTag}
           </div>
           <span style="font-size:12px;color:#9ca3af;">${dateStr}</span>
         </div>
