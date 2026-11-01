@@ -44,6 +44,16 @@ def _grouped_recent_trades(trades: List[Dict[str, Any]], limit: int = RECENT_TRA
         })
     return result
 
+
+def _position_group_ids(trades: List[Dict[str, Any]]) -> Dict[Any, Any]:
+    """Map every trade id to its position's lowest leg id (sibling legs grouped like the trade log)."""
+    group_ids = {}
+    for legs in _display_groups(trades):
+        primary = min(t.get("id") or 0 for t in legs)
+        for t in legs:
+            group_ids[t.get("id")] = primary
+    return group_ids
+
 router = APIRouter(prefix="/api/dashboard", tags=["Dashboard"])
 
 @router.get("")
@@ -127,7 +137,8 @@ def get_dashboard_summary(
             t["partial_closes"] = partials_by_trade.get(t["id"], [])
 
     metrics = calculate_trade_metrics(trades, initial_balance)
-    calendar = get_calendar_heatmap(trades, initial_balance)
+    group_ids = _position_group_ids(trades)
+    calendar = get_calendar_heatmap(trades, initial_balance, group_ids)
     equity_curve = get_equity_curve(trades, initial_balance)
     # With several accounts, summed amounts mix currencies and let the largest
     # account dominate; the overview chart shows one % curve per account.
@@ -135,7 +146,7 @@ def get_dashboard_summary(
     overview = None
     if len(overview_accounts) > 1:
         account_curves = get_account_return_curves(trades, overview_accounts)
-        overview = get_overview_summary(trades, overview_accounts, account_curves)
+        overview = get_overview_summary(trades, overview_accounts, account_curves, group_ids)
         # Same breakdowns as `insights`, but every amount is the trade's share of
         # the equal-weighted average return in % (no sums across currencies).
         active = overview["active_accounts"]

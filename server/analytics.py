@@ -395,13 +395,16 @@ def get_realized_events(trades: List[Dict[str, Any]], initial_balance: float = 1
     return events
 
 
-def get_calendar_heatmap(trades: List[Dict[str, Any]], initial_balance: float = 10000.0) -> Dict[str, Dict[str, Any]]:
+def get_calendar_heatmap(
+    trades: List[Dict[str, Any]], initial_balance: float = 10000.0, group_ids: Optional[Dict[Any, Any]] = None
+) -> Dict[str, Dict[str, Any]]:
     """
     Realized P&L per calendar day (YYYY-MM-DD) for the TradeZella-style heatmap.
     Uses get_realized_events(): partial exits count on the day they were
     realized, open positions contribute nothing until they close.
     A trade counts once per day it realized P&L; win/loss is judged on what it
-    realized that day.
+    realized that day. ``group_ids`` maps trade id -> position id so sibling
+    legs of one grouped position (as in the trade log) count as one trade.
     Returns:
     {
        "2026-09-01": {"date": "2026-09-01", "net_profit": 450.50, "r_multiple": 2.4, "pct_return": 4.51, "trades_count": 3, "wins": 2, "losses": 1},
@@ -419,6 +422,7 @@ def get_calendar_heatmap(trades: List[Dict[str, Any]], initial_balance: float = 
         day["net_profit"] += e["pnl"]
         day["r_multiple"] += e["r"]
         trade_key = e["trade_id"] if e["trade_id"] is not None else id(e)
+        trade_key = (group_ids or {}).get(trade_key, trade_key)
         per_trade.setdefault(date_str, {})
         per_trade[date_str][trade_key] = per_trade[date_str].get(trade_key, 0.0) + e["pnl"]
 
@@ -657,7 +661,8 @@ def _pct_fields(stats: Dict[str, Any]) -> Dict[str, float]:
 
 
 def get_overview_summary(
-    trades: List[Dict[str, Any]], accounts: List[Dict[str, Any]], curves: Dict[str, Any]
+    trades: List[Dict[str, Any]], accounts: List[Dict[str, Any]], curves: Dict[str, Any],
+    group_ids: Optional[Dict[Any, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Currency-neutral KPIs, calendar and per-account comparison for the
@@ -713,7 +718,7 @@ def get_overview_summary(
 
         # Equal-weighted daily return: each active account's day return / N.
         if account.get("id") in active_ids:
-            for day, data in get_calendar_heatmap(account_trades, initial_balance).items():
+            for day, data in get_calendar_heatmap(account_trades, initial_balance, group_ids).items():
                 bucket = day_buckets.setdefault(day, {
                     "date": day, "net_profit": None, "pct_return": 0.0, "r_multiple": 0.0,
                     "trades_count": 0, "wins": 0, "losses": 0, "breakevens": 0,

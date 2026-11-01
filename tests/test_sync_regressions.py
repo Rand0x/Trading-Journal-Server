@@ -361,3 +361,11 @@ class TestSyncRegressions(unittest.TestCase):
         self.assertEqual([(r['legs'], r['net_profit']) for r in recent], [(1, -20.0), (3, 120.0)])
         self.assertEqual(recent[1]['volume'], 1.5)
         self.assertEqual(recent[1]['status'], 'WIN')
+
+    def test_dashboard_calendar_counts_grouped_legs_as_one_trade(self):
+        from server.routers.dashboard import get_dashboard_summary
+        legs = [self.trade(f'leg{i}', lots=0.5, profit=-25) for i in range(4)]
+        self.sync(closed_trades=legs + [self.trade('solo', open_time='2026-09-01 15:00:00', close_time='2026-09-01 16:00:00', open_price=1.2, profit=10)])
+        day = get_dashboard_summary(account_id=self.account, date_from=None, date_to=None, symbol=None)['calendar']['2026-09-01']
+        self.assertEqual((day['trades_count'], day['wins'], day['losses']), (2, 1, 1))
+        self.assertEqual(day['net_profit'], -90.0)
