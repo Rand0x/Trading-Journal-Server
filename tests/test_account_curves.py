@@ -54,6 +54,45 @@ class TestAccountReturnCurves(unittest.TestCase):
             [("2026-09-01 10:00", 2.0), ("2026-09-02 10:00", 12.0), ("2026-09-03 10:00", 15.0)],
         )
 
+    def test_losing_trade_at_the_start_timestamp_is_not_dropped_from_the_average(self):
+        # cTrader Open API trades have open_time == close_time, so the START
+        # point and the first (losing) trade share one timestamp.
+        trades = [_trade(1, "2026-09-01 10:00", -300.0), _trade(2, "2026-09-02 10:00", 1000.0)]
+        result = get_account_return_curves(trades, self.ACCOUNTS)
+        self.assertEqual(result["average"][0], {"time": "2026-09-01 10:00", "pct": -1.5})
+        self.assertEqual(result["average_return_pct"], -1.0)
+
+    def test_overview_summary_measures_every_trade_against_its_own_account(self):
+        from server.analytics import get_overview_summary
+        trades = [
+            _trade(1, "2026-09-01 10:00", 400.0),      # GBP +4 %
+            _trade(2, "2026-09-02 10:00", 25000.0),    # USD +25 %
+            _trade(1, "2026-09-03 10:00", 600.0),      # GBP +6 %
+            _trade(2, "2026-09-04 10:00", -5000.0),    # USD -5 %
+            {**_trade(2, "2026-09-05 10:00", 1000.0), "status": "OPEN", "close_time": None},  # USD floating +1 %
+        ]
+        curves = get_account_return_curves(trades, self.ACCOUNTS)
+        ov = get_overview_summary(trades, self.ACCOUNTS, curves)
+
+        self.assertEqual(ov["avg_return_pct"], 15.0)
+        self.assertEqual(ov["profit_factor"], 7.0)            # (4 + 6 + 25) / 5
+        self.assertEqual(ov["avg_win_pct"], 11.67)
+        self.assertEqual(ov["avg_loss_pct"], 5.0)
+        self.assertEqual(ov["expectancy_pct"], 7.5)            # mean of 4, 25, 6, -5
+        self.assertEqual((ov["avg_floating_pct"], ov["open_trades_count"]), (1.0, 1))
+        # Average curve peaks at +17.5 % and ends at +15 %: drawdown 2.5 / 117.5.
+        self.assertEqual(ov["max_drawdown_pct"], 2.13)
+        self.assertEqual(ov["current_drawdown_pct"], 2.13)
+        # Equal-weighted daily returns add up to the average return.
+        days = {d: v["pct_return"] for d, v in ov["calendar"].items()}
+        self.assertEqual(days, {"2026-09-01": 2.0, "2026-09-02": 12.5, "2026-09-03": 3.0, "2026-09-04": -2.5})
+        self.assertIsNone(ov["calendar"]["2026-09-01"]["net_profit"])
+
+        gbp, usd = ov["accounts"]
+        self.assertEqual((gbp["currency"], gbp["net_profit"], gbp["return_pct"], gbp["color_index"]), ("GBP", 1000.0, 10.0, 0))
+        self.assertEqual((usd["currency"], usd["net_profit"], usd["return_pct"], usd["floating_pct"]), ("USD", 20000.0, 20.0, 1.0))
+        self.assertEqual(usd["open_pnl"], 1000.0)
+
     def test_accounts_without_closed_trades_or_balance_are_left_out(self):
         accounts = self.ACCOUNTS + [{"id": 3, "name": "Empty", "currency": "EUR", "initial_balance": 0.0}]
         trades = [

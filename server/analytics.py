@@ -427,7 +427,7 @@ def get_account_return_curves(trades: List[Dict[str, Any]], accounts: List[Dict[
     balance, are left out of both.
     """
     curves = []
-    for account in accounts:
+    for color_index, account in enumerate(accounts):
         initial_balance = float(account.get("initial_balance") or 0.0)
         if initial_balance <= 0:
             continue
@@ -448,6 +448,8 @@ def get_account_return_curves(trades: List[Dict[str, Any]], accounts: List[Dict[
         ]
         curves.append({
             "account_id": account.get("id"),
+            # Stable per-account colour slot, shared with the comparison table.
+            "color_index": color_index,
             "name": account.get("name") or f"Account {account.get('id')}",
             "currency": (account.get("currency") or "USD").upper(),
             "initial_balance": initial_balance,
@@ -459,13 +461,16 @@ def get_account_return_curves(trades: List[Dict[str, Any]], accounts: List[Dict[
 
     average = []
     if curves:
+        # Sort by time, then keep each curve's own order (never by value: a
+        # START point and a losing trade can share the same timestamp).
         events = sorted(
-            (p["time"], index, p["pct"])
-            for index, curve in enumerate(curves)
-            for p in curve["points"]
+            ((p["time"], index, seq, p["pct"])
+             for index, curve in enumerate(curves)
+             for seq, p in enumerate(curve["points"])),
+            key=lambda e: (e[0], e[1], e[2]),
         )
         current = [0.0] * len(curves)
-        for time_str, index, pct in events:
+        for time_str, index, _, pct in events:
             current[index] = pct
             value = round(sum(current) / len(curves), 2)
             if average and average[-1]["time"] == time_str:
@@ -477,6 +482,150 @@ def get_account_return_curves(trades: List[Dict[str, Any]], accounts: List[Dict[
         "accounts": curves,
         "average": average,
         "average_return_pct": average[-1]["pct"] if average else 0.0,
+    }
+
+def _is_closed_trade(t: Dict[str, Any]) -> bool:
+    """Realized trade: not missed/pending/cancelled and closed (by status or close time)."""
+    if t.get("is_missed") or t.get("status") in ("CANCELLED", "PENDING"):
+        return False
+    return t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or bool(t.get("close_time"))
+
+
+def _trade_r(t: Dict[str, Any], initial_balance: float) -> float:
+    """Explicit R-multiple, else the journal's fallback of 1R = 1 % of the account's start."""
+    if t.get("r_multiple") is not None:
+        return float(t["r_multiple"])
+    if initial_balance > 0:
+        return float(t.get("net_profit") or 0.0) / (initial_balance * 0.01)
+    return 0.0
+
+
+def get_overview_summary(
+    trades: List[Dict[str, Any]], accounts: List[Dict[str, Any]], curves: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Currency-neutral KPIs, calendar and per-account comparison for the
+    multi-account overview. Amounts in different currencies are never added
+    up: every trade is measured in percent of its own account's starting
+    balance (or in R), and accounts are weighted equally like the average
+    line of get_account_return_curves().
+    """
+    rows = []
+    trade_pcts = []
+    pooled_r = []
+    open_floating = []
+    open_trades_count = 0
+    day_buckets: Dict[str, Dict[str, Any]] = {}
+    active_ids = {c["account_id"] for c in curves.get("accounts", [])}
+
+    for index, account in enumerate(accounts):
+        initial_balance = float(account.get("initial_balance") or 0.0)
+        account_trades = [t for t in trades if t.get("account_id") == account.get("id")]
+        m = calculate_trade_metrics(account_trades, initial_balance if initial_balance > 0 else 10000.0)
+        closed = [t for t in account_trades if _is_closed_trade(t)]
+        has_balance = initial_balance > 0
+        account_r = sum(_trade_r(t, initial_balance) for t in closed)
+
+        rows.append({
+            "account_id": account.get("id"),
+            "name": account.get("name") or f"Account {account.get('id')}",
+            "currency": (account.get("currency") or "USD").upper(),
+            "platform": account.get("platform") or "",
+            "color_index": index,
+            "initial_balance": initial_balance,
+            "net_profit": m["net_profit"],
+            "return_pct": round(m["net_profit"] / initial_balance * 100.0, 2) if has_balance else None,
+            "open_pnl": m["open_pnl"],
+            "open_trades_count": m["open_trades_count"],
+            "floating_pct": round(m["open_pnl"] / initial_balance * 100.0, 2) if has_balance else None,
+            "max_drawdown_pct": m["max_drawdown_pct"],
+            "total_trades": m["total_trades"],
+            "win_rate": m["win_rate"],
+            "profit_factor": m["profit_factor"],
+            "total_r": round(account_r, 2),
+        })
+
+        if not has_balance:
+            continue
+        for t in closed:
+            pnl = float(t.get("net_profit") or 0.0)
+            trade_pcts.append(pnl / initial_balance * 100.0)
+            pooled_r.append((t.get("close_time") or t.get("open_time") or "", _trade_r(t, initial_balance)))
+        if m["open_trades_count"] > 0:
+            open_floating.append(m["open_pnl"] / initial_balance * 100.0)
+            open_trades_count += m["open_trades_count"]
+
+        # Equal-weighted daily return: each active account's day return / N.
+        if account.get("id") in active_ids:
+            for day, data in get_calendar_heatmap(account_trades, initial_balance).items():
+                bucket = day_buckets.setdefault(day, {
+                    "date": day, "net_profit": None, "pct_return": 0.0, "r_multiple": 0.0,
+                    "trades_count": 0, "wins": 0, "losses": 0, "breakevens": 0,
+                })
+                bucket["pct_return"] += data["pct_return"]
+                bucket["r_multiple"] += data["r_multiple"]
+                for key in ("trades_count", "wins", "losses", "breakevens"):
+                    bucket[key] += data[key]
+
+    active_count = len(active_ids)
+    for bucket in day_buckets.values():
+        # 4 decimals so the month sum in the UI matches the average return.
+        bucket["pct_return"] = round(bucket["pct_return"] / active_count, 4) if active_count else 0.0
+        bucket["r_multiple"] = round(bucket["r_multiple"], 2)
+
+    wins = [p for p in trade_pcts if p > 0]
+    losses = [p for p in trade_pcts if p < 0]
+    gross_win = sum(wins)
+    gross_loss = abs(sum(losses))
+    if gross_loss > 0:
+        profit_factor = round(gross_win / gross_loss, 2)
+    else:
+        profit_factor = 999.0 if gross_win > 0 else 0.0
+    avg_win = gross_win / len(wins) if wins else 0.0
+    avg_loss = gross_loss / len(losses) if losses else 0.0
+
+    sharpe = 0.0
+    if trade_pcts:
+        mean = sum(trade_pcts) / len(trade_pcts)
+        variance = sum((p - mean) ** 2 for p in trade_pcts) / len(trade_pcts)
+        if variance > 0:
+            sharpe = round(mean / math.sqrt(variance) * math.sqrt(252), 2)
+
+    # Drawdown of the equal-weighted average curve, as % of its equity peak.
+    peak_equity = 1.0
+    equity = 1.0
+    max_dd = 0.0
+    for point in curves.get("average", []):
+        equity = 1.0 + point["pct"] / 100.0
+        peak_equity = max(peak_equity, equity)
+        if peak_equity > 0:
+            max_dd = max(max_dd, (peak_equity - equity) / peak_equity * 100.0)
+    current_dd = (peak_equity - equity) / peak_equity * 100.0 if peak_equity > 0 else 0.0
+
+    cum_r = 0.0
+    peak_r = 0.0
+    for _, r_val in sorted(pooled_r, key=lambda item: item[0]):
+        cum_r += r_val
+        peak_r = max(peak_r, cum_r)
+
+    return {
+        "active_accounts": active_count,
+        "avg_return_pct": curves.get("average_return_pct", 0.0),
+        "avg_floating_pct": round(sum(open_floating) / len(open_floating), 2) if open_floating else 0.0,
+        "open_trades_count": open_trades_count,
+        "open_accounts_count": len(open_floating),
+        "profit_factor": profit_factor,
+        "avg_win_pct": round(avg_win, 2),
+        "avg_loss_pct": round(avg_loss, 2),
+        "win_loss_ratio": round(avg_win / avg_loss, 2) if avg_loss > 0 else 0.0,
+        "expectancy_pct": round(sum(trade_pcts) / len(trade_pcts), 2) if trade_pcts else 0.0,
+        "sharpe_ratio": sharpe,
+        "max_drawdown_pct": round(max_dd, 2),
+        "current_drawdown_pct": round(max(0.0, current_dd), 2),
+        "total_r": round(cum_r, 2),
+        "current_drawdown_r": round(max(0.0, peak_r - cum_r), 2),
+        "calendar": day_buckets,
+        "accounts": rows,
     }
 
 def get_performance_by_day_of_week(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

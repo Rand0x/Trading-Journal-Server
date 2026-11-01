@@ -14,15 +14,54 @@ const Dashboard = {
       this.dashboardData = await API.getDashboard(params);
       const cur = this.dashboardData.currency || App.getActiveCurrency();
       this.currentCurrency = cur;
-      this.renderKPIs(this.dashboardData.metrics, cur);
-      this.renderCalendar(this.dashboardData.calendar, cur);
-      this.renderEquitySection(cur);
-      this.renderDailyPnlBars(this.dashboardData.calendar, cur);
+      this.renderAll(cur);
       this.checkAutoRefresh();
     } catch (err) {
       console.error('Failed to load dashboard:', err);
       App.showToast(`Error loading dashboard: ${err.message}`, 'error');
     }
+  },
+
+  renderAll(cur) {
+    this.renderKPIs(this.dashboardData.metrics, cur);
+    this.syncCalendarModeButtons();
+    this.renderCalendar(this.getCalendarData(), cur);
+    this.renderEquitySection(cur);
+    this.renderDailyPnlBars(this.getCalendarData(), cur);
+    this.renderAccountComparison();
+  },
+
+  /**
+   * Currency-neutral summary for "All Accounts" with more than one account
+   * (null otherwise). Amounts from different currencies are never summed there.
+   */
+  getOverview() {
+    const ov = this.dashboardData && this.dashboardData.overview;
+    return ov && Array.isArray(ov.accounts) ? ov : null;
+  },
+
+  getCalendarData() {
+    if (!this.dashboardData) return {};
+    const ov = this.getOverview();
+    return (ov ? ov.calendar : this.dashboardData.calendar) || {};
+  },
+
+  /** The overview has no meaningful currency total, so "Currency" shows % instead. */
+  effectiveCalendarMode() {
+    return this.getOverview() && this.calendarMode === 'currency' ? 'pct' : this.calendarMode;
+  },
+
+  syncCalendarModeButtons() {
+    const mode = this.effectiveCalendarMode();
+    const currencyBtn = document.getElementById('calModeCurrency');
+    if (currencyBtn) currencyBtn.style.display = this.getOverview() ? 'none' : '';
+    ['Currency', 'R', 'Pct'].forEach(m => {
+      const btn = document.getElementById(`calMode${m}`);
+      if (!btn) return;
+      const active = m.toLowerCase() === mode;
+      btn.classList.toggle('btn-primary', active);
+      btn.classList.toggle('btn-secondary', !active);
+    });
   },
 
   autoRefreshTimer: null,
@@ -42,10 +81,7 @@ const Dashboard = {
         this.dashboardData = await API.getDashboard(params);
         const cur = this.dashboardData.currency || App.getActiveCurrency();
         this.currentCurrency = cur;
-        this.renderKPIs(this.dashboardData.metrics, cur);
-        this.renderCalendar(this.dashboardData.calendar, cur);
-        this.renderEquitySection(cur);
-        this.renderDailyPnlBars(this.dashboardData.calendar, cur);
+        this.renderAll(cur);
 
         const stillOpen = this.dashboardData.open_trades_count || (this.dashboardData.metrics && this.dashboardData.metrics.open_trades_count) || 0;
         if (stillOpen <= 0) {
@@ -66,24 +102,36 @@ const Dashboard = {
 
   setCalendarMode(mode) {
     this.calendarMode = mode;
-    ['Currency', 'R', 'Pct'].forEach(m => {
-      const btn = document.getElementById(`calMode${m}`);
-      if (btn) {
-        if (m.toLowerCase() === mode.toLowerCase()) {
-          btn.classList.remove('btn-secondary');
-          btn.classList.add('btn-primary');
-        } else {
-          btn.classList.remove('btn-primary');
-          btn.classList.add('btn-secondary');
-        }
-      }
-    });
+    this.syncCalendarModeButtons();
     if (this.dashboardData) {
-      this.renderCalendar(this.dashboardData.calendar, this.currentCurrency);
+      this.renderCalendar(this.getCalendarData(), this.currentCurrency);
     }
   },
 
+  setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  },
+
+  // [single account label, all-accounts overview label]
+  KPI_LABELS: {
+    dashNetPnlLabel: ['Net Cumulative P&L', 'Avg. Return (equal-weighted)'],
+    dashOpenPnlLabel: ['Open Positions P&L', 'Open Positions (avg. %)'],
+    dashProfitFactorSub: ['Gross Win / Gross Loss', 'Based on % of each account'],
+    dashExpectancySub: ['Expected Value', 'Per trade, % of account']
+  },
+
+  setKpiLabels(isOverview) {
+    Object.entries(this.KPI_LABELS).forEach(([id, labels]) => this.setText(id, labels[isOverview ? 1 : 0]));
+  },
+
   renderKPIs(m, currency) {
+    const ov = this.getOverview();
+    this.setKpiLabels(Boolean(ov));
+    if (ov) {
+      this.renderOverviewKPIs(m, ov);
+      return;
+    }
     const cur = currency || this.currentCurrency || App.getActiveCurrency();
     const closedPnl = m.net_profit || 0;
     const openPnl = (m.open_pnl !== undefined) ? m.open_pnl : (this.dashboardData?.open_pnl || 0);
@@ -149,6 +197,10 @@ const Dashboard = {
       const ddR = m.current_drawdown_r || 0;
       curDdrEl.textContent = `${ddR > 0 ? '-' : ''}${Math.abs(ddR).toFixed(2)} R from ATH`;
     }
+    this.renderCurrentStreak(m);
+  },
+
+  renderCurrentStreak(m) {
     const curStreakEl = document.getElementById('dashCurrentStreak');
     if (curStreakEl) {
       const stType = m.current_streak_type || 'NONE';
@@ -166,11 +218,128 @@ const Dashboard = {
     }
   },
 
+  /**
+   * All-accounts KPIs without summing different currencies: returns are the
+   * equal-weighted average of the accounts, per-trade figures are in % of the
+   * trade's own account start balance. Counts and streaks stay as they are.
+   */
+  renderOverviewKPIs(m, ov) {
+    const signClass = v => (v > 0.001 ? 'color-green' : (v < -0.001 ? 'color-red' : 'color-muted'));
+    const accounts = ov.active_accounts || 0;
+    const accountsText = `${accounts} account${accounts === 1 ? '' : 's'}`;
+
+    const pnlEl = document.getElementById('dashNetPnl');
+    if (pnlEl) {
+      pnlEl.textContent = this.formatPct(ov.avg_return_pct);
+      pnlEl.className = `metric-value ${ov.avg_return_pct >= 0 ? 'color-green' : 'color-red'}`;
+    }
+    const pnlSubEl = document.getElementById('dashNetPnlSub');
+    if (pnlSubEl) {
+      pnlSubEl.innerHTML = ov.open_trades_count > 0
+        ? `Closed trades · ${accountsText} · Floating: <span class="${signClass(ov.avg_floating_pct)}" style="font-weight:700;">${this.formatPct(ov.avg_floating_pct)}</span>`
+        : `Closed trades · ${accountsText}`;
+    }
+
+    const openPnlEl = document.getElementById('dashOpenPnl');
+    if (openPnlEl) {
+      openPnlEl.textContent = this.formatPct(ov.avg_floating_pct);
+      openPnlEl.className = `metric-value ${signClass(ov.avg_floating_pct)}`;
+    }
+    const openCount = ov.open_trades_count || 0;
+    const openAccounts = ov.open_accounts_count || 0;
+    this.setText('dashOpenTradesSub', `${openCount} Active Trade${openCount === 1 ? '' : 's'}${openCount ? ` in ${openAccounts} account${openAccounts === 1 ? '' : 's'}` : ''}`);
+
+    this.setText('dashWinRate', `${m.win_rate || 0}%`);
+    this.setText('dashWinLossCount', `${m.winning_trades || 0}W - ${m.losing_trades || 0}L (${m.breakeven_trades || 0} BE)`);
+
+    const pf = ov.profit_factor || 0;
+    const pfEl = document.getElementById('dashProfitFactor');
+    if (pfEl) {
+      pfEl.textContent = pf > 100 ? '∞' : pf.toFixed(2);
+      pfEl.className = `metric-value ${pf >= 1.5 ? 'color-green' : (pf >= 1.0 ? 'color-blue' : 'color-red')}`;
+    }
+
+    this.setText('dashTotalTrades', m.total_trades || 0);
+    this.setText('dashAvgWin', this.formatPct(ov.avg_win_pct));
+    this.setText('dashAvgLoss', this.formatPct(-(ov.avg_loss_pct || 0)));
+    this.setText('dashWinLossRatio', `${(ov.win_loss_ratio || 0).toFixed(2)}:1`);
+
+    const expEl = document.getElementById('dashExpectancy');
+    if (expEl) expEl.textContent = this.formatPct(ov.expectancy_pct);
+    this.setText('dashSharpe', (ov.sharpe_ratio || 0).toFixed(2));
+    this.setText('dashDrawdown', `-${(ov.max_drawdown_pct || 0).toFixed(1)}%`);
+    this.setText('dashStreaks', `W: ${m.max_win_streak || 0} / L: ${m.max_loss_streak || 0}`);
+    this.setText('dashCurrentDrawdown', `-${(ov.current_drawdown_pct || 0).toFixed(1)}%`);
+    const ddR = ov.current_drawdown_r || 0;
+    this.setText('dashCurrentDrawdownR', `${ddR > 0 ? '-' : ''}${Math.abs(ddR).toFixed(2)} R from ATH`);
+    this.renderCurrentStreak(m);
+  },
+
+  renderAccountComparison() {
+    const card = document.getElementById('accountComparisonCard');
+    const body = document.getElementById('accountComparisonBody');
+    if (!card || !body) return;
+    const ov = this.getOverview();
+    body.innerHTML = '';
+    if (!ov) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+
+    const signClass = v => (v > 0.001 ? 'color-green' : (v < -0.001 ? 'color-red' : 'color-muted'));
+    ov.accounts.forEach(row => {
+      const key = `acc-${row.account_id}`;
+      const color = this.ACCOUNT_LINE_COLORS[(row.color_index || 0) % this.ACCOUNT_LINE_COLORS.length];
+      const hasTrades = row.total_trades > 0;
+      const money = (value, opts = {}) => this.escapeHtml(App.formatMoney(value, row.currency, opts));
+      const tr = document.createElement('tr');
+      tr.className = 'account-compare-row';
+      tr.dataset.key = key;
+      tr.title = `Open ${row.name}`;
+      tr.innerHTML = `
+        <td>
+          <span class="account-compare-name"><span class="account-compare-dot" style="background:${color};"></span>${this.escapeHtml(row.name)}</span>
+          <span class="color-muted" style="font-size:11px;margin-left:6px;">${this.escapeHtml(row.currency)}${row.platform ? ` · ${this.escapeHtml(row.platform)}` : ''}</span>
+        </td>
+        <td>${money(row.initial_balance, { decimals: 0 })}</td>
+        <td class="${signClass(row.net_profit)}">${hasTrades ? money(row.net_profit, { showSign: true }) : '—'}</td>
+        <td class="${signClass(row.return_pct || 0)}" style="font-weight:700;">${hasTrades && row.return_pct !== null ? this.formatPct(row.return_pct) : '—'}</td>
+        <td class="${signClass(row.open_pnl)}">${row.open_trades_count ? `${money(row.open_pnl, { showSign: true })} (${this.formatPct(row.floating_pct || 0)})` : '—'}</td>
+        <td class="${hasTrades && row.max_drawdown_pct > 0 ? 'color-red' : 'color-muted'}">${hasTrades ? `-${(row.max_drawdown_pct || 0).toFixed(1)}%` : '—'}</td>
+        <td>${row.total_trades}</td>
+        <td>${hasTrades ? `${row.win_rate}%` : '—'}</td>
+        <td class="${signClass(row.total_r)}">${hasTrades ? `${row.total_r > 0 ? '+' : ''}${row.total_r.toFixed(2)} R` : '—'}</td>
+      `;
+      // Hovering a row highlights the account's line in the return chart.
+      const hasLine = () => Boolean(this.returnChart && this.returnChart.series.some(s => s.key === key));
+      tr.addEventListener('pointerenter', e => {
+        if (e.pointerType === 'mouse') this.setReturnChartHighlight(hasLine() ? key : null);
+      });
+      tr.addEventListener('pointerleave', e => {
+        if (e.pointerType === 'mouse') this.setReturnChartHighlight(null);
+      });
+      tr.addEventListener('click', () => this.openAccount(row.account_id));
+      body.appendChild(tr);
+    });
+    this.updateReturnLegendState();
+  },
+
+  /** Drill down from the overview into one account (same as the account dropdown). */
+  openAccount(accountId) {
+    const select = document.getElementById('globalAccountSelect');
+    if (!select) return;
+    select.value = String(accountId);
+    select.dispatchEvent(new Event('change'));
+  },
+
   renderCalendar(calendarData = {}, currency) {
     const cur = currency || this.currentCurrency || App.getActiveCurrency();
     const grid = document.getElementById('calendarDaysGrid');
     if (!grid) return;
     grid.innerHTML = '';
+    const isOverview = Boolean(this.getOverview());
+    const mode = this.effectiveCalendarMode();
 
     const year = this.currentCalendarDate.getFullYear();
     const month = this.currentCalendarDate.getMonth();
@@ -223,16 +392,18 @@ const Dashboard = {
         monthBE += dayData.breakevens !== undefined ? dayData.breakevens : (dayData.breakeven_trades || 0);
         monthPct += pctVal;
 
-        if (pnl > 0.01) {
+        // The overview has no currency total per day; colour by return.
+        const dayResult = isOverview ? pctVal : pnl;
+        if (dayResult > (isOverview ? 0.001 : 0.01)) {
           statusClass = 'profit';
-        } else if (pnl < -0.01) {
+        } else if (dayResult < (isOverview ? -0.001 : -0.01)) {
           statusClass = 'loss';
         }
 
-        if (this.calendarMode === 'r') {
+        if (mode === 'r') {
           const rSign = rVal > 0 ? '+' : '';
           pnlText = `<div class="day-pnl ${rVal >= 0 ? 'color-green' : 'color-red'}">${rSign}${rVal.toFixed(2)} R</div>`;
-        } else if (this.calendarMode === 'pct') {
+        } else if (mode === 'pct') {
           const pctSign = pctVal > 0 ? '+' : '';
           pnlText = `<div class="day-pnl ${pctVal >= 0 ? 'color-green' : 'color-red'}">${pctSign}${pctVal.toFixed(2)}%</div>`;
         } else {
@@ -266,7 +437,11 @@ const Dashboard = {
       grid.appendChild(card);
     }
 
-    // Render Month Summary
+    // Render Month Summary (no money total in the multi-account overview;
+    // there RETURN is the equal-weighted average of the accounts).
+    const sumPnlBox = document.getElementById('calSummaryPnlBox');
+    if (sumPnlBox) sumPnlBox.style.display = isOverview ? 'none' : '';
+    this.setText('calSummaryPctLabel', isOverview ? 'RETURN (Ø)' : 'RETURN');
     const sumPnlEl = document.getElementById('calSummaryPnl');
     if (sumPnlEl) {
       sumPnlEl.textContent = App.formatMoney(monthPnl, cur, { showSign: true });
@@ -295,18 +470,18 @@ const Dashboard = {
     // following month (Oct 31 - 1 month = "Sep 31" = Oct 1).
     this.currentCalendarDate.setDate(1);
     this.currentCalendarDate.setMonth(this.currentCalendarDate.getMonth() - 1);
-    this.renderCalendar(this.dashboardData ? this.dashboardData.calendar : {}, this.currentCurrency);
+    this.renderCalendar(this.getCalendarData(), this.currentCurrency);
   },
 
   calendarNextMonth() {
     this.currentCalendarDate.setDate(1);
     this.currentCalendarDate.setMonth(this.currentCalendarDate.getMonth() + 1);
-    this.renderCalendar(this.dashboardData ? this.dashboardData.calendar : {}, this.currentCurrency);
+    this.renderCalendar(this.getCalendarData(), this.currentCurrency);
   },
 
   calendarToday() {
     this.currentCalendarDate = new Date();
-    this.renderCalendar(this.dashboardData ? this.dashboardData.calendar : {}, this.currentCurrency);
+    this.renderCalendar(this.getCalendarData(), this.currentCurrency);
   },
 
   /**
@@ -409,7 +584,8 @@ const Dashboard = {
       key: `acc-${acc.account_id}`,
       label: acc.name,
       currency: acc.currency,
-      color: this.ACCOUNT_LINE_COLORS[idx % this.ACCOUNT_LINE_COLORS.length],
+      // Same colour slot as the account's row in the comparison table.
+      color: this.ACCOUNT_LINE_COLORS[(acc.color_index ?? idx) % this.ACCOUNT_LINE_COLORS.length],
       dashed: false,
       account: acc,
       totalPct: acc.return_pct,
@@ -678,10 +854,15 @@ const Dashboard = {
   },
 
   updateReturnLegendState() {
+    const hl = this.returnChartHighlight;
+    document.querySelectorAll('#accountComparisonBody .account-compare-row').forEach(row => {
+      const isActive = Boolean(hl) && row.dataset.key === hl;
+      row.classList.toggle('is-active', isActive);
+      row.classList.toggle('is-dimmed', Boolean(hl) && !isActive);
+    });
     const legend = document.getElementById('equityCurveLegend');
     const rc = this.returnChart;
     if (!legend || !rc) return;
-    const hl = this.returnChartHighlight;
     legend.querySelectorAll('.equity-legend-item').forEach(item => {
       const s = rc.series.find(entry => entry.key === item.dataset.key);
       const isActive = Boolean(hl) && item.dataset.key === hl;
@@ -780,10 +961,16 @@ const Dashboard = {
     ctx.fillText(points[points.length - 1].time.substring(5, 10), width - padding.right, height - 12);
   },
 
-  renderDailyPnlBars(calendarData = {}) {
+  renderDailyPnlBars(calendarData = {}, currency) {
     const container = document.getElementById('dailyPnlBarContainer');
     if (!container) return;
     container.innerHTML = '';
+    const isOverview = Boolean(this.getOverview());
+    const sym = App.getCurrencySymbol(currency || this.currentCurrency || App.getActiveCurrency());
+    this.setText('dailyPnlTitle', isOverview ? 'Daily Return (Ø %)' : 'Daily Net P&L');
+    this.setText('dailyPnlSubtitle', isOverview ? 'Equal-weighted across accounts' : 'P&L Distribution');
+    // Overview: equal-weighted % per day; single account: amount in its currency.
+    const dayValue = day => Number((isOverview ? day.pct_return : day.net_profit) || 0);
 
     const dates = Object.keys(calendarData).sort();
     if (dates.length === 0) {
@@ -801,8 +988,11 @@ const Dashboard = {
     const height = canvas.height;
     const padding = { top: 20, right: 20, bottom: 40, left: 60 };
 
-    const pnls = dates.map(d => calendarData[d].net_profit);
-    const maxAbsPnl = Math.max(...pnls.map(Math.abs), 100);
+    const pnls = dates.map(d => dayValue(calendarData[d]));
+    const maxAbsPnl = Math.max(...pnls.map(Math.abs), isOverview ? 0.5 : 100);
+    const axisLabel = (value, sign) => (isOverview
+      ? `${sign}${value.toFixed(value < 10 ? 1 : 0)}%`
+      : `${sign}${sym}${Math.round(value)}`);
 
     const chartW = width - padding.left - padding.right;
     const chartH = height - padding.top - padding.bottom;
@@ -820,16 +1010,16 @@ const Dashboard = {
     ctx.fillStyle = '#6b7280';
     ctx.font = '10px -apple-system, sans-serif';
     ctx.textAlign = 'right';
-    ctx.fillText(`+$${Math.round(maxAbsPnl)}`, padding.left - 8, padding.top + 8);
-    ctx.fillText(`$0`, padding.left - 8, zeroY + 3);
-    ctx.fillText(`-$${Math.round(maxAbsPnl)}`, padding.left - 8, height - padding.bottom);
+    ctx.fillText(axisLabel(maxAbsPnl, '+'), padding.left - 8, padding.top + 8);
+    ctx.fillText(isOverview ? '0%' : `${sym}0`, padding.left - 8, zeroY + 3);
+    ctx.fillText(axisLabel(maxAbsPnl, '-'), padding.left - 8, height - padding.bottom);
 
     // Bars
     const barWidth = Math.max(3, Math.min(22, (chartW / dates.length) - 4));
     const step = chartW / dates.length;
 
     dates.forEach((d, idx) => {
-      const pnl = calendarData[d].net_profit;
+      const pnl = dayValue(calendarData[d]);
       const x = padding.left + (idx * step) + (step - barWidth) / 2;
       const barHeight = (Math.abs(pnl) / maxAbsPnl) * (chartH / 2);
 

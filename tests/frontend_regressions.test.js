@@ -245,3 +245,53 @@ test('overview chart: accounts share one time axis and hold their last return to
   assert.equal(dashboard.curvePointAt(series[0].points, t('2026-09-02 12:00')).pct, 0);
   assert.equal(dashboard.curvePointAt(series[0].points, t('2026-09-04 00:00')).pct, 10);
 });
+
+function overviewDashboardHarness() {
+  const ids = ['dashNetPnl', 'dashNetPnlSub', 'dashNetPnlLabel', 'dashOpenPnl', 'dashOpenPnlLabel', 'dashOpenTradesSub',
+    'dashWinRate', 'dashWinLossCount', 'dashProfitFactor', 'dashProfitFactorSub', 'dashTotalTrades', 'dashAvgWin',
+    'dashAvgLoss', 'dashWinLossRatio', 'dashExpectancy', 'dashExpectancySub', 'dashSharpe', 'dashDrawdown',
+    'dashStreaks', 'dashCurrentDrawdown', 'dashCurrentDrawdownR'];
+  const elements = Object.fromEntries(ids.map(id => [id, { textContent: '', innerHTML: '', className: '' }]));
+  const h = harness(elements);
+  h.context.App.formatMoney = (value, currency) => `${currency} ${value}`;
+  h.context.App.getActiveCurrency = () => 'USD';
+  const dashboard = h.load('dashboard.js', 'Dashboard');
+  return { dashboard, elements };
+}
+
+const overviewMetrics = { win_rate: 75, winning_trades: 3, losing_trades: 1, total_trades: 4, net_profit: 21000, profit_factor: 6, avg_win: 8666, avg_loss: 5000 };
+const overviewSummary = {
+  accounts: [{ account_id: 1 }, { account_id: 2 }], active_accounts: 2, avg_return_pct: 15, avg_floating_pct: 1,
+  open_trades_count: 1, open_accounts_count: 1, profit_factor: 7, avg_win_pct: 11.67, avg_loss_pct: 5, win_loss_ratio: 2.33,
+  expectancy_pct: 7.5, sharpe_ratio: 1.2, max_drawdown_pct: 2.13, current_drawdown_pct: 2.13, current_drawdown_r: 2.5, calendar: {},
+};
+
+test('all-accounts KPIs show percent of each account instead of summed currency amounts', () => {
+  const { dashboard, elements } = overviewDashboardHarness();
+  dashboard.dashboardData = { overview: overviewSummary, metrics: overviewMetrics };
+  dashboard.renderKPIs(overviewMetrics, 'USD');
+  assert.equal(elements.dashNetPnlLabel.textContent, 'Avg. Return (equal-weighted)');
+  assert.equal(elements.dashNetPnl.textContent, '+15.00 %');
+  assert.equal(elements.dashProfitFactor.textContent, '7.00');
+  assert.equal(elements.dashAvgLoss.textContent, '-5.00 %');
+  assert.equal(elements.dashExpectancy.textContent, '+7.50 %');
+  assert.equal(elements.dashDrawdown.textContent, '-2.1%');
+  for (const el of Object.values(elements)) assert.ok(!String(el.textContent).includes('USD'), 'no currency in overview KPIs');
+
+  // Selecting one account switches back to that account's currency.
+  dashboard.dashboardData = { overview: null, metrics: overviewMetrics };
+  dashboard.renderKPIs(overviewMetrics, 'GBP');
+  assert.equal(elements.dashNetPnlLabel.textContent, 'Net Cumulative P&L');
+  assert.equal(elements.dashNetPnl.textContent, 'GBP 21000');
+});
+
+test('calendar falls back from currency to percent in the all-accounts overview', () => {
+  const { dashboard } = overviewDashboardHarness();
+  dashboard.calendarMode = 'currency';
+  dashboard.dashboardData = { overview: overviewSummary, calendar: { money: true } };
+  assert.equal(dashboard.effectiveCalendarMode(), 'pct');
+  assert.equal(dashboard.getCalendarData(), overviewSummary.calendar);
+  dashboard.dashboardData = { overview: null, calendar: { money: true } };
+  assert.equal(dashboard.effectiveCalendarMode(), 'currency');
+  assert.deepEqual(dashboard.getCalendarData(), { money: true });
+});

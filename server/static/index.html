@@ -89,12 +89,12 @@
         <!-- Top Metrics Cards Grid -->
         <div class="metrics-grid">
           <div class="metric-card">
-            <span class="metric-label">Net Cumulative P&L</span>
+            <span class="metric-label" id="dashNetPnlLabel">Net Cumulative P&L</span>
             <span id="dashNetPnl" class="metric-value color-green">0.00</span>
             <span id="dashNetPnlSub" class="metric-sub">Closed Trades Profit</span>
           </div>
           <div class="metric-card" id="dashOpenPositionsCard">
-            <span class="metric-label">Open Positions P&L</span>
+            <span class="metric-label" id="dashOpenPnlLabel">Open Positions P&L</span>
             <span id="dashOpenPnl" class="metric-value color-muted">0.00</span>
             <span id="dashOpenTradesSub" class="metric-sub">0 Active Trades</span>
           </div>
@@ -106,7 +106,7 @@
           <div class="metric-card">
             <span class="metric-label">Profit Factor</span>
             <span id="dashProfitFactor" class="metric-value color-green">0.00</span>
-            <span class="metric-sub">Gross Win / Gross Loss</span>
+            <span id="dashProfitFactorSub" class="metric-sub">Gross Win / Gross Loss</span>
           </div>
           <div class="metric-card">
             <span class="metric-label">Total Trades</span>
@@ -125,7 +125,7 @@
           <div class="metric-card">
             <span class="metric-label">Expectancy / Trade</span>
             <span id="dashExpectancy" class="metric-value">0.00</span>
-            <span class="metric-sub">Expected Value</span>
+            <span id="dashExpectancySub" class="metric-sub">Expected Value</span>
           </div>
           <div class="metric-card">
             <span class="metric-label">Sharpe Ratio</span>
@@ -179,7 +179,7 @@
 
           <!-- Calendar Month Summary Bar -->
           <div id="calendarMonthSummary" class="calendar-month-summary" style="margin-top:14px;background:#0d131f;padding:12px 18px;border-radius:8px;border:1px solid #1a2233;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;">
-            <div>
+            <div id="calSummaryPnlBox">
               <span style="font-size:11px;color:#9ca3af;display:block;">MONTH P&L</span>
               <span id="calSummaryPnl" style="font-size:17px;font-weight:700;" class="color-green">+0.00</span>
             </div>
@@ -192,7 +192,7 @@
               <span id="calSummaryWBL" style="font-size:14px;font-weight:600;color:#fff;">0W · 0BE · 0L</span>
             </div>
             <div>
-              <span style="font-size:11px;color:#9ca3af;display:block;">RETURN</span>
+              <span id="calSummaryPctLabel" style="font-size:11px;color:#9ca3af;display:block;">RETURN</span>
               <span id="calSummaryPct" style="font-size:17px;font-weight:700;color:#10b981;">+0.0%</span>
             </div>
           </div>
@@ -214,12 +214,31 @@
 
           <div class="chart-card">
             <div class="chart-header">
-              <span class="chart-title">Daily Net P&L</span>
-              <span class="section-subtitle">P&L Distribution</span>
+              <span class="chart-title" id="dailyPnlTitle">Daily Net P&L</span>
+              <span class="section-subtitle" id="dailyPnlSubtitle">P&L Distribution</span>
             </div>
             <div id="dailyPnlBarContainer" class="chart-container">
               <!-- Canvas rendered dynamically -->
             </div>
+          </div>
+        </div>
+
+        <!-- Multi-account overview: each account in its own currency -->
+        <div id="accountComparisonCard" class="table-card" style="display:none;margin-bottom:24px;">
+          <div class="table-header-bar">
+            <span class="chart-title">Account Comparison</span>
+            <span class="section-subtitle">Amounts in each account's own currency · click a row to open the account</span>
+          </div>
+          <div class="data-table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Account</th><th>Start</th><th>Net P&L</th><th>Return</th><th>Floating</th>
+                  <th>Max DD</th><th>Trades</th><th>Win Rate</th><th>R</th>
+                </tr>
+              </thead>
+              <tbody id="accountComparisonBody"></tbody>
+            </table>
           </div>
         </div>
       </main>
