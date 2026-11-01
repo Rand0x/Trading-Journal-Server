@@ -581,3 +581,63 @@ def _has_nearby_candle(
 ) -> bool:
     return any(abs(candle["time"] - target_ts) <= interval_seconds * 2 for candle in candles)
 
+
+
+# Intraday bars (M1/M5) make up most of the candle table. Older ones are only
+# needed around journaled trades; everything else is dropped by the retention.
+PRUNABLE_TIMEFRAMES = ("M1", "M5")
+CANDLE_RETENTION_DAYS = 45
+DEFAULT_CHART_BARS = 2000
+
+
+def prune_market_candles(now_ts: Optional[int] = None) -> int:
+    """Delete old M1/M5 candles that no trade chart can request anymore.
+
+    Kept: every bar of the last ``CANDLE_RETENTION_DAYS`` days (live and pending
+    charts) and, per symbol, the full M15-sized replay window around each trade
+    (``DEFAULT_CHART_BARS`` + context bars before the entry, context bars after
+    the exit), so M15 charts aggregated from lower timeframes stay complete.
+    """
+    now_ts = int(now_ts or datetime.now(timezone.utc).timestamp())
+    cutoff = now_ts - CANDLE_RETENTION_DAYS * 86400
+    window = _timeframe_to_seconds("M15")
+    before = (DEFAULT_CHART_BARS + CONTEXT_BARS + 2) * window
+    after = CONTEXT_BARS * window
+    deleted = 0
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT DISTINCT symbol FROM market_candles WHERE timestamp < ? AND timeframe IN ({', '.join('?' for _ in PRUNABLE_TIMEFRAMES)});",
+            (cutoff, *PRUNABLE_TIMEFRAMES),
+        )
+        symbols = [row["symbol"] for row in cursor.fetchall()]
+        for symbol in symbols:
+            cursor.execute(
+                "SELECT open_time, close_time FROM trades WHERE UPPER(symbol) = ?;",
+                (symbol.upper(),),
+            )
+            keep = [(cutoff, now_ts + 86400)]
+            for t in cursor.fetchall():
+                try:
+                    open_ts = int(_parse_dt(t["open_time"]).timestamp())
+                    close_ts = int(_parse_dt(t["close_time"] or t["open_time"]).timestamp())
+                except (TypeError, ValueError):
+                    # An unreadable trade time must never cost chart data: keep this symbol.
+                    keep = [(0, now_ts + 86400)]
+                    break
+                keep.append((open_ts - before, close_ts + after))
+            keep.sort()
+            # Delete the gaps between the merged keep-intervals.
+            gap_start = 0
+            for start, end in keep:
+                if start > gap_start:
+                    cursor.execute(
+                        f"DELETE FROM market_candles WHERE symbol = ? AND timeframe IN ({', '.join('?' for _ in PRUNABLE_TIMEFRAMES)}) AND timestamp >= ? AND timestamp < ?;",
+                        (symbol, *PRUNABLE_TIMEFRAMES, gap_start, start),
+                    )
+                    deleted += cursor.rowcount
+                gap_start = max(gap_start, end + 1)
+        conn.commit()
+    if deleted:
+        logger.info("Candle retention removed %d old M1/M5 bars outside trade windows.", deleted)
+    return deleted

@@ -9,6 +9,15 @@ const App = {
   activeAccountId: null,
   dateFrom: null,
   dateTo: null,
+  datePreset: 'all',
+  viewTitles: {
+    dashboard: 'Dashboard', trades: 'Trade Log', analytics: 'Analytics',
+    playbooks: 'Playbooks', review: 'Weekly Review', accounts: 'Accounts & Sync',
+  },
+  presetLabels: {
+    all: 'All time', today: 'Today', week: 'This week', month: 'This month',
+    '30days': 'Last 30 days', '90days': 'Last 90 days', year: 'Year to date',
+  },
   accounts: [],
   playbooks: [],
   mistakes: [],
@@ -121,6 +130,11 @@ const App = {
       v.classList.toggle('active', v.id === `view-${viewName}`);
     });
 
+    const title = document.getElementById('topbarTitle');
+    if (title) title.textContent = this.viewTitles[viewName] || '';
+    if (document.title !== undefined) document.title = `${this.viewTitles[viewName] || 'Dashboard'} · Trading Journal`;
+    this.toggleSidebar(false);
+
     if (viewName !== 'trades' && typeof Trades !== 'undefined' && Trades.stopAutoRefresh) {
       Trades.stopAutoRefresh();
     }
@@ -146,11 +160,8 @@ const App = {
     await Playbooks.load();
 
     const query = this.getQueryParamsFromHash();
-    if (initialRoute === 'trades' && (query.date || query.search)) {
-      const searchInput = document.getElementById('tradeSearchInput');
-      if (searchInput) {
-        searchInput.value = query.date || query.search;
-      }
+    if (initialRoute === 'trades') {
+      this.applyTradeQuery(query);
     }
 
     const currentHashClean = (window.location.hash || '').replace(/^#\/?/, '').split('?')[0].trim().toLowerCase();
@@ -180,14 +191,7 @@ const App = {
       const query = this.getQueryParamsFromHash();
       let searchChanged = false;
       if (route === 'trades') {
-        const searchInput = document.getElementById('tradeSearchInput');
-        if (searchInput) {
-          const expectedSearch = query.date || query.search || '';
-          if (searchInput.value !== expectedSearch) {
-            searchInput.value = expectedSearch;
-            searchChanged = true;
-          }
-        }
+        searchChanged = this.applyTradeQuery(query);
       }
       if (this.currentView !== route) {
         this.navigateTo(route, false);
@@ -204,18 +208,26 @@ const App = {
     if (accSelect) {
       accSelect.addEventListener('change', (e) => {
         this.activeAccountId = e.target.value ? parseInt(e.target.value) : null;
+        this.updateSidebarAccount();
         this.refreshCurrentView();
       });
     }
 
-    // Global Date Presets
-    const datePreset = document.getElementById('globalDatePreset');
-    if (datePreset) {
-      datePreset.addEventListener('change', (e) => {
-        this.applyDatePreset(e.target.value);
+    // Global Date Presets (segmented control)
+    const presets = document.getElementById('globalDatePresets');
+    if (presets) {
+      presets.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-preset]');
+        if (!btn) return;
+        presets.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+        this.applyDatePreset(btn.dataset.preset);
         this.refreshCurrentView();
       });
     }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.toggleSidebar(false);
+    });
 
     // Drag and drop setup for file imports
     const dropzone = document.getElementById('importDropzone');
@@ -283,21 +295,47 @@ const App = {
         Accounts.load();
         break;
       case 'review':
-        // `const Review` (like the other modules) is not a window property,
-        // so `window.Review` was always undefined and the review never loaded.
+        // Top-level `const` modules are not properties of window.
         if (typeof Review !== 'undefined') Review.load();
         break;
     }
   },
 
-  navigateToTradesWithDate(dateStr) {
+  /**
+   * Apply #trades?date=YYYY-MM-DD (realized-on-day filter) and ?search=...
+   * Returns true when either filter changed.
+   */
+  applyTradeQuery(query) {
+    let changed = false;
     const searchInput = document.getElementById('tradeSearchInput');
-    if (searchInput) {
-      searchInput.value = dateStr || '';
+    const expectedSearch = query.search || '';
+    if (searchInput && searchInput.value !== expectedSearch) {
+      searchInput.value = expectedSearch;
+      changed = true;
     }
-    const targetHash = dateStr ? `#trades?date=${encodeURIComponent(dateStr)}` : '#trades';
+    // ?date=YYYY-MM-DD (one day) or ?from=...&to=... (e.g. a calendar week)
+    const from = query.date || query.from || '';
+    const to = query.date || query.to || from;
+    const expected = !from ? '' : (from === to ? from : `${from}..${to}`);
+    if (typeof Trades !== 'undefined' && Trades.closedOnFilter !== expected) {
+      Trades.setClosedRange(from, to);
+      changed = true;
+    }
+    return changed;
+  },
+
+  navigateToTradesWithDate(dateStr) {
+    this.navigateToTradesWithRange(dateStr, dateStr);
+  },
+
+  navigateToTradesWithRange(from, to) {
+    const single = from && (!to || to === from);
+    this.applyTradeQuery(single ? { date: from } : { from: from || '', to: to || '' });
+    const targetHash = !from ? '#trades'
+      : single ? `#trades?date=${encodeURIComponent(from)}`
+        : `#trades?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
     if (window.location.hash !== targetHash) {
-      history.pushState({ view: 'trades', date: dateStr }, '', targetHash);
+      history.pushState({ view: 'trades', from, to }, '', targetHash);
     }
     this.navigateTo('trades', false);
   },
@@ -343,21 +381,51 @@ const App = {
 
   applyDatePreset(preset) {
     const now = new Date();
+    // Local calendar dates (toISOString would shift the day across timezones).
+    const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const daysAgo = n => new Date(now.getFullYear(), now.getMonth(), now.getDate() - n);
+    this.datePreset = this.presetLabels[preset] ? preset : 'all';
     this.dateFrom = null;
     this.dateTo = null;
 
     if (preset === 'today') {
-      this.dateFrom = this.toLocalDateString(now);
+      this.dateFrom = ymd(now);
       this.dateTo = this.dateFrom;
     } else if (preset === 'week') {
-      // Monday-based, like the weekly review.
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
-      this.dateFrom = this.toLocalDateString(firstDay);
+      this.dateFrom = ymd(daysAgo((now.getDay() + 6) % 7)); // Monday
     } else if (preset === 'month') {
-      this.dateFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+      this.dateFrom = ymd(new Date(now.getFullYear(), now.getMonth(), 1));
     } else if (preset === '30days') {
-      const past = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
-      this.dateFrom = this.toLocalDateString(past);
+      this.dateFrom = ymd(daysAgo(30));
+    } else if (preset === '90days') {
+      this.dateFrom = ymd(daysAgo(90));
+    } else if (preset === 'year') {
+      this.dateFrom = `${now.getFullYear()}-01-01`;
+    }
+  },
+
+  getPeriodLabel() {
+    return this.presetLabels[this.datePreset] || 'All time';
+  },
+
+  toggleSidebar(force) {
+    if (typeof document === 'undefined' || !document.body || !document.body.classList) return;
+    const open = force === undefined ? !document.body.classList.contains('sidebar-open') : force;
+    document.body.classList.toggle('sidebar-open', open);
+  },
+
+  updateSidebarAccount() {
+    const nameEl = document.getElementById('sidebarAccountName');
+    const metaEl = document.getElementById('sidebarAccountMeta');
+    if (!nameEl || !metaEl) return;
+    const acc = this.getActiveAccount();
+    if (acc) {
+      nameEl.textContent = acc.name || 'Account';
+      metaEl.textContent = [acc.platform, acc.broker, acc.currency].filter(Boolean).join(' · ');
+    } else {
+      const count = (this.accounts || []).length;
+      nameEl.textContent = 'All accounts';
+      metaEl.textContent = `${count} account${count === 1 ? '' : 's'} · data stays on this server`;
     }
   },
 
@@ -367,10 +435,11 @@ const App = {
 
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
-    toast.innerHTML = `
-      <span>${type === 'success' ? '✓' : (type === 'error' ? '✗' : 'ℹ')}</span>
-      <span>${message}</span>
-    `;
+    const icon = document.createElement('span');
+    icon.textContent = type === 'success' ? '✓' : (type === 'error' ? '✕' : 'ℹ');
+    const text = document.createElement('span');
+    text.textContent = message;
+    toast.append(icon, text);
 
     container.appendChild(toast);
     setTimeout(() => {

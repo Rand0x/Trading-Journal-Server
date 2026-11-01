@@ -36,10 +36,10 @@ const Playbooks = {
 
       card.innerHTML = `
         <div class="playbook-card-header">
-          <span class="playbook-card-title">${p.name}</span>
+          <span class="playbook-card-title">${TradeDetail.escapeHtml(p.name)}</span>
         </div>
-        <p style="font-size:13px;color:#9ca3af;">${p.description || 'No description provided.'}</p>
-        ${p.rules ? `<div style="background:#0a0e17;padding:10px;border-radius:6px;font-size:12px;white-space:pre-line;color:#cbd5e1;">${p.rules}</div>` : ''}
+        <p style="font-size:13px;color:#9ca3af;">${TradeDetail.escapeHtml(p.description || 'No description provided.')}</p>
+        ${p.rules ? `<div style="background:#0a0e17;padding:10px;border-radius:6px;font-size:12px;white-space:pre-line;color:#cbd5e1;">${TradeDetail.escapeHtml(p.rules)}</div>` : ''}
         <div style="display:flex;align-items:center;justify-content:space-between;border-top:1px solid #1f2937;padding-top:12px;margin-top:auto;">
           <div>
             <span style="font-size:11px;color:#6b7280;display:block;">PERFORMANCE</span>
@@ -50,11 +50,11 @@ const Playbooks = {
             <span style="font-size:14px;font-weight:700;" class="${pnlClass}">${App.formatMoney(p.total_pnl || 0, null, { showSign: true })}</span>
           </div>
           <div style="display:flex;gap:6px;">
-            <button class="btn btn-secondary btn-sm" onclick="Playbooks.openEditPlaybook(${p.id})" title="Edit Playbook">
-              ✏️
+            <button class="btn btn-secondary btn-sm" onclick="Playbooks.openEditPlaybook(${p.id})" title="Edit playbook" aria-label="Edit playbook">
+              <svg style="width:14px;height:14px;"><use href="#i-edit"/></svg>
             </button>
-            <button class="btn btn-secondary btn-sm" onclick="Playbooks.deletePlaybook(${p.id})" style="color:#ef4444;" title="Delete Playbook">
-              🗑️
+            <button class="btn btn-secondary btn-sm" onclick="Playbooks.deletePlaybook(${p.id})" style="color:#ef4444;" title="Delete playbook" aria-label="Delete playbook">
+              <svg style="width:14px;height:14px;"><use href="#i-trash"/></svg>
             </button>
           </div>
         </div>
@@ -75,12 +75,12 @@ const Playbooks = {
 
       card.innerHTML = `
         <div class="playbook-card-header">
-          <span class="playbook-card-title">${m.name}</span>
+          <span class="playbook-card-title">${TradeDetail.escapeHtml(m.name)}</span>
           <span class="badge" style="background:${sevColor}22;color:${sevColor};border:1px solid ${sevColor}55;">
             ${m.severity} SEVERITY
           </span>
         </div>
-        <p style="font-size:13px;color:#9ca3af;">${m.description || 'No description.'}</p>
+        <p style="font-size:13px;color:#9ca3af;">${TradeDetail.escapeHtml(m.description || 'No description.')}</p>
         <div style="display:flex;align-items:center;justify-content:space-between;border-top:1px solid #1f2937;padding-top:12px;margin-top:auto;">
           <div>
             <span style="font-size:11px;color:#6b7280;display:block;">OCCURRENCES</span>
@@ -90,8 +90,8 @@ const Playbooks = {
             <span style="font-size:11px;color:#6b7280;display:block;">TOTAL COST</span>
             <span style="font-size:14px;font-weight:700;color:#ef4444;">-${App.formatMoney(m.total_loss || 0)}</span>
           </div>
-          <button class="btn btn-secondary btn-sm" onclick="Playbooks.deleteMistake(${m.id})" style="color:#ef4444;" title="Delete Mistake">
-            🗑️
+          <button class="btn btn-secondary btn-sm" onclick="Playbooks.deleteMistake(${m.id})" style="color:#ef4444;" title="Delete mistake" aria-label="Delete mistake">
+            <svg style="width:14px;height:14px;"><use href="#i-trash"/></svg>
           </button>
         </div>
       `;

@@ -107,7 +107,7 @@ const Analytics = {
       const avgTrade = this.isOverview ? (s.avg_trade_pct || 0) : s.avg_trade;
       const avgText = this.isOverview ? App.formatPct(avgTrade) : App.formatMoney(s.avg_trade, cur);
       tr.innerHTML = `
-        <td style="font-weight:700;color:#60a5fa;">${s.symbol}</td>
+        <td style="font-weight:700;color:#60a5fa;">${TradeDetail.escapeHtml(s.symbol)}</td>
         <td>${s.trades}</td>
         <td style="font-weight:700;color:#10b981;">${s.win_rate}%</td>
         <td style="font-weight:700;" class="${pnlClass}">${this.formatResult(s, cur)}</td>
@@ -134,7 +134,7 @@ const Analytics = {
       const tr = document.createElement('tr');
       const pnlClass = this.resultValue(s) >= 0 ? 'color-green' : 'color-red';
       tr.innerHTML = `
-        <td style="font-weight:600;color:#fff;">${s.setup_name}</td>
+        <td style="font-weight:600;color:#fff;">${TradeDetail.escapeHtml(s.setup_name)}</td>
         <td>${s.trades}</td>
         <td style="font-weight:700;color:#10b981;">${s.win_rate}%</td>
         <td style="font-weight:700;" class="${pnlClass}">${this.formatResult(s, cur)}</td>
@@ -161,7 +161,7 @@ const Analytics = {
         ? App.formatPct(-(pct || 0))
         : `-${App.formatMoney(money, cur)}`);
       tr.innerHTML = `
-        <td style="font-weight:600;color:#f87171;">${m.mistake_name}</td>
+        <td style="font-weight:600;color:#f87171;">${TradeDetail.escapeHtml(m.mistake_name)}</td>
         <td>${m.count}</td>
         <td style="font-weight:700;color:#ef4444;">${cost(m.total_loss, m.total_loss_pct)}</td>
         <td style="color:#fca5a5;">${cost(m.worst_loss, m.worst_loss_pct)}</td>
@@ -188,7 +188,7 @@ const Analytics = {
       card.innerHTML = `
         <div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-            <span style="font-weight:700;font-size:16px;color:#60a5fa;">${lvl.name}</span>
+            <span style="font-weight:700;font-size:16px;color:#60a5fa;">${TradeDetail.escapeHtml(lvl.name)}</span>
             <span class="badge" style="background:#1e293b;color:#9ca3af;font-size:11px;">Level ${lvl.level}</span>
           </div>
           <div style="margin-bottom:8px;">
@@ -260,9 +260,9 @@ const Analytics = {
       tr.innerHTML = `
         <td>
           <span style="display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap;">
-            <span class="chip-btn" style="background:#1e293b;color:#93c5fd;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${combo.signal_a}</span>
+            <span class="chip-btn" style="background:#1e293b;color:#93c5fd;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${TradeDetail.escapeHtml(combo.signal_a)}</span>
             <span style="color:#6b7280;">+</span>
-            <span class="chip-btn" style="background:#1e293b;color:#93c5fd;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${combo.signal_b}</span>
+            <span class="chip-btn" style="background:#1e293b;color:#93c5fd;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${TradeDetail.escapeHtml(combo.signal_b)}</span>
           </span>
         </td>
         <td>${combo.count} <span style="font-size:11px;color:#9ca3af;">(${combo.wins}W)</span></td>
@@ -294,7 +294,7 @@ const Analytics = {
         const avgR = item.avg_r != null ? item.avg_r : 0;
         tr.innerHTML = `
           <td style="font-weight:600;color:#fff;">
-            <span class="chip-btn" style="background:#1e293b;color:#a5b4fc;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${item.emotion}</span>
+            <span class="chip-btn" style="background:#1e293b;color:#a5b4fc;cursor:default;padding:2px 8px;font-size:11px;border-radius:4px;">${TradeDetail.escapeHtml(item.emotion)}</span>
           </td>
           <td>${item.count} <span style="font-size:11px;color:#9ca3af;">(${item.wins}W / ${item.losses}L)</span></td>
           <td style="font-weight:700;color:#10b981;">${item.win_rate}%</td>
@@ -311,64 +311,14 @@ const Analytics = {
 
   drawBarChart(container, items = [], currency) {
     const cur = currency || this.currentCurrency || App.getActiveCurrency();
-    const sym = App.getCurrencySymbol(cur);
-    container.innerHTML = '';
-    if (items.length === 0) return;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = container.clientWidth || 450;
-    canvas.height = 240;
-    container.appendChild(canvas);
-
-    const ctx = canvas.getContext('2d');
-    const width = canvas.width;
-    const height = canvas.height;
-    const padding = { top: 20, right: 20, bottom: 35, left: 55 };
-
-    const values = items.map(i => i.value);
-    const maxAbs = Math.max(...values.map(Math.abs), this.isOverview ? 0.5 : 50);
-    const axisLabel = sign => (this.isOverview
-      ? `${sign}${maxAbs.toFixed(maxAbs < 10 ? 1 : 0)}%`
-      : `${sign}${sym}${Math.round(maxAbs)}`);
-
-    const chartW = width - padding.left - padding.right;
-    const chartH = height - padding.top - padding.bottom;
-    const zeroY = padding.top + chartH / 2;
-
-    // Draw zero line
-    ctx.strokeStyle = '#374151';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(padding.left, zeroY);
-    ctx.lineTo(width - padding.right, zeroY);
-    ctx.stroke();
-
-    // Axis labels
-    ctx.fillStyle = '#6b7280';
-    ctx.font = '10px -apple-system, sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText(axisLabel('+'), padding.left - 6, padding.top + 8);
-    ctx.fillText(axisLabel('-'), padding.left - 6, height - padding.bottom);
-
-    const step = chartW / items.length;
-    const barWidth = Math.max(3, Math.min(24, step - 4));
-
-    items.forEach((item, idx) => {
-      const x = padding.left + (idx * step) + (step - barWidth) / 2;
-      const barH = (Math.abs(item.value) / maxAbs) * (chartH / 2);
-
-      if (item.value >= 0) {
-        ctx.fillStyle = '#10b981';
-        ctx.fillRect(x, zeroY - barH, barWidth, barH);
-      } else {
-        ctx.fillStyle = '#ef4444';
-        ctx.fillRect(x, zeroY, barWidth, barH);
-      }
-
-      // X labels
-      ctx.fillStyle = '#9ca3af';
-      ctx.textAlign = 'center';
-      ctx.fillText(item.label, x + barWidth / 2, height - 10);
+    Charts.bars(container, items.map(item => ({
+      label: item.label,
+      value: item.value,
+    })), {
+      height: 230,
+      // Overview: share of the equal-weighted return in %, never mixed-currency amounts.
+      format: v => (this.isOverview ? App.formatPct(v, 1) : App.formatMoney(v, cur, { decimals: 0, showSign: v > 0 })),
+      emptyText: 'No closed trades in this period.',
     });
   }
 };

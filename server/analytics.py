@@ -63,27 +63,30 @@ def compute_r_multiple(
     Deterministically computes the R-Multiple of a trade.
     Priority 1: If net_profit is given and initial_risk is given (> 0):
                 r_multiple = net_profit / initial_risk
+                (initial_risk is always a currency amount; legacy price distances
+                are cleared by a one-time migration in database.py)
     Priority 2: If open_price and stop_loss are provided and stop_loss != open_price:
-                rew / risk_dist (or sum of partials)
+                rew / risk_dist (or volume-weighted sum of partials)
     """
     if net_profit is not None and initial_risk is not None and initial_risk > 0:
         return round(net_profit / initial_risk, 2)
 
     if open_price is not None and open_price > 0 and stop_loss is not None and stop_loss > 0 and open_price != stop_loss:
-        risk_dist = abs(open_price - stop_loss)
+        sl_dist = abs(open_price - stop_loss)
         if partial_closes:
             parent_vol = volume or sum(float(pc.get("volume", 0.0) or 0.0) for pc in partial_closes)
-            if parent_vol > 0 and risk_dist > 0:
+            if parent_vol > 0:
                 total_r = 0.0
                 for pc in partial_closes:
                     pc_vol = float(pc.get("volume", 0.0) or 0.0)
                     pc_price = float(pc.get("close_price", 0.0) or 0.0)
                     pc_rew = (pc_price - open_price) if direction.upper() in ("BUY", "LONG") else (open_price - pc_price)
-                    total_r += (pc_rew / risk_dist) * (pc_vol / parent_vol)
+                    total_r += (pc_rew / sl_dist) * (pc_vol / parent_vol)
                 return round(total_r, 2)
-        if close_price is not None and risk_dist > 0:
+        if close_price is not None:
             rew = (close_price - open_price) if direction.upper() in ("BUY", "LONG") else (open_price - close_price)
-            return round(rew / risk_dist, 2)
+            return round(rew / sl_dist, 2)
+
     return None
 
 def calculate_trade_metrics(trades: List[Dict[str, Any]], initial_balance: float = 10000.0) -> Dict[str, Any]:
@@ -337,86 +340,117 @@ def calculate_trade_metrics(trades: List[Dict[str, Any]], initial_balance: float
         "total_pnl": round(net_profit + open_pnl, 2),
     }
 
+def get_realized_events(trades: List[Dict[str, Any]], initial_balance: float = 10000.0) -> List[Dict[str, Any]]:
+    """
+    Every realized P&L event, in chronological order.
+
+    - A closing deal of a scaled-out position counts on its own close time.
+    - A fully closed trade counts on its close time (minus what its partial
+      closes already realized, e.g. entry commission).
+    - Floating P&L of open positions is never included.
+    Missed, pending and cancelled trades are excluded. Each event carries the
+    R share of its trade (volume-weighted for partial closes).
+    """
+    events = []
+    for t in trades:
+        if t.get("is_missed") or t.get("status") in ("CANCELLED", "PENDING"):
+            continue
+        is_closed = t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or (
+            t.get("status") != "OPEN" and t.get("close_time")
+        )
+        total_pnl = float(t.get("net_profit") or 0.0)
+        total_r = float(t["r_multiple"]) if t.get("r_multiple") is not None else None
+        partials = [pc for pc in (t.get("partial_closes") or []) if pc.get("close_time")]
+        volume = float(t.get("volume") or 0.0) or sum(float(pc.get("volume") or 0.0) for pc in partials)
+
+        def cash_r(pnl):
+            # Without a known risk, 1 R is approximated as 1 % of the starting balance.
+            return pnl / (initial_balance * 0.01) if initial_balance > 0 else 0.0
+
+        base = {"trade_id": t.get("id"), "symbol": t.get("symbol", ""), "open_time": t.get("open_time")}
+        realized = 0.0
+        realized_r = 0.0
+        for pc in partials:
+            pnl = float(pc.get("net_profit") or 0.0)
+            if total_r is None:
+                r_val = cash_r(pnl)
+            else:
+                r_val = total_r * float(pc.get("volume") or 0.0) / volume if volume > 0 else 0.0
+            events.append({**base, "time": _normalize_date_str(pc["close_time"]), "pnl": pnl, "r": r_val, "closes_trade": False})
+            realized += pnl
+            realized_r += r_val
+
+        if is_closed:
+            close_time = t.get("close_time") or t.get("open_time")
+            if not close_time:
+                continue
+            remainder = total_pnl - realized
+            if partials and abs(remainder) < 0.005 and (total_r is None or abs(total_r - realized_r) < 0.005):
+                events[-1]["closes_trade"] = True
+                continue
+            r_rem = (total_r - realized_r) if total_r is not None else cash_r(remainder)
+            events.append({**base, "time": _normalize_date_str(close_time), "pnl": remainder, "r": r_rem, "closes_trade": True})
+
+    events.sort(key=lambda e: e["time"])
+    return events
+
+
 def get_calendar_heatmap(trades: List[Dict[str, Any]], initial_balance: float = 10000.0) -> Dict[str, Dict[str, Any]]:
     """
-    Groups closed trades by date (YYYY-MM-DD) for TradeZella-style calendar heatmap.
-    Excludes missed trades (is_missed = 1).
+    Realized P&L per calendar day (YYYY-MM-DD) for the TradeZella-style heatmap.
+    Uses get_realized_events(): partial exits count on the day they were
+    realized, open positions contribute nothing until they close.
+    A trade counts once per day it realized P&L; win/loss is judged on what it
+    realized that day.
     Returns:
     {
        "2026-09-01": {"date": "2026-09-01", "net_profit": 450.50, "r_multiple": 2.4, "pct_return": 4.51, "trades_count": 3, "wins": 2, "losses": 1},
        ...
     }
     """
-    days = {}
-    valid_trades = [t for t in trades if not t.get("is_missed") and t.get("status") not in ("CANCELLED", "PENDING")]
-    # Only realized results belong in the calendar; floating P&L of open
-    # positions would otherwise be booked as a win/loss on the open date.
-    closed_trades = [t for t in valid_trades if t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or t.get("close_time")]
-    for t in closed_trades:
-        close_time = t.get("close_time") or t.get("open_time")
-        if not close_time:
-            continue
-        # Extract YYYY-MM-DD
-        date_str = _normalize_date_str(close_time)[:10]
-        pnl = float(t.get("net_profit") or 0.0)
-        r_mult = float(t["r_multiple"]) if t.get("r_multiple") is not None else None
+    days: Dict[str, Dict[str, Any]] = {}
+    per_trade: Dict[str, Dict[Any, float]] = {}
+    for e in get_realized_events(trades, initial_balance):
+        date_str = e["time"][:10]
+        day = days.setdefault(date_str, {
+            "date": date_str, "net_profit": 0.0, "r_multiple": 0.0, "pct_return": 0.0,
+            "trades_count": 0, "wins": 0, "losses": 0, "breakevens": 0,
+        })
+        day["net_profit"] += e["pnl"]
+        day["r_multiple"] += e["r"]
+        trade_key = e["trade_id"] if e["trade_id"] is not None else id(e)
+        per_trade.setdefault(date_str, {})
+        per_trade[date_str][trade_key] = per_trade[date_str].get(trade_key, 0.0) + e["pnl"]
 
-        if date_str not in days:
-            days[date_str] = {
-                "date": date_str,
-                "net_profit": 0.0,
-                "r_multiple": 0.0,
-                "pct_return": 0.0,
-                "trades_count": 0,
-                "wins": 0,
-                "losses": 0,
-                "breakevens": 0,
-            }
-
-        days[date_str]["net_profit"] += pnl
-        if r_mult is not None:
-            days[date_str]["r_multiple"] += r_mult
-        elif initial_balance > 0:
-            days[date_str]["r_multiple"] += pnl / (initial_balance * 0.01)
-
-        days[date_str]["trades_count"] += 1
-        if pnl > 0.001:
-            days[date_str]["wins"] += 1
-        elif pnl < -0.001:
-            days[date_str]["losses"] += 1
-        else:
-            days[date_str]["breakevens"] += 1
-
-    # Round all values and compute pct_return
-    for d, data in days.items():
+    for date_str, data in days.items():
+        results = per_trade.get(date_str, {}).values()
+        data["trades_count"] = len(results)
+        data["wins"] = sum(1 for v in results if v > 0.001)
+        data["losses"] = sum(1 for v in results if v < -0.001)
+        data["breakevens"] = data["trades_count"] - data["wins"] - data["losses"]
         data["net_profit"] = round(data["net_profit"], 2)
         data["r_multiple"] = round(data["r_multiple"], 2)
-        if initial_balance > 0:
-            data["pct_return"] = round((data["net_profit"] / initial_balance) * 100.0, 2)
-        else:
-            data["pct_return"] = 0.0
+        data["pct_return"] = round((data["net_profit"] / initial_balance) * 100.0, 2) if initial_balance > 0 else 0.0
 
     return days
 
+
 def get_equity_curve(trades: List[Dict[str, Any]], initial_balance: float = 10000.0) -> List[Dict[str, Any]]:
     """
-    Builds cumulative equity curve points chronologically.
-    Excludes missed trades (is_missed = 1).
+    Cumulative realized equity, one point per realized event (see get_realized_events).
+    Excludes missed trades (is_missed = 1) and floating P&L.
     """
-    valid_trades = [t for t in trades if not t.get("is_missed") and t.get("status") not in ("CANCELLED", "PENDING")]
-    closed = [t for t in valid_trades if t.get("status") in ("CLOSED", "WIN", "LOSS", "BE") or t.get("close_time")]
-    sorted_trades = sorted(closed, key=lambda x: x.get("close_time") or x.get("open_time") or "")
-
+    events = get_realized_events(trades, initial_balance)
     points = []
     running_balance = initial_balance
     cumulative_pnl = 0.0
     cumulative_r = 0.0
 
-    # Start point
-    if sorted_trades:
-        first_time = sorted_trades[0].get("open_time") or sorted_trades[0].get("close_time") or ""
+    if events:
+        first_open = _normalize_date_str(events[0].get("open_time") or "")
+        start = first_open if first_open and first_open < events[0]["time"] else events[0]["time"]
         points.append({
-            "time": first_time[:16].replace("T", " "),
+            "time": start[:16].replace("T", " "),
             "balance": round(running_balance, 2),
             "cumulative_pnl": 0.0,
             "cumulative_r": 0.0,
@@ -426,23 +460,20 @@ def get_equity_curve(trades: List[Dict[str, Any]], initial_balance: float = 1000
             "symbol": "START"
         })
 
-    for t in sorted_trades:
-        pnl = float(t.get("net_profit") or 0.0)
-        running_balance += pnl
-        cumulative_pnl += pnl
-        r_val = float(t["r_multiple"]) if t.get("r_multiple") is not None else (pnl / (initial_balance * 0.01) if initial_balance > 0 else 0.0)
-        cumulative_r += r_val
-        c_time = t.get("close_time") or t.get("open_time") or ""
-
+    for e in events:
+        running_balance += e["pnl"]
+        cumulative_pnl += e["pnl"]
+        cumulative_r += e["r"]
         points.append({
-            "time": c_time[:16].replace("T", " "),
+            "time": e["time"][:16].replace("T", " "),
             "balance": round(running_balance, 2),
             "cumulative_pnl": round(cumulative_pnl, 2),
             "cumulative_r": round(cumulative_r, 2),
-            "trade_pnl": round(pnl, 2),
-            "r_multiple": round(r_val, 2),
-            "trade_id": t.get("id"),
-            "symbol": t.get("symbol", "")
+            "trade_pnl": round(e["pnl"], 2),
+            "r_multiple": round(e["r"], 2),
+            "trade_id": e["trade_id"],
+            "symbol": e["symbol"],
+            "partial": not e["closes_trade"],
         })
 
     return points
@@ -557,6 +588,43 @@ def attach_trade_returns(trades: List[Dict[str, Any]], accounts: List[Dict[str, 
         t["trade_pct"] = pct
         t["return_contrib"] = pct / n if (pct is not None and n) else 0.0
     return n
+
+
+_MONEY_FIELDS = ("net_profit", "gross_profit", "commission", "swap")
+
+
+def scale_trades_to_return_share(
+    trades: List[Dict[str, Any]], accounts: List[Dict[str, Any]], active_accounts: int
+) -> List[Dict[str, Any]]:
+    """
+    Copies of the trades with every amount expressed as its share of the
+    equal-weighted average return in % (amount / start balance / N * 100).
+
+    Feeding these into the money-based dashboard breakdowns (weekday, month,
+    long/short, day statistics, symbols) gives currency-neutral results that
+    add up to the overview's average return. Pass initial_balance=100/N to
+    those functions so their 1R = 1 % fallback keeps the original R values.
+    Trades of accounts without a starting balance are left out.
+    """
+    if active_accounts <= 0:
+        return []
+    balances = {a.get("id"): float(a.get("initial_balance") or 0.0) for a in accounts}
+    scaled = []
+    for t in trades:
+        balance = balances.get(t.get("account_id"), 0.0)
+        if balance <= 0:
+            continue
+        factor = 100.0 / (balance * active_accounts)
+        copy = dict(t)
+        for field in _MONEY_FIELDS:
+            if copy.get(field) is not None:
+                copy[field] = float(copy[field]) * factor
+        copy["partial_closes"] = [
+            {**pc, **{f: float(pc[f]) * factor for f in _MONEY_FIELDS if pc.get(f) is not None}}
+            for pc in (t.get("partial_closes") or [])
+        ]
+        scaled.append(copy)
+    return scaled
 
 
 def _pct_profit_factor(gross_win_pct: float, gross_loss_pct: float) -> float:
@@ -699,6 +767,8 @@ def get_overview_summary(
         "open_trades_count": open_trades_count,
         "open_accounts_count": len(open_floating),
         "profit_factor": profit_factor,
+        "gross_win_pct": round(gross_win, 2),
+        "gross_loss_pct": round(gross_loss, 2),
         "avg_win_pct": round(avg_win, 2),
         "avg_loss_pct": round(avg_loss, 2),
         "win_loss_ratio": round(avg_win / avg_loss, 2) if avg_loss > 0 else 0.0,
@@ -1342,4 +1412,171 @@ def get_weekly_review(trades: List[Dict[str, Any]], week_offset: int = 0, rank_b
         "return_pct": round(week_return_pct, 2),
         "open_return_pct": round(open_return_pct, 2),
         "return_accounts": len(week_accounts),
+    }
+
+
+R_DISTRIBUTION_BUCKETS = [
+    ("≤ -2R", None, -2.0), ("-2R to -1R", -2.0, -1.0), ("-1R to 0R", -1.0, 0.0),
+    ("0R to 1R", 0.0, 1.0), ("1R to 2R", 1.0, 2.0), ("2R to 3R", 2.0, 3.0), ("≥ 3R", 3.0, None),
+]
+
+
+def _is_realized(t: Dict[str, Any]) -> bool:
+    return not t.get("is_missed") and t.get("status") in ("CLOSED", "WIN", "LOSS", "BE")
+
+
+def _parse_trade_dt(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(_normalize_date_str(value)[:19].replace("T", " "))
+    except ValueError:
+        return None
+
+
+def _journal_score(metrics: Dict[str, Any], green_day_rate: float, plan_rate: float) -> Dict[str, Any]:
+    """Transparent 0-100 score: the mean of six clamped component scores."""
+    def clamp(value: float) -> float:
+        return max(0.0, min(100.0, value))
+
+    pf = float(metrics.get("profit_factor") or 0.0)
+    components = [
+        {"key": "win_rate", "label": "Win rate", "hint": "60 % win rate = 100",
+         "score": clamp(float(metrics.get("win_rate") or 0.0) / 60.0 * 100.0)},
+        {"key": "profit_factor", "label": "Profit factor", "hint": "1.0 = 0, 2.5 or more = 100",
+         "score": clamp((pf - 1.0) / 1.5 * 100.0)},
+        {"key": "win_loss_ratio", "label": "Avg win / avg loss", "hint": "2 : 1 or more = 100",
+         "score": clamp(float(metrics.get("win_loss_ratio") or 0.0) / 2.0 * 100.0)},
+        {"key": "drawdown", "label": "Max drawdown", "hint": "0 % = 100, 20 % or more = 0",
+         "score": clamp(100.0 - float(metrics.get("max_drawdown_pct") or 0.0) * 5.0)},
+        {"key": "consistency", "label": "Green days", "hint": "70 % green days = 100",
+         "score": clamp(green_day_rate / 70.0 * 100.0)},
+        {"key": "discipline", "label": "Plan followed", "hint": "Trades with a setup and no tagged mistake",
+         "score": clamp(plan_rate)},
+    ]
+    for c in components:
+        c["score"] = round(c["score"], 1)
+    total = round(sum(c["score"] for c in components) / len(components), 1) if metrics.get("total_trades") else 0.0
+    return {"score": total, "components": components}
+
+
+def get_dashboard_insights(trades: List[Dict[str, Any]], metrics: Dict[str, Any], recent_limit: int = 8,
+                           initial_balance: float = 10000.0) -> Dict[str, Any]:
+    """Deterministic breakdowns for the dashboard beyond the headline KPIs."""
+    closed = [t for t in trades if _is_realized(t)]
+    events = get_realized_events(trades, initial_balance)
+
+    def pnl(t):
+        return float(t.get("net_profit") or 0.0)
+
+    # R-multiple distribution
+    r_values = [float(t["r_multiple"]) for t in closed if t.get("r_multiple") is not None]
+    r_distribution = [
+        {"label": label, "positive": low is not None and low >= 0,
+         "count": sum(1 for r in r_values if (low is None or r >= low) and (high is None or r < high))}
+        for label, low, high in R_DISTRIBUTION_BUCKETS
+    ]
+
+    # Long vs short
+    long_short = {}
+    for key, sides in (("long", ("BUY", "LONG")), ("short", ("SELL", "SHORT"))):
+        side_trades = [t for t in closed if (t.get("direction") or "").upper() in sides]
+        wins = sum(1 for t in side_trades if pnl(t) > 0.001)
+        side_r = [float(t["r_multiple"]) for t in side_trades if t.get("r_multiple") is not None]
+        long_short[key] = {
+            "trades": len(side_trades),
+            "wins": wins,
+            "win_rate": round(wins / len(side_trades) * 100.0, 1) if side_trades else 0.0,
+            "net_profit": round(sum(pnl(t) for t in side_trades), 2),
+            "avg_r": round(sum(side_r) / len(side_r), 2) if side_r else None,
+        }
+
+    # Holding time of winners vs losers (minutes)
+    def avg_hold(selected):
+        durations = []
+        for t in selected:
+            start, end = _parse_trade_dt(t.get("open_time")), _parse_trade_dt(t.get("close_time"))
+            if start and end and end >= start:
+                durations.append((end - start).total_seconds() / 60.0)
+        return round(sum(durations) / len(durations), 1) if durations else None
+
+    holding = {
+        "winners_min": avg_hold([t for t in closed if pnl(t) > 0.001]),
+        "losers_min": avg_hold([t for t in closed if pnl(t) < -0.001]),
+        "all_min": avg_hold(closed),
+    }
+
+    # Day-level statistics on realized P&L (same basis as the calendar)
+    days: Dict[str, float] = {}
+    for e in events:
+        days[e["time"][:10]] = days.get(e["time"][:10], 0.0) + e["pnl"]
+    green = sum(1 for v in days.values() if v > 0.001)
+    red = sum(1 for v in days.values() if v < -0.001)
+    best_day = max(days.items(), key=lambda kv: kv[1]) if days else None
+    worst_day = min(days.items(), key=lambda kv: kv[1]) if days else None
+    day_stats = {
+        "trading_days": len(days),
+        "green_days": green,
+        "red_days": red,
+        "green_day_rate": round(green / len(days) * 100.0, 1) if days else 0.0,
+        "avg_daily_pnl": round(sum(days.values()) / len(days), 2) if days else 0.0,
+        "best_day": {"date": best_day[0], "net_profit": round(best_day[1], 2)} if best_day else None,
+        "worst_day": {"date": worst_day[0], "net_profit": round(worst_day[1], 2)} if worst_day else None,
+    }
+
+    # Monthly results: realized P&L and R by realization date; trades and win
+    # rate count the trades that were fully closed in that month.
+    months: Dict[str, Dict[str, float]] = {}
+    for e in events:
+        m = months.setdefault(e["time"][:7], {"net_profit": 0.0, "trades": 0, "wins": 0, "r": 0.0})
+        m["net_profit"] += e["pnl"]
+        m["r"] += e["r"]
+    for t in closed:
+        key = _normalize_date_str(t.get("close_time") or t.get("open_time") or "")[:7]
+        if not key:
+            continue
+        m = months.setdefault(key, {"net_profit": 0.0, "trades": 0, "wins": 0, "r": 0.0})
+        m["trades"] += 1
+        m["wins"] += 1 if pnl(t) > 0.001 else 0
+    monthly = [
+        {"month": key, "net_profit": round(m["net_profit"], 2), "trades": m["trades"],
+         "win_rate": round(m["wins"] / m["trades"] * 100.0, 1) if m["trades"] else 0.0,
+         "total_r": round(m["r"], 2)}
+        for key, m in sorted(months.items())
+    ]
+
+    by_symbol = get_performance_by_symbol(trades)  # sorted by net profit, best first
+
+    # Plan adherence: a setup was assigned and no mistake was tagged
+    plan_followed = sum(1 for t in closed if t.get("setup_id") and not t.get("mistake_id"))
+    plan_rate = plan_followed / len(closed) * 100.0 if closed else 0.0
+
+    weekdays = get_performance_by_day_of_week(trades)
+    recent = sorted(closed, key=lambda t: _normalize_date_str(t.get("close_time") or t.get("open_time") or ""), reverse=True)
+    open_positions = [t for t in trades if t.get("status") == "OPEN" and not t.get("is_missed")]
+
+    def trade_summary(t):
+        return {
+            "id": t.get("id"), "symbol": t.get("symbol"), "direction": t.get("direction"),
+            "volume": t.get("volume"), "net_profit": round(pnl(t), 2),
+            "r_multiple": t.get("r_multiple"), "status": t.get("status"),
+            "open_time": t.get("open_time"), "close_time": t.get("close_time"),
+            "setup_name": t.get("setup_name"), "account_currency": t.get("account_currency"),
+        }
+
+    return {
+        "realized_pnl": round(sum(e["pnl"] for e in events), 2),
+        "r_distribution": r_distribution,
+        "long_short": long_short,
+        "holding": holding,
+        "day_stats": day_stats,
+        "monthly": monthly,
+        # Weekends only when traded, so FX-only journals keep a Mon-Fri chart.
+        "by_weekday": [d for i, d in enumerate(weekdays) if i < 5 or d["trades"] > 0],
+        "top_symbols": by_symbol[:5],
+        "worst_symbols": [s for s in reversed(by_symbol) if s.get("net_profit", 0.0) < 0][:3],
+        "plan_rate": round(plan_rate, 1),
+        "journal_score": _journal_score(metrics, day_stats["green_day_rate"], plan_rate),
+        "recent_trades": [trade_summary(t) for t in recent[:recent_limit]],
+        "open_positions": [trade_summary(t) for t in open_positions],
     }

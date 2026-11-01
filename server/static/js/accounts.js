@@ -32,6 +32,7 @@ const Accounts = {
       App.accounts = accounts;
       this.renderAccounts(accounts);
       this.updateGlobalAccountSelect(accounts);
+      if (App.updateSidebarAccount) App.updateSidebarAccount();
       this.checkAutoRefresh();
     } catch (err) {
       console.error('Failed to load accounts:', err);
@@ -40,6 +41,7 @@ const Accounts = {
   },
 
   autoRefreshTimer: null,
+  refreshInFlight: false,
 
   checkAutoRefresh() {
     this.stopAutoRefresh();
@@ -50,13 +52,19 @@ const Accounts = {
       }
       const isModalActive = document.querySelector('.modal-overlay.active');
       if (isModalActive) return;
+      // Skip ticks while the tab is hidden or the previous request is still running.
+      if (document.hidden || this.refreshInFlight) return;
+      this.refreshInFlight = true;
 
       try {
         const accounts = await API.getAccounts();
         App.accounts = accounts;
         this.renderAccounts(accounts);
-      } catch (err) {}
-    }, 4000);
+      } catch (err) {
+      } finally {
+        this.refreshInFlight = false;
+      }
+    }, 15000);
   },
 
   stopAutoRefresh() {
@@ -86,10 +94,10 @@ const Accounts = {
       card.innerHTML = `
         <div class="playbook-card-header">
           <div>
-            <span class="playbook-card-title">${a.name}</span>
+            <span class="playbook-card-title">${TradeDetail.escapeHtml(a.name)}</span>
             <span style="font-size:12px;color:#9ca3af;display:block;">
-              ${a.currency || 'USD'} • ${a.broker || 'Broker'} • ID: <strong style="color:#60a5fa;">${a.account_number || 'N/A'}</strong>
-              ${a.server_name ? ` • Server: <em>${a.server_name}</em>` : ''}
+              ${TradeDetail.escapeHtml(a.currency || 'USD')} • ${TradeDetail.escapeHtml(a.broker || 'Broker')} • ID: <strong style="color:#60a5fa;">${TradeDetail.escapeHtml(a.account_number || 'N/A')}</strong>
+              ${a.server_name ? ` • Server: <em>${TradeDetail.escapeHtml(a.server_name)}</em>` : ''}
             </span>
           </div>
           <div style="display:flex;gap:6px;align-items:center;">
@@ -97,7 +105,7 @@ const Accounts = {
               ${a.currency || 'USD'}
             </span>
             <span class="badge" style="background:#3b82f622;color:#60a5fa;border:1px solid #3b82f655;">
-              ${a.platform}
+              ${TradeDetail.escapeHtml(a.platform)}
             </span>
             ${isMT ? '<span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98155;" title="Data is pushed by the installed Expert Advisor">EA Sync</span>' : ''}
             ${isCTrader ? '<span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98155;" title="A locally running cBot can push account data to the journal">cBot Ready</span>' : ''}
@@ -130,7 +138,7 @@ const Accounts = {
           </div>
           ${isCTrader ? `
             <button class="btn btn-primary btn-sm" onclick="Accounts.triggerCTraderSyncForAccount(${a.id})" title="Fetch account data with the configured cTrader Open API credentials">
-              ⚡ Sync Now
+              Sync now
             </button>
           ` : ''}
         </div>
@@ -278,12 +286,12 @@ const Accounts = {
         ctrader_account_id,
         is_live
       });
-      statusEl.innerHTML = `<span style="color:#10b981;">✓ ${res.message || 'Sync successful!'} Balance: $${res.balance}</span>`;
+      statusEl.innerHTML = `<span style="color:#10b981;">✓ ${TradeDetail.escapeHtml(res.message || 'Sync successful!')} Balance: $${TradeDetail.escapeHtml(res.balance)}</span>`;
       App.showToast('cTrader synced successfully!', 'success');
       this.load();
       Dashboard.load();
     } catch (err) {
-      statusEl.innerHTML = `<span style="color:#ef4444;">✗ Sync failed: ${err.message}</span>`;
+      statusEl.innerHTML = `<span style="color:#ef4444;">✗ Sync failed: ${TradeDetail.escapeHtml(err.message)}</span>`;
       App.showToast(`cTrader sync error: ${err.message}`, 'error');
     }
   },
@@ -301,17 +309,17 @@ const Accounts = {
     formData.append('account_id', account_id);
 
     const statusEl = document.getElementById('importFileStatus');
-    statusEl.innerHTML = `<span style="color:#60a5fa;">Parsing and importing "${file.name}"...</span>`;
+    statusEl.innerHTML = `<span style="color:#60a5fa;">Parsing and importing "${TradeDetail.escapeHtml(file.name)}"...</span>`;
 
     try {
       const res = await API.importStatement(formData);
-      statusEl.innerHTML = `<span style="color:#10b981;">✓ ${res.message}</span>`;
+      statusEl.innerHTML = `<span style="color:#10b981;">✓ ${TradeDetail.escapeHtml(res.message)}</span>`;
       App.showToast(res.message, 'success');
       Dashboard.load();
       Trades.load();
       Accounts.load();
     } catch (err) {
-      statusEl.innerHTML = `<span style="color:#ef4444;">✗ Import failed: ${err.message}</span>`;
+      statusEl.innerHTML = `<span style="color:#ef4444;">✗ Import failed: ${TradeDetail.escapeHtml(err.message)}</span>`;
       App.showToast(`Import error: ${err.message}`, 'error');
     }
   }

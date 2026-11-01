@@ -107,7 +107,7 @@ for (const event of ['hashchange', 'popstate']) {
     const app = h.load('app.js', 'App');
     app.currentView = 'trades';
     app.setupEventListeners();
-    for (const [hash, search] of [['#trades?search=EURUSD', 'EURUSD'], ['#trades?date=2026-01-02', '2026-01-02'], ['#trades', '']]) {
+    for (const [hash, search, date] of [['#trades?search=EURUSD', 'EURUSD', ''], ['#trades?date=2026-01-02', '', '2026-01-02'], ['#trades', '', '']]) {
       trades.currentOffset = 50;
       const before = requests.length;
       h.context.window.location.hash = hash;
@@ -116,6 +116,8 @@ for (const event of ['hashchange', 'popstate']) {
       assert.equal(input.value, search);
       assert.equal(requests.length, before + 1);
       assert.equal(requests.at(-1).search || '', search);
+      // A calendar day filters by realization date, never by the free-text search
+      assert.equal(requests.at(-1).closed_on || '', date);
       assert.equal(requests.at(-1).offset, 0);
       h.events[event]();
       assert.equal(requests.length, before + 1);
@@ -247,12 +249,12 @@ test('overview chart: accounts share one time axis and hold their last return to
 });
 
 function overviewDashboardHarness() {
-  const ids = ['dashNetPnl', 'dashNetPnlSub', 'dashNetPnlLabel', 'dashOpenPnl', 'dashOpenPnlLabel', 'dashOpenTradesSub',
-    'dashWinRate', 'dashWinLossCount', 'dashProfitFactor', 'dashProfitFactorSub', 'dashTotalTrades', 'dashAvgWin',
-    'dashAvgLoss', 'dashWinLossRatio', 'dashExpectancy', 'dashExpectancySub', 'dashSharpe', 'dashDrawdown',
-    'dashStreaks', 'dashCurrentDrawdown', 'dashCurrentDrawdownR'];
+  const ids = ['dashNetPnl', 'dashNetPnlSub', 'dashReturnDelta', 'dashPnlSpark', 'dashWinRate', 'dashWinBar',
+    'dashWinLossCount', 'dashProfitFactor', 'dashPfBar', 'dashPfLegend', 'dashExpectancy', 'dashExpectancySub',
+    'dashWinLossRatio', 'dashAvgBar', 'dashAvgLegend', 'dashDrawdown', 'dashCurrentDrawdown'];
   const elements = Object.fromEntries(ids.map(id => [id, { textContent: '', innerHTML: '', className: '' }]));
   const h = harness(elements);
+  h.context.Charts = { sparkline() {}, splitBar() {}, esc: v => String(v) };
   h.context.App.formatMoney = (value, currency) => `${currency} ${value}`;
   h.context.App.getActiveCurrency = () => 'USD';
   const dashboard = h.load('dashboard.js', 'Dashboard');
@@ -262,27 +264,31 @@ function overviewDashboardHarness() {
 const overviewMetrics = { win_rate: 75, winning_trades: 3, losing_trades: 1, total_trades: 4, net_profit: 21000, profit_factor: 6, avg_win: 8666, avg_loss: 5000 };
 const overviewSummary = {
   accounts: [{ account_id: 1 }, { account_id: 2 }], active_accounts: 2, avg_return_pct: 15, avg_floating_pct: 1,
-  open_trades_count: 1, open_accounts_count: 1, profit_factor: 7, avg_win_pct: 11.67, avg_loss_pct: 5, win_loss_ratio: 2.33,
-  expectancy_pct: 7.5, sharpe_ratio: 1.2, max_drawdown_pct: 2.13, current_drawdown_pct: 2.13, current_drawdown_r: 2.5, calendar: {},
+  open_trades_count: 1, open_accounts_count: 1, profit_factor: 7, gross_win_pct: 35, gross_loss_pct: 5,
+  avg_win_pct: 11.67, avg_loss_pct: 5, win_loss_ratio: 2.33, expectancy_pct: 7.5, sharpe_ratio: 1.2,
+  max_drawdown_pct: 2.13, current_drawdown_pct: 2.13, current_drawdown_r: 2.5, calendar: {},
 };
 
 test('all-accounts KPIs show percent of each account instead of summed currency amounts', () => {
   const { dashboard, elements } = overviewDashboardHarness();
-  dashboard.dashboardData = { overview: overviewSummary, metrics: overviewMetrics };
-  dashboard.renderKPIs(overviewMetrics, 'USD');
-  assert.equal(elements.dashNetPnlLabel.textContent, 'Avg. Return (equal-weighted)');
+  dashboard.dashboardData = { overview: overviewSummary, metrics: overviewMetrics, account_curves: { average: [] } };
+  dashboard.renderOverviewKPIs(overviewMetrics, overviewSummary);
   assert.equal(elements.dashNetPnl.textContent, '+15.00 %');
   assert.equal(elements.dashProfitFactor.textContent, '7.00');
-  assert.equal(elements.dashAvgLoss.textContent, '-5.00 %');
   assert.equal(elements.dashExpectancy.textContent, '+7.50 %');
   assert.equal(elements.dashDrawdown.textContent, '-2.1%');
-  for (const el of Object.values(elements)) assert.ok(!String(el.textContent).includes('USD'), 'no currency in overview KPIs');
+  assert.ok(elements.dashAvgLegend.innerHTML.includes('-5.00 %'));
+  for (const el of Object.values(elements)) {
+    assert.ok(!/USD|GBP|\$/.test(`${el.textContent} ${el.innerHTML}`), 'no currency amounts in overview KPIs');
+  }
+});
 
-  // Selecting one account switches back to that account's currency.
-  dashboard.dashboardData = { overview: null, metrics: overviewMetrics };
-  dashboard.renderKPIs(overviewMetrics, 'GBP');
-  assert.equal(elements.dashNetPnlLabel.textContent, 'Net Cumulative P&L');
-  assert.equal(elements.dashNetPnl.textContent, 'GBP 21000');
+test('dashboard panels format amounts as % only in the all-accounts overview', () => {
+  const { dashboard } = overviewDashboardHarness();
+  dashboard.pctMode = true;
+  assert.equal(dashboard.amountSigned(2.345, 'USD'), '+2.3 %');
+  dashboard.pctMode = false;
+  assert.equal(dashboard.amountSigned(2.345, 'GBP'), 'GBP 2.345');
 });
 
 test('calendar falls back from currency to percent in the all-accounts overview', () => {
@@ -311,4 +317,33 @@ test('analytics rows show the equal-weighted % in the overview and amounts for o
   analytics.isOverview = false;
   assert.equal(analytics.formatResult(row, 'GBP'), 'GBP 21000');
   assert.equal(analytics.profitFactorOf(row), '2.50');
+});
+
+test('review view loads although Review is a top-level const, not a window property', () => {
+  const h = harness();
+  let loads = 0;
+  vm.runInContext('const Review = { load() { globalThis.__reviewLoads = (globalThis.__reviewLoads || 0) + 1; } };', h.context);
+  const app = h.load('app.js', 'App');
+  app.currentView = 'review';
+  app.refreshCurrentView();
+  loads = vm.runInContext('globalThis.__reviewLoads', h.context);
+  assert.equal(loads, 1);
+});
+
+test('calendar week link filters the trade log by realization range and ignores the open-date preset', async () => {
+  const h = harness({ tradeSearchInput: { value: '' } });
+  const requests = [];
+  h.context.API.getTrades = async params => { requests.push({ ...params }); return { total: 0, trades: [] }; };
+  const trades = h.load('trades.js', 'Trades');
+  trades.renderTable = () => {};
+  trades.renderPagination = () => {};
+  h.context.history = { pushState() {}, replaceState() {} };
+  const app = h.load('app.js', 'App');
+  app.navigateToTradesWithRange('2026-09-21', '2026-09-27');
+  await Promise.resolve();
+  const last = requests.at(-1);
+  assert.equal(last.closed_from, '2026-09-21');
+  assert.equal(last.closed_to, '2026-09-27');
+  assert.equal(last.closed_on, undefined);
+  assert.equal(last.date_from, undefined);
 });

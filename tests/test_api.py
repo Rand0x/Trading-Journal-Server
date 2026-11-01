@@ -1210,6 +1210,12 @@ class TestAPI(unittest.TestCase):
         # 5. Open price == stop loss -> returns None
         self.assertIsNone(compute_r_multiple("BUY", 100.0, 100.0, close_price=105.0))
 
+        # 6. Gold XAUUSD without currency risk: entry 4258.57, SL 4230.00 (dist 28.57),
+        # exit 4270.14 (rew 11.57) -> 0.40 R. Legacy point-distance initial_risk values
+        # are cleared by a one-time migration (see test_sync_regressions).
+        r_gold = compute_r_multiple("BUY", 4258.57, 4230.00, close_price=4270.14, net_profit=613.21)
+        self.assertEqual(r_gold, 0.4)
+
     def test_tp_analysis_excludes_loss_partials_from_tp_reached(self):
         from server.analytics import get_take_profit_analysis
         # Trade with 2 partial closes: 1 in profit (TP1), 1 at loss (SL stop out)

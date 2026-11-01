@@ -147,6 +147,16 @@ class TestDashboardAccountCurves(unittest.TestCase):
         )
         self.assertEqual(curves["average_return_pct"], 15.0)
 
+    def test_overview_breakdown_panels_are_in_percent_of_each_account(self):
+        insights = self.client.get("/api/dashboard").json()["overview"]["insights"]
+        # GBP +10 % and USD +20 %: equal-weighted shares add up to +15 %.
+        self.assertAlmostEqual(sum(m["net_profit"] for m in insights["monthly"]), 15.0, places=2)
+        self.assertAlmostEqual(insights["long_short"]["long"]["net_profit"], 15.0, places=2)
+        self.assertAlmostEqual(insights["day_stats"]["best_day"]["net_profit"], 15.0, places=2)
+        # Without a stop loss 1 R = 1 % of the trade's *own* account: 10 R + 20 R.
+        # (Summing the start balances of both currencies would give 19.09 R.)
+        self.assertEqual([m["total_r"] for m in insights["monthly"]], [30.0])
+
     def test_single_account_view_keeps_the_currency_chart(self):
         data = self.client.get("/api/dashboard", params={"account_id": self.account_ids[0]}).json()
         self.assertIsNone(data["account_curves"])

@@ -6,6 +6,7 @@ import base64
 import os
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +17,7 @@ import asyncio
 from server.database import init_db
 from server.routers import accounts, trades, dashboard, analytics, playbooks, mistakes, sync
 from server.connectors.ctrader_api import sync_all_active_ctrader_accounts
+from server.connectors.market_data import prune_market_candles
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,10 +58,17 @@ def is_authorized(authorization_header: str | None, credentials: tuple[str, str]
     expected = f"{credentials[0]}:{credentials[1]}"
     return secrets.compare_digest(supplied, expected)
 
+CANDLE_PRUNE_INTERVAL_SECONDS = 24 * 3600
+
+
 async def background_auto_sync_loop():
     """Periodically syncs configured cTrader accounts in background."""
+    last_prune = None
     while True:
         try:
+            if last_prune is None or time.monotonic() - last_prune >= CANDLE_PRUNE_INTERVAL_SECONDS:
+                last_prune = time.monotonic()
+                await asyncio.to_thread(prune_market_candles)
             await asyncio.sleep(300) # Check every 5 minutes
             logger.info("Executing periodic background cTrader auto-sync...")
             # Broker connectors use blocking network clients. Keep them off
